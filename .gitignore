@@ -15,6 +15,9 @@ __pycache__/
 # VS Code
 .vscode/
 
+# Claude
+.claude/
+
 # Data (Avoid checking in data unless explicitly intended)
 # If your datasets are huge, ignore them completely
 # data/
