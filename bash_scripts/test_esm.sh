@@ -13,8 +13,9 @@ mkdir -p slurm-outputs
 
 # common setup
 source "${HOME}/protein-design/bash_scripts/common_setup.sh"
+cd "${DPO_PROJECT_ROOT}"
 nvidia-smi
 which python
 
 # run test
-python src/tests/test_model.py
+python -m src.tests.test_model

@@ -2,7 +2,7 @@
 
 Run with:
 1) pytest src/tests/test_model.py
-2) python src/tests/test_model.py
+2) python -m src.tests.test_model
 """
 
 import torch
