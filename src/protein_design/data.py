@@ -1,0 +1,82 @@
+"""OAS FASTA dataset and DataLoader utilities for ESM2 evotuning."""
+
+import logging
+from pathlib import Path
+
+import torch
+from Bio import SeqIO
+from torch.utils.data import DataLoader, Dataset, random_split
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+
+logger = logging.getLogger(__name__)
+
+
+class OASFastaDataset(Dataset):
+    """Torch dataset that reads antibody sequences from a FASTA file."""
+
+    def __init__(self, fasta_path: str, tokenizer: AutoTokenizer, max_seq_len: int) -> None:
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+        self.sequences: list[str] = []
+
+        logger.info("Loading sequences from %s", fasta_path)
+        for record in SeqIO.parse(fasta_path, "fasta"):
+            self.sequences.append(str(record.seq))
+        logger.info("Loaded %d sequences", len(self.sequences))
+
+    def __len__(self) -> int:
+        return len(self.sequences)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        encoding = self.tokenizer(
+            self.sequences[idx],
+            truncation=True,
+            max_length=self.max_seq_len,
+            padding=False,
+            return_tensors=None,
+        )
+        return {k: torch.tensor(v) for k, v in encoding.items()}
+
+
+def make_dataloaders(
+    fasta_path: str,
+    config: dict,
+) -> tuple[DataLoader, DataLoader]:
+    """Create train (95%) and validation (5%) DataLoaders from a FASTA file."""
+    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
+    dataset = OASFastaDataset(fasta_path, tokenizer, config["max_seq_len"])
+
+    n_val = int(len(dataset) * 0.05)
+    n_train = len(dataset) - n_val
+    train_ds, val_ds = random_split(
+        dataset,
+        [n_train, n_val],
+        generator=torch.Generator().manual_seed(config["seed"]),
+    )
+    logger.info("Split: %d train, %d val", n_train, n_val)
+
+    collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=True,
+        mlm_probability=config["mlm_probability"],
+        pad_to_multiple_of=8,
+    )
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=collator,
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=config["batch_size"],
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=collator,
+    )
+    return train_loader, val_loader

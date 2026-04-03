@@ -21,3 +21,24 @@ __pycache__/
 
 # Keep data structure but ignore large files if desired
 # data/**/*.csv
+
+# uv
+uv.lock
+*.egg-info/
+dist/
+build/
+
+# Large data files
+*.fasta
+*.csv.gz
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.bin
+
+# Wandb
+wandb/
+
+# SLURM / job logs
+logs/
