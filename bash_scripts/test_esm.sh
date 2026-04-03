@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=test_esm
-#SBATCH --output=results/%x-%j.out  
-#SBATCH --error=results/%x-%j.err
+#SBATCH --output=slurm-outputs/%x-%j.out  
+#SBATCH --error=slurm-outputs/%x-%j.err
 #SBATCH --time=01:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -9,7 +9,7 @@
 #SBATCH --gpus=rtx_3090:1
 
 # Make sure results folder exists
-mkdir -p results
+mkdir -p slurm-outputs
 
 # common setup
 source "${HOME}/protein-design/bash_scripts/common_setup.sh"

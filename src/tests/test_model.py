@@ -1,103 +1,153 @@
-"""Probe ESM2 token logits and masked-position true-token log-probabilities."""
+"""Sanity checks for ESM2 PLL scoring.
+
+Run with:
+1) pytest src/tests/test_model.py
+2) python src/tests/test_model.py
+"""
 
 import torch
+from functools import lru_cache
 
-from esme import ESM2
-from esme.alphabet import Alphabet, tokenize
+from src.model import ESM2Config, ESM2PLLScorer, LEFT_CONTEXT
+
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ESM_MODEL_PATH = "/cluster/project/krause/flohmann/mgm/oracle_assets/esm2_8m.safetensors"
 
-
-def add_context(cdr: str):
-    left_context = "EVQLQESGGGLVQPGESLRLSCVGSGSSFGESTLSYYAVSWVRQAPGKGLEWLSIINAGGGDIDYADSVEGRFTISRDNSKETLYLQMTNLRVEDTGVYYCAK"
-    right_context = "WGQGTMVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSC"
-
-    return left_context + cdr + right_context
-
-
-def load_esm():
-    """Load the pretrained ESM2 model on the selected device."""
-    esm = ESM2.from_pretrained(ESM_MODEL_PATH, device=DEVICE)
-    esm.eval()
-    return esm
+TEST_CDR_SEQUENCES = [
+    "HMSMQQVVSAGWERADLVGDAFDV",     # wild type 
+    "AASMQQVRSAGWERADLVGDAFEV",
+    "ACSMQQVVSAGWSRADLVGDDFDV",
+]
 
 
-def get_mask_token_idx(alphabet: Alphabet) -> int:
-    """Resolve mask token index across possible Alphabet API variants."""
-    for attr in ("mask_idx", "mask_index", "mask_token_id"):
-        if hasattr(alphabet, attr):
-            return int(getattr(alphabet, attr))
+@lru_cache(maxsize=1)
+def build_scorer() -> ESM2PLLScorer:
+    cfg = ESM2Config(
+        esm_model_path=ESM_MODEL_PATH,
+        device=DEVICE,
+        use_context=True,
+    )
+    return ESM2PLLScorer(cfg)
 
-    for attr in ("tok_to_idx", "token_to_idx", "stoi"):
-        mapping = getattr(alphabet, attr, None)
-        if isinstance(mapping, dict) and "<mask>" in mapping:
-            return int(mapping["<mask>"])
 
-    raise AttributeError("Could not find mask token index in Alphabet.")
+def test_cdr_positions_mapping():
+    scorer = build_scorer()
+    cdr = TEST_CDR_SEQUENCES[0]
+
+    positions = scorer._cdr_positions(len(cdr))
+    tokens = scorer.tokenize_sequences([cdr])
+
+    assert len(positions) == len(cdr)
+    assert positions[0] == len(LEFT_CONTEXT)
+    assert positions[-1] == len(LEFT_CONTEXT) + len(cdr) - 1
+    assert positions[-1] < tokens.shape[1]
+    assert positions[0] > 0
+
+
+def test_logits_shape_is_batch_len_vocab():
+    scorer = build_scorer()
+    tokens = scorer.tokenize_sequences(TEST_CDR_SEQUENCES)
+
+    with torch.no_grad():
+        logits = scorer.forward_logits(tokens)
+
+    assert logits.ndim == 3
+    assert logits.shape[0] == len(TEST_CDR_SEQUENCES)
+    assert logits.shape[1] == tokens.shape[1]
+    assert logits.shape[2] > 0
+
+
+def test_pll_shape_and_finite_values():
+    scorer = build_scorer()
+
+    pll = scorer.pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        cdr_only=True,
+        use_grad=False,
+    )
+
+    assert pll.shape == (len(TEST_CDR_SEQUENCES),)
+    assert torch.isfinite(pll).all().item()
+
+
+def test_use_grad_toggle_behavior():
+    scorer = build_scorer()
+
+    pll_no_grad = scorer.pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        cdr_only=True,
+        use_grad=False,
+    )
+    pll_with_grad = scorer.pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        cdr_only=True,
+        use_grad=True,
+    )
+
+    assert not pll_no_grad.requires_grad
+    assert pll_with_grad.requires_grad
+
+
+def test_masked_pll_shape_finite_and_grad_behavior():
+    scorer = build_scorer()
+    cdr_positions = scorer._cdr_positions(len(TEST_CDR_SEQUENCES[0]))
+    subset_positions = cdr_positions[:4]
+
+    masked_pll_no_grad = scorer.masked_pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        mask_positions=subset_positions,
+        use_grad=False,
+    )
+    masked_pll_with_grad = scorer.masked_pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        mask_positions=subset_positions,
+        use_grad=True,
+    )
+
+    assert masked_pll_no_grad.shape == (len(TEST_CDR_SEQUENCES),)
+    assert torch.isfinite(masked_pll_no_grad).all().item()
+    assert not masked_pll_no_grad.requires_grad
+    assert masked_pll_with_grad.requires_grad
+
+
+def test_masked_pll_matches_full_pll_on_cdr_positions():
+    scorer = build_scorer()
+    cdr_positions = scorer._cdr_positions(len(TEST_CDR_SEQUENCES[0]))
+
+    pll_full_cdr = scorer.pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        cdr_only=True,
+        use_grad=False,
+    )
+    pll_masked_cdr = scorer.masked_pseudo_log_likelihood(
+        TEST_CDR_SEQUENCES,
+        mask_positions=cdr_positions,
+        use_grad=False,
+    )
+
+    assert torch.allclose(pll_full_cdr, pll_masked_cdr, atol=1e-6)
 
 
 def main():
-    esm = load_esm()
-    alphabet = Alphabet()
-    mask_token_idx = get_mask_token_idx(alphabet)
+    test_cdr_positions_mapping()
+    print("[OK] CDR position mapping sanity check passed.")
 
-    # Example CDR sequences (without context)
-    cdr_sequences = [
-        "HMSMQQVVSAGWERADLVGDAFDV",
-        "AASMQQVRSAGWERADLVGDAFEV",
-        "ACSMQQVVSAGWSRADLVGDDFDV",
-    ]
+    test_logits_shape_is_batch_len_vocab()
+    print("[OK] Logits shape sanity check passed.")
 
-    # Use unmasked sequences first
-    sequences_with_context = [add_context(cdr) for cdr in cdr_sequences]
+    test_pll_shape_and_finite_values()
+    print("[OK] PLL finite/shape sanity check passed.")
 
-    # Tokenize sequences
-    tokens = tokenize(sequences_with_context, alphabet=alphabet).to(DEVICE)
+    test_use_grad_toggle_behavior()
+    print("[OK] use_grad toggle sanity check passed.")
 
-    # Probe direct model forward output to verify token-logit shape.
-    with torch.no_grad():
-        output = esm(tokens)
+    test_masked_pll_shape_finite_and_grad_behavior()
+    print("[OK] masked PLL finite/shape/grad sanity check passed.")
 
-    print("Output Object type :", type(output))
+    test_masked_pll_matches_full_pll_on_cdr_positions()
+    print("[OK] masked PLL matches full CDR PLL sanity check passed.")
 
-    if isinstance(output, torch.Tensor):
-        print("Output shape :", output.shape)
-    elif isinstance(output, dict):
-        for key, value in output.items():
-            shape = value.shape if isinstance(value, torch.Tensor) else "N/A"
-            print(f"Key: {key}, Value type: {type(value)}, Value shape: {shape}")
-    else:
-        print("Unexpected output type from esm(tokens).")
-
-    # Choose one token position in the CDR region:
-    # CDR starts at absolute index 104 after adding context.
-    cdr_start_idx = 104
-    pos_in_cdr = 7
-    mask_pos = cdr_start_idx + pos_in_cdr
-
-    # Mask a single position for all sequences and score true-token log-probability there.
-    masked_tokens = tokens.clone()
-    true_token_ids = tokens[:, mask_pos].clone()
-    masked_tokens[:, mask_pos] = mask_token_idx
-
-    with torch.no_grad():
-        masked_output = esm(masked_tokens)
-
-    if not isinstance(masked_output, torch.Tensor):
-        raise TypeError(
-            "Expected tensor logits from esm(masked_tokens), got "
-            f"{type(masked_output)} instead."
-        )
-
-    log_probs_at_pos = torch.log_softmax(masked_output[:, mask_pos, :], dim=-1)
-    true_log_probs = log_probs_at_pos.gather(1, true_token_ids.unsqueeze(1)).squeeze(1)
-
-    print("Mask token idx:", mask_token_idx)
-    print("Mask position (absolute token index):", mask_pos)
-    print("True token ids at masked position:", true_token_ids)
-    print("True log-probs at masked position:", true_log_probs)
-    print("All finite:", torch.isfinite(true_log_probs).all().item())
 
 if __name__ == "__main__":
     main()
