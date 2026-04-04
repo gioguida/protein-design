@@ -42,3 +42,4 @@ wandb/
 
 # SLURM / job logs
 logs/
+oas_ighg_urls.txt

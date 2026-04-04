@@ -4,13 +4,14 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=4G
 #SBATCH --time=04:00:00
-#SBATCH --output=logs/%j.out
-#SBATCH --error=logs/%j.err
+#SBATCH --output=logs/mmseqs2_%j.out
+#SBATCH --error=logs/mmseqs2_%j.err
 
 set -euo pipefail
-
-source .venv/bin/activate
+cd /cluster/home/mdenegri/protein-design
+set -a; source .env; set +a
 
 mkdir -p logs
 
+module load stack/2024-06 gcc/12.2.0 mmseqs2/14-7e284
 bash scripts/run_mmseqs2.sh

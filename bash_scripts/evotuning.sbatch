@@ -10,6 +10,9 @@
 #SBATCH --error=logs/%j.err
 
 set -euo pipefail
+cd /cluster/home/mdenegri/protein-design
+module load eth_proxy
+set -a; source .env; set +a
 
 # Load environment
 source .venv/bin/activate
