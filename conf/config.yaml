@@ -8,8 +8,8 @@ data:
   processed_dir: data/processed
   force_rebuild: false
   pairing_strategy: positive_vs_tail  # positive_vs_tail | positive_only_extremes
-  min_positive_delta: 0.0
-  min_delta_margin: 0.0
+  min_positive_delta: 1.0
+  min_delta_margin: 2.0
   include_views: [mut1, mut2]
   deduplicate_across_views: true
   train_frac: 0.8
@@ -21,7 +21,7 @@ model:
   use_context: true
 
 training:
-  batch_size: 128
+  batch_size: 256
   num_epochs: 25
   lr: 1e-5
   weight_decay: 0.0
