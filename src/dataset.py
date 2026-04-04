@@ -171,12 +171,14 @@ def build_dpo_pairs_from_clustered_dataframe(
 				cluster_df=cluster_df,
 				delta_col=delta_col,
 				min_positive_delta=min_positive_delta,
+				min_delta_margin=min_delta_margin,
 			)
 		else:
 			cluster_pairs = _pair_cluster_positive_only_extremes(
 				cluster_df=cluster_df,
 				delta_col=delta_col,
 				min_positive_delta=min_positive_delta,
+				min_delta_margin=min_delta_margin,
 			)
 
 		for pair_rank, (chosen, rejected) in enumerate(cluster_pairs):
@@ -234,6 +236,7 @@ def load_dpo_pair_dataframe(
 			clustered_df=clustered_df,
 			pairing_strategy=pairing_strategy,
 			min_positive_delta=min_positive_delta,
+			min_delta_margin=min_delta_margin,
 			source_view=view,
 		)
 		pairs_per_view.append(pairs_df)

@@ -2,6 +2,15 @@ import argparse
 import sys
 from pathlib import Path
 
+class test_config:
+    def __init__(self):
+        self.pairing_strategy = "positive_vs_tail"  # "positive_only_extremes"
+        self.preview_count = 5
+        self.include_views = ("mut1", "mut2")
+        self.force_rebuild = False
+        self.min_positive_delta = 1.0
+        self.min_delta_margin = 2.0
+        self.deduplicate_across_views = True
 
 def _add_repo_root_to_path() -> None:
     repo_root = Path(__file__).resolve().parents[2]
@@ -16,24 +25,17 @@ from src.dataset import default_data_paths, load_dpo_pair_dataframe
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect number of DPO pairs and basic stats.")
-    parser.add_argument(
-        "--pairing-strategy",
-        choices=["positive_vs_tail", "positive_only_extremes"],
-        default="positive_only_extremes",
-    )
-    parser.add_argument("--preview-count", type=int, default=5)
-    args = parser.parse_args()
-
+    args = test_config()
     paths = default_data_paths()
     pairs_df = load_dpo_pair_dataframe(
         pairing_strategy=args.pairing_strategy,
-        include_views=("mut1", "mut2"),
+        include_views=args.include_views,
         raw_csv_path=paths["raw_m22"],
         processed_dir=paths["processed_dir"],
-        force_rebuild=False,
-        min_positive_delta=0.0,
-        deduplicate_across_views=True,
+        force_rebuild=args.force_rebuild,
+        min_positive_delta=args.min_positive_delta,
+        min_delta_margin=args.min_delta_margin,
+        deduplicate_across_views=args.deduplicate_across_views,
     )
 
     if pairs_df.empty:
