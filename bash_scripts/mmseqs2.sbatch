@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=mmseqs2
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=4G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem-per-cpu=8G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/mmseqs2_%j.out
 #SBATCH --error=logs/mmseqs2_%j.err

@@ -24,7 +24,7 @@ mmseqs easy-linclust \
     --min-seq-id 0.99 \
     --cov-mode 0 \
     -c 0.9 \
-    --threads 16
+    --threads 32
 
 after=$(grep -c "^>" "${OUT_PREFIX}_rep_seq.fasta")
 echo ""
