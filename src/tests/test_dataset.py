@@ -4,12 +4,12 @@ from pathlib import Path
 
 class test_config:
     def __init__(self):
-        self.pairing_strategy = "positive_vs_tail"  # "positive_only_extremes"
+        self.pairing_strategy = "positive_only_extremes"  # "positive_vs_tail"
         self.preview_count = 5
         self.include_views = ("mut1", "mut2")
         self.force_rebuild = False
-        self.min_positive_delta = 1.0
-        self.min_delta_margin = 2.0
+        self.min_positive_delta = 2.0
+        self.min_delta_margin = 5.0
         self.deduplicate_across_views = True
 
 def _add_repo_root_to_path() -> None:
@@ -41,6 +41,9 @@ def main() -> None:
     if pairs_df.empty:
         print("No pairs available after preprocessing.")
         return
+    
+    print(f"Pairing strategy: {args.pairing_strategy}")
+    print(f"min_positive_delta: {args.min_positive_delta} | min_delta_margin: {args.min_delta_margin}")
 
     margins = pairs_df["delta_margin"].astype(float)
     print(
