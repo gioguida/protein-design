@@ -82,7 +82,7 @@ def main():
         train_frac=float(cfg_data.train_frac),
         val_frac=float(cfg_data.val_frac),
         test_frac=float(cfg_data.test_frac),
-        seed=int(cfg_data.seed),
+        seed=42
     )
 
     policy = ESM2PLLScorer(policy_cfg)
