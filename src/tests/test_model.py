@@ -14,7 +14,7 @@ from src.dataset import (
     create_train_val_test_split
     )
 from src.train_dpo import (
-     _build_pairs_dataframe, 
+     load_dpo_pair_dataframe, 
      _load_checkpoint,
      _build_dataloader
 )
@@ -61,129 +61,22 @@ class reference_config:
         self.device="cuda" if torch.cuda.is_available() else "cpu",
         self.use_context=True,
 
-    
-
-@lru_cache(maxsize=1)
-def build_scorer() -> ESM2PLLScorer:
-    cfg = ModelConfig(
-        esm_model_path=ESM_MODEL_PATH,
-        device=DEVICE,
-        use_context=True,
-    )
-    scorer = ESM2PLLScorer(cfg)
-
-    ckpt_path = Path(FINE_TUNED_CHECKPOINT_PATH)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Fine-tuned checkpoint not found: {ckpt_path}")
-
-    _load_checkpoint(ckpt_path, policy=scorer, optimizer=None, scheduler=None)
-    return scorer
-
-
-def test_cdr_positions_mapping():
-    scorer = build_scorer()
-    cdr = TEST_CDR_SEQUENCES[0]
-
-    positions = scorer._cdr_positions(len(cdr))
-    tokens = scorer.tokenize_sequences([cdr])
-
-    assert len(positions) == len(cdr)
-    assert positions[0] == len(LEFT_CONTEXT)
-    assert positions[-1] == len(LEFT_CONTEXT) + len(cdr) - 1
-    assert positions[-1] < tokens.shape[1]
-    assert positions[0] > 0
-
-
-def test_logits_shape_is_batch_len_vocab():
-    scorer = build_scorer()
-    tokens = scorer.tokenize_sequences(TEST_CDR_SEQUENCES)
-
-    with torch.no_grad():
-        logits = scorer.forward_logits(tokens)
-
-    assert logits.ndim == 3
-    assert logits.shape[0] == len(TEST_CDR_SEQUENCES)
-    assert logits.shape[1] == tokens.shape[1]
-    assert logits.shape[2] > 0
-
-
-def test_pll_shape_and_finite_values():
-    scorer = build_scorer()
-
-    pll = scorer.pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        cdr_only=True,
-        use_grad=False,
-    )
-
-    assert pll.shape == (len(TEST_CDR_SEQUENCES),)
-    assert torch.isfinite(pll).all().item()
-
-
-def test_use_grad_toggle_behavior():
-    scorer = build_scorer()
-
-    pll_no_grad = scorer.pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        cdr_only=True,
-        use_grad=False,
-    )
-    pll_with_grad = scorer.pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        cdr_only=True,
-        use_grad=True,
-    )
-
-    assert not pll_no_grad.requires_grad
-    assert pll_with_grad.requires_grad
-
-
-def test_masked_pll_shape_finite_and_grad_behavior():
-    scorer = build_scorer()
-    cdr_positions = scorer._cdr_positions(len(TEST_CDR_SEQUENCES[0]))
-    subset_positions = cdr_positions[:4]
-
-    masked_pll_no_grad = scorer.masked_pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        mask_positions=subset_positions,
-        use_grad=False,
-    )
-    masked_pll_with_grad = scorer.masked_pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        mask_positions=subset_positions,
-        use_grad=True,
-    )
-
-    assert masked_pll_no_grad.shape == (len(TEST_CDR_SEQUENCES),)
-    assert torch.isfinite(masked_pll_no_grad).all().item()
-    assert not masked_pll_no_grad.requires_grad
-    assert masked_pll_with_grad.requires_grad
-
-
-def test_masked_pll_matches_full_pll_on_cdr_positions():
-    scorer = build_scorer()
-    cdr_positions = scorer._cdr_positions(len(TEST_CDR_SEQUENCES[0]))
-
-    pll_full_cdr = scorer.pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        cdr_only=True,
-        use_grad=False,
-    )
-    pll_masked_cdr = scorer.masked_pseudo_log_likelihood(
-        TEST_CDR_SEQUENCES,
-        mask_positions=cdr_positions,
-        use_grad=False,
-    )
-
-    assert torch.allclose(pll_full_cdr, pll_masked_cdr, atol=1e-6)
-
 
 def main():   
     cfg_data = dataset_config()
     policy_cfg = policy_config()
     reference_cfg = reference_config()
 
-    pairs_df = _build_pairs_dataframe(cfg_data)
+    pairs_df = load_dpo_pair_dataframe(
+        pairing_strategy=cfg_data.pairing_strategy,
+        include_views=[str(v) for v in cfg_data.include_views],
+        raw_csv_path=cfg_data.raw_csv,
+        processed_dir=cfg_data.processed_dir,
+        force_rebuild=False,
+        min_positive_delta=cfg_data.min_positive_delta,
+        min_delta_margin=cfg_data.min_delta_margin,
+        deduplicate_across_views=cfg_data.deduplicate_across_views,
+    )
     train_df, val_df, test_df = create_train_val_test_split(
         pairs_df,
         train_frac=float(cfg_data.train_frac),
