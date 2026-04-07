@@ -101,14 +101,18 @@ class ESM2PLLScorer:
 		if len(sequences) == 0:
 			raise ValueError("sequences must not be empty")
 
+		# Validate that all sequences have the same CDR length, which is required for cdr_only=True
 		cdr_lengths = {len(seq) for seq in sequences}
 		if len(cdr_lengths) != 1:
 			raise ValueError("All sequences in a batch must have the same CDR length.")
+		# If all sequences have same length, can take the length of the first (and only) element in the set
 		cdr_length = next(iter(cdr_lengths))
 
+		# tokenize all sequences
 		tokens = self.tokenize_sequences(sequences)
 		batch_size, seq_len = tokens.shape
 
+		# determine which positions to score based on cdr_only flag
 		if cdr_only:
 			positions = self._cdr_positions(cdr_length)
 		else:
@@ -116,12 +120,14 @@ class ESM2PLLScorer:
 
 		pll = torch.zeros(batch_size, device=tokens.device, dtype=torch.float32)
 
-		grad_context = torch.enable_grad() if use_grad else torch.no_grad()
-		with grad_context:
-			num_pos = len(positions)
+		with torch.enable_grad() if use_grad else torch.no_grad():
+			num_pos = len(positions)	# get number of positions to mask and score
+			# create flat lists of batch indices and corresponding token positions to mask across the batch
 			flat_batch_idx = [b for b in range(batch_size) for _ in range(num_pos)]
-			flat_pos = [positions[p_idx] for _ in range(batch_size) for p_idx in range(num_pos)]
 			num_masks = len(flat_batch_idx)
+			# for each sequence in the batch, repeat the positions to mask (either CDR or all) and flatten into a single list
+			flat_pos = [positions[p_idx] for _ in range(batch_size) for p_idx in range(num_pos)]
+			
 
 			if num_masks > 0:
 				idx_tensor = torch.tensor(flat_batch_idx, device=tokens.device, dtype=torch.long)
@@ -189,8 +195,7 @@ class ESM2PLLScorer:
 
 		pll = torch.zeros(batch_size, device=tokens.device, dtype=torch.float32)
 
-		grad_context = torch.enable_grad() if use_grad else torch.no_grad()
-		with grad_context:
+		with torch.enable_grad() if use_grad else torch.no_grad():
 			num_pos = len(mask_positions)
 			flat_batch_idx = [b for b in range(batch_size) for _ in range(num_pos)]
 			flat_pos = [mask_positions[p_idx] for _ in range(batch_size) for p_idx in range(num_pos)]

@@ -5,10 +5,10 @@ from pathlib import Path
 class test_config:
     def __init__(self):
         self.pairing_strategy = "positive_only_extremes"  # "positive_vs_tail"
-        self.preview_count = 5
+        self.preview_count = 0
         self.include_views = ("mut1", "mut2")
         self.force_rebuild = False
-        self.min_positive_delta = 2.0
+        self.min_positive_delta = 3.0
         self.min_delta_margin = 5.0
         self.deduplicate_across_views = True
 
