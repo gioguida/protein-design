@@ -4,7 +4,7 @@ from pathlib import Path
 
 class test_config:
     def __init__(self):
-        self.pairing_strategy = "positive_only_extremes"  # "positive_vs_tail"
+        self.pairing_strategy = "both_structured"  # "positive_vs_tail", "positive_only_extremes"
         self.preview_count = 0
         self.include_views = ("mut1", "mut2")
         self.force_rebuild = False

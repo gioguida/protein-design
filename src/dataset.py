@@ -144,16 +144,50 @@ def _pair_cluster_positive_only_extremes(
 	return pairs
 
 
+def _pair_cluster_both_structured_strategies(
+	cluster_df: pd.DataFrame,
+	delta_col: str,
+	min_positive_delta: float,
+	min_delta_margin: float = 0.0,
+) -> List[Tuple[pd.Series, pd.Series]]:
+	"""Combine both strucured stregies to get more pairs"""
+	pairs_positive_vs_tail = _pair_cluster_positive_vs_tail(
+		cluster_df=cluster_df,
+		delta_col=delta_col,
+		min_positive_delta=min_positive_delta,
+		min_delta_margin=min_delta_margin,
+	)
+
+	pairs_positive_only_extremes = _pair_cluster_positive_only_extremes(
+		cluster_df=cluster_df,
+		delta_col=delta_col,
+		min_positive_delta=min_positive_delta,
+		min_delta_margin=min_delta_margin,
+	)
+	
+	# Combine pairs and remove duplicates
+	seen = set()
+	combined_pairs = []
+	for pair in pairs_positive_vs_tail + pairs_positive_only_extremes:
+		chosen_seq = pair[0]["aa"]
+		rejected_seq = pair[1]["aa"]
+		if (chosen_seq, rejected_seq) not in seen:
+			seen.add((chosen_seq, rejected_seq))
+			combined_pairs.append(pair)
+
+	return combined_pairs
+
+
 def build_dpo_pairs_from_clustered_dataframe(
 	clustered_df: pd.DataFrame,
-	pairing_strategy: PairingStrategy = "positive_vs_tail", 	# "positive_only_extremes",
+	pairing_strategy: PairingStrategy = "positive_vs_tail", 	# "positive_only_extremes", "both_structured"
 	min_positive_delta: float = 0.0,
 	min_delta_margin: float = 0.0,
 	source_view: str = "",
 ) -> pd.DataFrame:
 	"""Build DPO preference pairs from one clustered dataframe."""
-	if pairing_strategy not in ("positive_vs_tail", "positive_only_extremes"):
-		raise ValueError("pairing_strategy must be positive_vs_tail or positive_only_extremes")
+	if pairing_strategy not in ("positive_vs_tail", "positive_only_extremes", "both_structured"):
+		raise ValueError("pairing_strategy must be positive_vs_tail, positive_only_extremes, or both_structured")
 
 	seq_col = "aa"
 	delta_col = "delta_M22_binding_enrichment_adj"
@@ -173,8 +207,15 @@ def build_dpo_pairs_from_clustered_dataframe(
 				min_positive_delta=min_positive_delta,
 				min_delta_margin=min_delta_margin,
 			)
-		else:
+		elif pairing_strategy == "positive_only_extremes":
 			cluster_pairs = _pair_cluster_positive_only_extremes(
+				cluster_df=cluster_df,
+				delta_col=delta_col,
+				min_positive_delta=min_positive_delta,
+				min_delta_margin=min_delta_margin,
+			)
+		else:  # both_structured
+			cluster_pairs = _pair_cluster_both_structured_strategies(
 				cluster_df=cluster_df,
 				delta_col=delta_col,
 				min_positive_delta=min_positive_delta,

@@ -7,7 +7,7 @@ data:
   raw_csv: data/raw/M22_binding_enrichment.csv
   processed_dir: data/processed
   force_rebuild: false
-  pairing_strategy: positive_only_extremes   # positive_vs_tail | positive_only_extremes
+  pairing_strategy: both_structured   # positive_vs_tail | positive_only_extremes | both_structured
   min_positive_delta: 3.0
   min_delta_margin: 5.0
   include_views: [mut1, mut2]
@@ -25,7 +25,7 @@ training:
   num_epochs: 15
   lr: 1e-5
   weight_decay: 0.0
-  beta: 0.1
+  beta: 0.04
   grad_clip_norm: 1.0
   patience: 10
   device: cuda
