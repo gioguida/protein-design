@@ -13,8 +13,8 @@ fi
 
 # Route run artifacts to scratch by default.
 export DPO_OUTPUT_DIR="${DPO_OUTPUT_DIR:-${DPO_SCRATCH}/outputs}"
-export DPO_BEST_MODEL_DIR="${DPO_BEST_MODEL_DIR:-${DPO_HOME}/dpo_best_models}"
-export DPO_LAST_MODEL_DIR="${DPO_LAST_MODEL_DIR:-${DPO_HOME}/dpo_last_models}"
+export DPO_BEST_MODEL_DIR="${DPO_BEST_MODEL_DIR:-${DPO_SCRATCH}/dpo_best_models}"
+export DPO_LAST_MODEL_DIR="${DPO_LAST_MODEL_DIR:-${DPO_SCRATCH}/dpo_last_models}"
 
 # Keep W&B caches/artifacts off home.
 export DPO_WANDB_DIR="${DPO_WANDB_DIR:-${DPO_SCRATCH}/wandb}"

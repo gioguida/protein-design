@@ -17,7 +17,7 @@ data:
   test_frac: 0.1
 
 model:
-  esm_model_path: /cluster/project/krause/flohmann/mgm/oracle_assets/esm2_8m.safetensors
+  esm_model_path: /cluster/project/krause/flohmann/mgm/oracle_assets/esm2_150m.safetensors
   use_context: true
 
 training:
