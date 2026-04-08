@@ -118,6 +118,7 @@ def _build_scorers(cfg: Any) -> Tuple[ESM2PLLScorer, ESM2PLLScorer]:
         esm_model_path=str(cfg.model.esm_model_path),
         device=str(cfg.training.device),
         use_context=bool(cfg.model.use_context),
+        pll_mask_chunk_size=int(getattr(cfg.model, "pll_mask_chunk_size", 64)),
     )
 
     policy = ESM2PLLScorer(model_cfg)

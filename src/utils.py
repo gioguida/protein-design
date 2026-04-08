@@ -22,6 +22,7 @@ class ModelConfig:
     )	
 	device: str = "cuda"
 	use_context: bool = True # If True, expects sequences with context and extracts positions 104:-115; if False, standard slicing 1:-1
+	pll_mask_chunk_size: int = 64
 
 
 @dataclass

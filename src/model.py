@@ -36,6 +36,11 @@ class ESM2PLLScorer:
 		self.model = ESM2.from_pretrained(config.esm_model_path, device=self.device)
 		self.model.eval()
 
+		chunk_size = int(getattr(config, "pll_mask_chunk_size", 64))
+		if chunk_size < 1:
+			raise ValueError("pll_mask_chunk_size must be >= 1")
+		self.pll_mask_chunk_size = chunk_size
+
 	def tokenize_sequences(self, sequences: Sequence[str]) -> torch.Tensor:
 		"""Tokenize a list of sequences, adding context if configured."""
 		if self.config.use_context:
@@ -137,7 +142,7 @@ class ESM2PLLScorer:
 				true_token_ids = masked_tokens[torch.arange(num_masks), pos_tensor].clone()
 				masked_tokens[torch.arange(num_masks), pos_tensor] = self.mask_token_idx
 				
-				max_batch_size = 64
+				max_batch_size = self.pll_mask_chunk_size
 				all_true_log_probs = []
 				for i in range(0, num_masks, max_batch_size):
 					chunk_tokens = masked_tokens[i:i+max_batch_size]
@@ -209,7 +214,7 @@ class ESM2PLLScorer:
 				true_token_ids = masked_tokens[torch.arange(num_masks), pos_tensor].clone()
 				masked_tokens[torch.arange(num_masks), pos_tensor] = self.mask_token_idx
 
-				max_batch_size = 64
+				max_batch_size = self.pll_mask_chunk_size
 				all_true_log_probs = []
 				for i in range(0, num_masks, max_batch_size):
 					chunk_tokens = masked_tokens[i:i+max_batch_size]

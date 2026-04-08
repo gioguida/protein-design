@@ -19,9 +19,10 @@ data:
 model:
   esm_model_path: /cluster/project/krause/flohmann/mgm/oracle_assets/esm2_150m.safetensors
   use_context: true
+  pll_mask_chunk_size: 16
 
 training:
-  batch_size: 256
+  batch_size: 32
   num_epochs: 15
   lr: 1e-5
   weight_decay: 0.0

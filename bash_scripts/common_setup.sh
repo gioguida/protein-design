@@ -23,6 +23,7 @@ export DPO_WANDB_DATA_DIR="${DPO_WANDB_DATA_DIR:-${DPO_SCRATCH}/wandb-data}"
 export WANDB_DIR="${DPO_WANDB_DIR}"
 export WANDB_CACHE_DIR="${DPO_WANDB_CACHE_DIR}"
 export WANDB_DATA_DIR="${DPO_WANDB_DATA_DIR}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "${DPO_OUTPUT_DIR}" "${DPO_BEST_MODEL_DIR}" "${DPO_LAST_MODEL_DIR}" "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 
@@ -49,3 +50,4 @@ echo "DPO output dir: ${DPO_OUTPUT_DIR}"
 echo "DPO best-model export dir: ${DPO_BEST_MODEL_DIR}"
 echo "DPO last-model export dir: ${DPO_LAST_MODEL_DIR}"
 echo "W&B dir: ${WANDB_DIR}"
+echo "PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF}"
