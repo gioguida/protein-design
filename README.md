@@ -28,16 +28,17 @@ pip install -r requirements.txt
 ### Option B: Using `uv` (Fast alternative)
 
 ```bash
-# Create a virtual environment and sync dependencies
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+# Create and sync the project environment from pyproject.toml
+uv sync
+
+# Include test dependencies (pytest)
+uv sync --extra dev
 ```
 
 ### Weights & Biases Authentication
 Make sure you are logged in to sync your runs online:
 ```bash
-wandb login
+uv run wandb login
 ```
 
 ---
@@ -54,10 +55,10 @@ You can run the DPO training locally overriding parameters on the fly via Hydra:
 
 ```bash
 # Basic run with default parameters
-python src/train_dpo.py
+uv run python -m src.train_dpo
 
 # Override pairing strategy and hyperparameters
-python src/train_dpo.py \
+uv run python -m src.train_dpo \
     data.pairing_strategy=positive_only_extremes \
     data.min_positive_delta=0.1 \
     data.min_delta_margin=0.5 \

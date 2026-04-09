@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flu-dpo"
+version = "0.1.0"
+description = "ESM2 Direct Preference Optimization pipeline for protein sequence ranking."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "esme",
+    "hydra-core",
+    "numpy",
+    "omegaconf",
+    "pandas",
+    "torch",
+    "wandb",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]

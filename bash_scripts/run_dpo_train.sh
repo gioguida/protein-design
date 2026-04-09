@@ -23,8 +23,20 @@ nvidia-smi || true
 # Pass any Hydra overrides from sbatch command line.
 # Example:
 #   sbatch bash_scripts/run_dpo_train.sh training.num_epochs=100 training.beta=0.2
-python -m src.train_dpo \
-	output_dir="${DPO_OUTPUT_DIR}" \
-	checkpointing.best_export_dir="${DPO_BEST_MODEL_DIR}" \
-	checkpointing.last_export_dir="${DPO_LAST_MODEL_DIR}" \
-	"$@"
+if [ "${DPO_USE_UV:-0}" = "1" ]; then
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "ERROR: DPO_USE_UV=1 but uv is not available in PATH."
+        exit 1
+    fi
+    uv run python -m src.train_dpo \
+		output_dir="${DPO_OUTPUT_DIR}" \
+		checkpointing.best_export_dir="${DPO_BEST_MODEL_DIR}" \
+		checkpointing.last_export_dir="${DPO_LAST_MODEL_DIR}" \
+		"$@"
+else
+    python -m src.train_dpo \
+		output_dir="${DPO_OUTPUT_DIR}" \
+		checkpointing.best_export_dir="${DPO_BEST_MODEL_DIR}" \
+		checkpointing.last_export_dir="${DPO_LAST_MODEL_DIR}" \
+		"$@"
+fi

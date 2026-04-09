@@ -17,4 +17,12 @@ nvidia-smi
 which python
 
 # run test
-python -m src.tests.test_model
+if [ "${DPO_USE_UV:-0}" = "1" ]; then
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "ERROR: DPO_USE_UV=1 but uv is not available in PATH."
+        exit 1
+    fi
+    uv run python -m src.tests.test_model
+else
+    python -m src.tests.test_model
+fi
