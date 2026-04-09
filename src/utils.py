@@ -96,6 +96,33 @@ def setup_train_logger(output_dir: Path, level_name: str, logger_name: str = "dp
 	return logger
 
 
+def _infer_model_label(esm_model_path: Any) -> str:
+	"""Infer a compact model label from model file path (e.g., esm2_150m -> esm2-150m)."""
+	model_name = Path(str(esm_model_path)).stem.lower()
+	for token in ("safetensors", "checkpoint", "model"):
+		model_name = model_name.replace(token, "")
+	model_name = model_name.strip(" _-.")
+	model_name = model_name.replace("_", "-")
+	return model_name or "esm2-unknown"
+
+
+def _default_wandb_run_name(cfg: Any) -> str:
+	"""Create a professional default W&B run name from key training/data settings."""
+	model_label = _infer_model_label(cfg.model.esm_model_path)
+	pairing = str(cfg.data.pairing_strategy).replace("_", "-")
+	views = "-".join(str(v) for v in cfg.data.include_views)
+	epochs = int(cfg.training.num_epochs)
+	batch_size = int(cfg.training.batch_size)
+	lr = float(cfg.training.lr)
+	beta = float(cfg.training.beta)
+	seed = int(cfg.seed)
+
+	return (
+		f"{model_label}__{pairing}__views-{views}__ep-{epochs}"
+		f"__bs-{batch_size}__lr-{lr:.0e}__beta-{beta:g}__s-{seed}"
+	)
+
+
 def init_wandb_run(cfg: Any, output_dir: Path, logger: logging.Logger, omegaconf_cls: Any) -> Tuple[Optional[Any], Optional[Any]]:
 	"""Initialize Weights & Biases run if enabled in config."""
 	if not bool(cfg.wandb.enabled):
@@ -106,11 +133,15 @@ def init_wandb_run(cfg: Any, output_dir: Path, logger: logging.Logger, omegaconf
 	except ModuleNotFoundError:  # pragma: no cover
 		logger.warning("wandb is not available; continuing without Weights & Biases logging.")
 		return None, None
+	
+	configured_name = None if cfg.wandb.run_name is None else str(cfg.wandb.run_name).strip()
+	run_name = configured_name or _default_wandb_run_name(cfg)
+	logger.info("W&B run name: %s", run_name)
 
 	run = wandb.init(
 		project=str(cfg.wandb.project),
 		entity=None if cfg.wandb.entity is None else str(cfg.wandb.entity),
-		name=None if cfg.wandb.run_name is None else str(cfg.wandb.run_name),
+		name=run_name,
 		tags=None if cfg.wandb.tags is None else list(cfg.wandb.tags),
 		notes=None if cfg.wandb.notes is None else str(cfg.wandb.notes),
 		dir=str(output_dir),

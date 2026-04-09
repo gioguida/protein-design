@@ -40,7 +40,7 @@ training:
 
 logging:
   level: INFO
-  preview_count: 5
+  preview_count: 0
   log_every_n_steps: 20
   history_csv: history.csv
 
@@ -56,9 +56,9 @@ checkpointing:
 output_dir: ${oc.env:DPO_OUTPUT_DIR,outputs}
 wandb:
   enabled: true
-  project: flu
+  project: dpo
   entity: null
-  run_name: null
+  run_name: null  # null => auto-name: model + pairing strategy + views + epochs + batch/lr/beta + seed
   tags: []
   notes: null
 
