@@ -17,7 +17,7 @@ data:
   test_frac: 0.1
 
 model:
-  esm_model_path: /cluster/project/krause/flohmann/mgm/oracle_assets/esm2_150m.safetensors
+  esm_model_path: facebook/esm2_t12_35M_UR50D
   use_context: true
   pll_mask_chunk_size: 16
 

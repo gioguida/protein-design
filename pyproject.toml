@@ -9,12 +9,13 @@ description = "ESM2 Direct Preference Optimization pipeline for protein sequence
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "esme",
     "hydra-core",
     "numpy",
     "omegaconf",
     "pandas",
+    "safetensors",
     "torch",
+    "transformers",
     "wandb",
 ]
 

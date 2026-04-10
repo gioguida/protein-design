@@ -24,7 +24,7 @@ from src.eval import sequence_perplexity
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-ESM_MODEL_PATH = "/cluster/project/krause/flohmann/mgm/oracle_assets/esm2_8m.safetensors"
+ESM_MODEL_PATH = "facebook/esm2_t12_35M_UR50D"
 FINE_TUNED_CHECKPOINT_PATH = "/cluster/home/gguidarini/protein-design/outputs/2026-04-05/08-24-51/checkpoints/best.pt"
 
 TEST_CDR_SEQUENCES = [

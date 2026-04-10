@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
 import pandas as pd
-from esme.alphabet import Alphabet, tokenize
 
 LEFT_CONTEXT = (
 	"EVQLQESGGGLVQPGESLRLSCVGSGSSFGESTLSYYAVSWVRQAPGKGLEWLSIINAGGGDIDYADSVEGRFTISRDNSKETLYLQMTNLRVEDTGVYYCAK"
@@ -18,7 +17,7 @@ RIGHT_CONTEXT = (
 @dataclass
 class ModelConfig:
 	esm_model_path: str = (
-        "/cluster/project/krause/flohmann/mgm/oracle_assets/esm2_8m.safetensors"
+        "facebook/esm2_t12_35M_UR50D"
     )	
 	device: str = "cuda"
 	use_context: bool = True # If True, expects sequences with context and extracts positions 104:-115; if False, standard slicing 1:-1
@@ -45,18 +44,21 @@ def add_context(cdr: str) -> str:
 	return LEFT_CONTEXT + cdr + RIGHT_CONTEXT
 
 
-def get_mask_token_idx(alphabet: Alphabet) -> int:
-	"""Resolve mask token index across possible Alphabet API variants."""
+def get_mask_token_idx(token_source: Any) -> int:
+	"""Resolve mask token index across tokenizer/alphabet API variants."""
 	for attr in ("mask_idx", "mask_index", "mask_token_id"):
-		if hasattr(alphabet, attr):
-			return int(getattr(alphabet, attr))
+		if hasattr(token_source, attr):
+			return int(getattr(token_source, attr))
 
-	for attr in ("tok_to_idx", "token_to_idx", "stoi"):
-		mapping = getattr(alphabet, attr, None)
-		if isinstance(mapping, dict) and "<mask>" in mapping:
-			return int(mapping["<mask>"])
+	for attr in ("tok_to_idx", "token_to_idx", "stoi", "vocab"):
+		mapping = getattr(token_source, attr, None)
+		if isinstance(mapping, dict):
+			if "<mask>" in mapping:
+				return int(mapping["<mask>"])
+			if "<mask_token>" in mapping:
+				return int(mapping["<mask_token>"])
 
-	raise AttributeError("Could not find mask token index in Alphabet.")
+	raise AttributeError("Could not find mask token index in provided token source.")
 
 
 def load_hydra_runtime_modules() -> Tuple[Any, Any, Any, Any]:

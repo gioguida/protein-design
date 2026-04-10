@@ -1,8 +1,9 @@
-esme
 hydra-core
 numpy
 omegaconf
 pandas
+safetensors
 pytest
 torch
+transformers
 wandb
