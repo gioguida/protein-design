@@ -80,9 +80,11 @@ class dataset_config:
         self.raw_csv = "data/raw/M22_binding_enrichment.csv"
         self.processed_dir = "data/processed"
         self.force_rebuild = False
-        self.pairing_strategy = "positive_vs_tail"  # positive_vs_tail | positive_only_extremes
+        self.pairing_strategy = "positive_vs_tail"  # positive_vs_tail | positive_only_extremes | both_structured | delta_based
         self.min_positive_delta = 1.0
         self.min_delta_margin = 2.0
+        self.gap = 0.5
+        self.wt_pairs_frac = 0.1
         self.include_views = ["mut1", "mut2"]
         self.deduplicate_across_views = True
         self.train_frac = 0.8
@@ -111,6 +113,8 @@ def main():
         force_rebuild=False,
         min_positive_delta=cfg_data.min_positive_delta,
         min_delta_margin=cfg_data.min_delta_margin,
+        gap=cfg_data.gap,
+        wt_pairs_frac=cfg_data.wt_pairs_frac,
         deduplicate_across_views=cfg_data.deduplicate_across_views,
     )
     train_df, val_df, test_df = create_train_val_test_split(

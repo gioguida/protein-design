@@ -4,12 +4,14 @@ from pathlib import Path
 
 class test_config:
     def __init__(self):
-        self.pairing_strategy = "both_structured"  # "positive_vs_tail", "positive_only_extremes"
+        self.pairing_strategy = "both_structured"  # "positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"
         self.preview_count = 0
         self.include_views = ("mut1", "mut2")
         self.force_rebuild = False
         self.min_positive_delta = 3.0
         self.min_delta_margin = 5.0
+        self.gap = 0.5
+        self.wt_pairs_frac = 0.1
         self.deduplicate_across_views = True
 
 def _add_repo_root_to_path() -> None:
@@ -35,6 +37,8 @@ def main() -> None:
         force_rebuild=args.force_rebuild,
         min_positive_delta=args.min_positive_delta,
         min_delta_margin=args.min_delta_margin,
+        gap=args.gap,
+        wt_pairs_frac=args.wt_pairs_frac,
         deduplicate_across_views=args.deduplicate_across_views,
     )
 

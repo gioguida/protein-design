@@ -64,6 +64,12 @@ uv run python -m src.train_dpo \
     data.min_delta_margin=0.5 \
     training.batch_size=64 \
     training.lr=5e-6
+
+# Delta-based pairing with explicit boundary controls
+uv run python -m src.train_dpo \
+    data.pairing_strategy=delta_based \
+    data.gap=0.6 \
+    data.wt_pairs_frac=0.15
 ```
 
 ### ETH Euler Cluster Execution
@@ -81,7 +87,9 @@ sbatch bash_scripts/run_dpo_train.sh
 - **Flexible Data Pairing**: Supports multiple strategies to build preference pairs from mutational clusters:
   - `positive_vs_tail`: Pairs the absolute best sequence against the absolute worst outside-in.
   - `positive_only_extremes`: Pairs all strictly positive sequences against the worst tail sequences.
-- **Configurable Margins**: Tune `min_positive_delta` and `min_delta_margin` directly via Hydra to control the strictness of preference pairs (`src/dataset.py`).
+  - `both_structured`: Combines `positive_vs_tail` and `positive_only_extremes` (deduplicated).
+  - `delta_based`: Pairs by configurable rank gap and can add WT-boundary anchors.
+- **Configurable Pair Controls**: Tune `min_positive_delta`, `min_delta_margin`, `gap`, and `wt_pairs_frac` via Hydra to control preference construction (`src/dataset.py`).
 - **Eval Metrics**: Automatically computes test set Masked Sequence Perplexity ($\exp(-\frac{PLL}{N})$), implicit rewards, KL divergence, and reward accuracies (`src/eval.py`).
 
 ---

@@ -24,9 +24,9 @@ def main():
     negative_scores = scores_d2[scores_d2 < 0]
 
     print(f"D2 dataset: {len(scores_d2)} entries")
-    print(f"Positive scores: {len(positive_scores)}")
-    print(f"Negative scores: {len(negative_scores)}")
-    
+    print(f"Positive scores: {len(positive_scores)}, Range: [{positive_scores.min():.4f}, {positive_scores.max():.4f}], Mean: {positive_scores.mean():.4f})")
+    print(f"Negative scores: {len(negative_scores)}, Range: [{negative_scores.min():.4f}, {negative_scores.max():.4f}], Mean: {negative_scores.mean():.4f})")
+
     plt.figure()
     plt.hist(scores_d2, bins=50, histtype="bar", rwidth=0.8)
     # color the bars based on positive/negative values

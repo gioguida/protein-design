@@ -8,16 +8,19 @@ from pathlib import Path
 from typing import Dict, List, Literal, Sequence, Tuple
 
 import pandas as pd
+import numpy as np
 
 if __package__:
 	from .data_processing import build_processed_views
+	from .utils import WILD_TYPE
 else:  # pragma: no cover
 	from data_processing import build_processed_views
+	from utils import WILD_TYPE
 
 RANDOM_SEED = 42
 
 
-PairingStrategy = Literal["positive_vs_tail", "positive_only_extremes", "both_structured"]
+PairingStrategy = Literal["positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"]
 
 
 PAIR_COLUMNS = [
@@ -178,16 +181,96 @@ def _pair_cluster_both_structured_strategies(
 	return combined_pairs
 
 
+def _pair_delta_based(
+		sequences_df: pd.DataFrame,
+		delta_col: str,
+		seq_col: str,
+		gap: float,
+		wt_pairs_frac: float,
+) ->  List[Tuple[pd.Series, pd.Series]]:
+	"""Pair sequences by a configurable rank gap and optional WT-boundary anchors."""
+	if not 0.0 <= float(gap) <= 1.0:
+		raise ValueError("gap must be in [0.0, 1.0].")
+	if not 0.0 <= float(wt_pairs_frac) <= 1.0:
+		raise ValueError("wt_pairs_frac must be in [0.0, 1.0].")
+
+	sorted_df = sequences_df.sort_values(by=delta_col, ascending=False).reset_index(drop=True)
+	n = len(sorted_df)
+	if n <= 1:
+		return []
+
+	if n % 2 != 0:
+		sorted_df = sorted_df.iloc[:-1].reset_index(drop=True)
+		n -= 1
+		if n <= 1:
+			return []
+
+	wt_pairs = int(float(wt_pairs_frac) * n)
+
+	# Calculate step size based on gap [0.0 to 1.0]
+	step = int(1 + float(gap) * ((n // 2) - 1))
+
+	paired = np.zeros(n, dtype=bool)
+	pairs: List[Tuple[pd.Series, pd.Series]] = []
+
+	# Create systematic variant-vs-variant pairs.
+	for i in range(n):
+		if paired[i]:
+			continue
+
+		chosen = sorted_df.iloc[i]
+		rejected_idx = i + step
+
+		# If gap index is already taken/out-of-range, move forward.
+		while rejected_idx < n and paired[rejected_idx]:
+			rejected_idx += 1
+
+		# If no forward candidate exists, search backward from the tail.
+		if rejected_idx >= n:
+			rejected_idx = n - 1
+			while rejected_idx > i and paired[rejected_idx]:
+				rejected_idx -= 1
+
+		if rejected_idx > i and not paired[rejected_idx]:
+			rejected = sorted_df.iloc[rejected_idx]
+			pairs.append((chosen, rejected))
+			paired[i] = True
+			paired[rejected_idx] = True
+
+	# Create WT-anchored boundary pairs.
+	if wt_pairs > 0:
+		wt_row_data = {col: np.nan for col in sorted_df.columns}
+		wt_row_data[seq_col] = WILD_TYPE
+		wt_row_data[delta_col] = 0.0
+
+		num_pos_wt = wt_pairs // 2
+		num_wt_neg = wt_pairs - num_pos_wt
+
+		positives = sorted_df[sorted_df[delta_col].astype(float) > 0.0]
+		boundary_positives = positives.tail(num_pos_wt)
+		for _, pos_seq in boundary_positives.iterrows():
+			pairs.append((pos_seq, pd.Series(wt_row_data)))  # chosen=positive, rejected=WT
+
+		negatives = sorted_df[sorted_df[delta_col].astype(float) < 0.0]
+		boundary_negatives = negatives.head(num_wt_neg)
+		for _, neg_seq in boundary_negatives.iterrows():
+			pairs.append((pd.Series(wt_row_data), neg_seq))  # chosen=WT, rejected=negative
+
+	return pairs
+
+		
 def build_dpo_pairs_from_clustered_dataframe(
 	clustered_df: pd.DataFrame,
-	pairing_strategy: PairingStrategy = "positive_vs_tail", 	# "positive_only_extremes", "both_structured"
+	pairing_strategy: PairingStrategy = "positive_vs_tail", 	# "positive_only_extremes", "both_structured" or "delta_based"
 	min_positive_delta: float = 0.0,
 	min_delta_margin: float = 0.0,
+	gap: float = 0.5,
+	wt_pairs_frac: float = 0.1,
 	source_view: str = "",
 ) -> pd.DataFrame:
 	"""Build DPO preference pairs from one clustered dataframe."""
-	if pairing_strategy not in ("positive_vs_tail", "positive_only_extremes", "both_structured"):
-		raise ValueError("pairing_strategy must be positive_vs_tail, positive_only_extremes, or both_structured")
+	if pairing_strategy not in ("positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"):
+		raise ValueError("pairing_strategy must be positive_vs_tail, positive_only_extremes, both_structured, or delta_based")
 
 	seq_col = "aa"
 	delta_col = "delta_M22_binding_enrichment_adj"
@@ -214,14 +297,22 @@ def build_dpo_pairs_from_clustered_dataframe(
 				min_positive_delta=min_positive_delta,
 				min_delta_margin=min_delta_margin,
 			)
-		else:  # both_structured
+		elif pairing_strategy == "both_structured":
 			cluster_pairs = _pair_cluster_both_structured_strategies(
 				cluster_df=cluster_df,
 				delta_col=delta_col,
 				min_positive_delta=min_positive_delta,
 				min_delta_margin=min_delta_margin,
 			)
-
+		elif pairing_strategy == "delta_based":
+			cluster_pairs = _pair_delta_based(
+				sequences_df=cluster_df,
+				delta_col=delta_col,
+				seq_col=seq_col,
+				gap=gap, 
+				wt_pairs_frac=wt_pairs_frac, 
+			)
+			
 		for pair_rank, (chosen, rejected) in enumerate(cluster_pairs):
 			chosen_delta = float(chosen[delta_col])
 			rejected_delta = float(rejected[delta_col])
@@ -254,6 +345,8 @@ def load_dpo_pair_dataframe(
 	force_rebuild: bool = False,
 	min_positive_delta: float = 0.0,
 	min_delta_margin: float = 0.0,
+	gap: float = 0.5,
+	wt_pairs_frac: float = 0.1,
 	deduplicate_across_views: bool = True,
 ) -> pd.DataFrame:
 	"""Load clustered views and build a DPO pair dataframe."""
@@ -278,6 +371,8 @@ def load_dpo_pair_dataframe(
 			pairing_strategy=pairing_strategy,
 			min_positive_delta=min_positive_delta,
 			min_delta_margin=min_delta_margin,
+			gap=gap,
+			wt_pairs_frac=wt_pairs_frac,
 			source_view=view,
 		)
 		pairs_per_view.append(pairs_df)
@@ -303,6 +398,8 @@ def load_dpo_sequence_pairs(
 	force_rebuild: bool = False,
 	min_positive_delta: float = 0.0,
 	min_delta_margin: float = 0.0,
+	gap: float = 0.5,
+	wt_pairs_frac: float = 0.1,
 	deduplicate_across_views: bool = True,
 ) -> List[Tuple[str, str]]:
 	"""Return DPO (chosen_sequence, rejected_sequence) tuples."""
@@ -314,6 +411,8 @@ def load_dpo_sequence_pairs(
 		force_rebuild=force_rebuild,
 		min_positive_delta=min_positive_delta,
 		min_delta_margin=min_delta_margin,
+		gap=gap,
+		wt_pairs_frac=wt_pairs_frac,
 		deduplicate_across_views=deduplicate_across_views,
 	)
 	return list(zip(pairs_df["chosen_sequence"], pairs_df["rejected_sequence"]))
@@ -341,6 +440,8 @@ def _build_pairs_for_split_views(
 	include_views: Sequence[str],
 	min_positive_delta: float,
 	min_delta_margin: float,
+	gap: float,
+	wt_pairs_frac: float,
 	deduplicate_across_views: bool,
 ) -> pd.DataFrame:
 	"""Build one pair dataframe from a dict of per-view clustered dataframes."""
@@ -352,6 +453,8 @@ def _build_pairs_for_split_views(
 			pairing_strategy=pairing_strategy,
 			min_positive_delta=min_positive_delta,
 			min_delta_margin=min_delta_margin,
+			gap=gap,
+			wt_pairs_frac=wt_pairs_frac,
 			source_view=view,
 		)
 		pairs_per_view.append(pairs_df)
@@ -377,6 +480,8 @@ def build_split_pair_dataframes_from_raw(
 	force_rebuild: bool = False,
 	min_positive_delta: float = 0.0,
 	min_delta_margin: float = 0.0,
+	gap: float = 0.5,
+	wt_pairs_frac: float = 0.1,
 	deduplicate_across_views: bool = True,
 	train_frac: float = 0.8,
 	val_frac: float = 0.1,
@@ -432,6 +537,8 @@ def build_split_pair_dataframes_from_raw(
 		include_views=include_views,
 		min_positive_delta=min_positive_delta,
 		min_delta_margin=min_delta_margin,
+		gap=gap,
+		wt_pairs_frac=wt_pairs_frac,
 		deduplicate_across_views=deduplicate_across_views,
 	)
 	val_pairs = _build_pairs_for_split_views(
@@ -440,6 +547,8 @@ def build_split_pair_dataframes_from_raw(
 		include_views=include_views,
 		min_positive_delta=min_positive_delta,
 		min_delta_margin=min_delta_margin,
+		gap=gap,
+		wt_pairs_frac=wt_pairs_frac,
 		deduplicate_across_views=deduplicate_across_views,
 	)
 	test_pairs = _build_pairs_for_split_views(
@@ -448,6 +557,8 @@ def build_split_pair_dataframes_from_raw(
 		include_views=include_views,
 		min_positive_delta=min_positive_delta,
 		min_delta_margin=min_delta_margin,
+		gap=gap,
+		wt_pairs_frac=wt_pairs_frac,
 		deduplicate_across_views=deduplicate_across_views,
 	)
 
