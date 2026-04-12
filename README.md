@@ -183,7 +183,9 @@ sbatch bash_scripts/evotuning.sbatch configs/evotuning_base.yaml <run_name>
 sbatch bash_scripts/evotuning.sbatch configs/my_experiment.yaml  <run_name>
 ```
 
-Training outputs are saved to `$TRAIN_DIR/{run_name}/`:
+A timestamp is appended automatically, so `my_run` becomes `my_run_20260412_143022`. This lets you submit multiple jobs with the same base name without collisions.
+
+Training outputs are saved to `$TRAIN_DIR/{run_name}_{timestamp}/`:
 ```
 $TRAIN_DIR/{run_name}/
 ├── config.yaml              # resolved config snapshot
@@ -232,7 +234,7 @@ scripts/                  Pipeline entry points
   download_oas.sh         Download helper (reads URL file)
   filter_oas.py           OAS filtering → FASTA
   run_mmseqs2.sh          MMseqs2 deduplication wrapper
-  train_evotuning.py      Training entry point (--config and --run-name required)
+  train_evotuning.py      Training entry point (--config and --run-name required; timestamp appended to run name)
   find_max_batch_size.py  Interactive GPU VRAM sweep to find optimal batch size
   clean_d2.py             Filter enrichment datasets to distance-2 mutants
   search_c05.py           MMseqs2 search for C05-like sequences

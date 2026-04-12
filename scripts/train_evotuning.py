@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+from datetime import datetime
 
 from protein_design.train import train
 from protein_design.utils import load_config
@@ -20,8 +21,11 @@ def main() -> None:
     parser.add_argument("--run-name", required=True, help="Name for this training run")
     args = parser.parse_args()
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{args.run_name}_{timestamp}"
+
     config = load_config(args.config)
-    train(config, args.run_name)
+    train(config, run_name)
 
 
 if __name__ == "__main__":
