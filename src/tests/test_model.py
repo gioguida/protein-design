@@ -164,7 +164,7 @@ def main():
 
     with torch.no_grad():
         for batch in test_loader:
-            chosen_seqs = [pair[0] for pair in batch]
+            chosen_seqs = [str(pair[0]["aa"]) for pair in batch]
             try:
                 if not formula_checked:
                     _assert_perplexity_formula(chosen_seqs, policy)

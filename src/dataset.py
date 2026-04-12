@@ -5,7 +5,7 @@ If processed D2 files are missing or stale, they are rebuilt automatically.
 """
 
 from pathlib import Path
-from typing import Dict, List, Literal, Sequence, Tuple
+from typing import Dict, List, Literal, Sequence, Tuple, TypedDict
 
 import pandas as pd
 import numpy as np
@@ -21,6 +21,14 @@ RANDOM_SEED = 42
 
 
 PairingStrategy = Literal["positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"]
+
+
+class PairMember(TypedDict):
+	aa: str
+	score: float
+
+
+PairTuple = Tuple[PairMember, PairMember]
 
 
 PAIR_COLUMNS = [
@@ -101,20 +109,24 @@ def _pair_cluster_positive_vs_tail(
 	delta_col: str,
 	min_positive_delta: float,
 	min_delta_margin: float = 0.0,
-) -> List[Tuple[pd.Series, pd.Series]]:
+) -> List[PairTuple]:
 	"""Pair first with last, second with second-last, until chosen side is not positive."""
 	cluster_sorted = cluster_df.sort_values(by=delta_col, ascending=False).reset_index(drop=True)
 	deltas = cluster_sorted[delta_col].astype(float).to_numpy()
 	n = len(cluster_sorted)
 	left = 0
 	right = n - 1
-	pairs: List[Tuple[pd.Series, pd.Series]] = []
+	pairs: List[PairTuple] = []
 
 	while left < right and float(deltas[left]) > float(min_positive_delta):
 		chosen = cluster_sorted.iloc[left]
+		chosen_delta = float(chosen[delta_col])
 		rejected = cluster_sorted.iloc[right]
-		if float(chosen[delta_col]) - float(rejected[delta_col]) >= float(min_delta_margin):
-			pairs.append((chosen, rejected))
+		rejected_delta = float(rejected[delta_col])
+		if chosen_delta - rejected_delta >= float(min_delta_margin):
+			winner = {"aa": chosen["aa"], "score": chosen_delta}
+			loser = {"aa": rejected["aa"], "score": rejected_delta}
+			pairs.append((winner, loser))
 		left += 1
 		right -= 1
 
@@ -126,23 +138,27 @@ def _pair_cluster_positive_only_extremes(
 	delta_col: str,
 	min_positive_delta: float,
 	min_delta_margin: float = 0.0,
-) -> List[Tuple[pd.Series, pd.Series]]:
+) -> List[PairTuple]:
 	"""Pair i-th positive with (P-i)-th from tail in full cluster, where P is #positives."""
 	cluster_sorted = cluster_df.sort_values(by=delta_col, ascending=False).reset_index(drop=True)
 	deltas = cluster_sorted[delta_col].astype(float).to_numpy()
 	positive_count = int((deltas > float(min_positive_delta)).sum())
 	n = len(cluster_sorted)
 	rejected_start = n - positive_count
-	pairs: List[Tuple[pd.Series, pd.Series]] = []
+	pairs: List[PairTuple] = []
 
 	for i in range(positive_count):
 		rejected_idx = rejected_start + i
 		if rejected_idx >= n:
 			break
 		chosen = cluster_sorted.iloc[i]
+		chosen_delta = float(chosen[delta_col])
 		rejected = cluster_sorted.iloc[rejected_idx]
-		if float(chosen[delta_col]) - float(rejected[delta_col]) >= float(min_delta_margin):
-			pairs.append((chosen, rejected))
+		rejected_delta = float(rejected[delta_col])
+		if chosen_delta - rejected_delta >= float(min_delta_margin):
+			winner = {"aa": chosen["aa"], "score": chosen_delta}
+			loser = {"aa": rejected["aa"], "score": rejected_delta}
+			pairs.append((winner, loser))
 
 	return pairs
 
@@ -152,7 +168,7 @@ def _pair_cluster_both_structured_strategies(
 	delta_col: str,
 	min_positive_delta: float,
 	min_delta_margin: float = 0.0,
-) -> List[Tuple[pd.Series, pd.Series]]:
+) -> List[PairTuple]:
 	"""Combine both strucured stregies to get more pairs"""
 	pairs_positive_vs_tail = _pair_cluster_positive_vs_tail(
 		cluster_df=cluster_df,
@@ -187,7 +203,7 @@ def _pair_delta_based(
 		seq_col: str,
 		gap: float,
 		wt_pairs_frac: float,
-) ->  List[Tuple[pd.Series, pd.Series]]:
+) ->  List[PairTuple]:
 	"""Pair sequences by a configurable rank gap and optional WT-boundary anchors."""
 	if not 0.0 <= float(gap) <= 1.0:
 		raise ValueError("gap must be in [0.0, 1.0].")
@@ -211,7 +227,7 @@ def _pair_delta_based(
 	step = int(1 + float(gap) * ((n // 2) - 1))
 
 	paired = np.zeros(n, dtype=bool)
-	pairs: List[Tuple[pd.Series, pd.Series]] = []
+	pairs: List[PairTuple] = []
 
 	# Create systematic variant-vs-variant pairs.
 	for i in range(n):
@@ -219,6 +235,7 @@ def _pair_delta_based(
 			continue
 
 		chosen = sorted_df.iloc[i]
+		chosen_delta = float(chosen[delta_col])
 		rejected_idx = i + step
 
 		# If gap index is already taken/out-of-range, move forward.
@@ -233,15 +250,16 @@ def _pair_delta_based(
 
 		if rejected_idx > i and not paired[rejected_idx]:
 			rejected = sorted_df.iloc[rejected_idx]
-			pairs.append((chosen, rejected))
+			rejected_delta = float(rejected[delta_col])
+			winner = {"aa": chosen["aa"], "score": chosen_delta}
+			loser = {"aa": rejected["aa"], "score": rejected_delta}
+			pairs.append((winner, loser))
 			paired[i] = True
 			paired[rejected_idx] = True
 
 	# Create WT-anchored boundary pairs.
 	if wt_pairs > 0:
-		wt_row_data = {col: np.nan for col in sorted_df.columns}
-		wt_row_data[seq_col] = WILD_TYPE
-		wt_row_data[delta_col] = 0.0
+		wt = {"aa": WILD_TYPE, "score": 0.0}
 
 		num_pos_wt = wt_pairs // 2
 		num_wt_neg = wt_pairs - num_pos_wt
@@ -249,12 +267,18 @@ def _pair_delta_based(
 		positives = sorted_df[sorted_df[delta_col].astype(float) > 0.0]
 		boundary_positives = positives.tail(num_pos_wt)
 		for _, pos_seq in boundary_positives.iterrows():
-			pairs.append((pos_seq, pd.Series(wt_row_data)))  # chosen=positive, rejected=WT
+			pos_seq_delta = float(pos_seq[delta_col])
+			pos_seq_aa = pos_seq[seq_col]
+			winner = {"aa": pos_seq_aa, "score": pos_seq_delta}
+			pairs.append((winner, wt))  # chosen=positive, rejected=WT
 
 		negatives = sorted_df[sorted_df[delta_col].astype(float) < 0.0]
 		boundary_negatives = negatives.head(num_wt_neg)
 		for _, neg_seq in boundary_negatives.iterrows():
-			pairs.append((pd.Series(wt_row_data), neg_seq))  # chosen=WT, rejected=negative
+			neg_seq_delta = float(neg_seq[delta_col])
+			neg_seq_aa = neg_seq[seq_col]
+			loser = {"aa": neg_seq_aa, "score": neg_seq_delta}
+			pairs.append((wt, loser))  # chosen=WT, rejected=negative
 
 	return pairs
 
@@ -314,16 +338,16 @@ def build_dpo_pairs_from_clustered_dataframe(
 			)
 			
 		for pair_rank, (chosen, rejected) in enumerate(cluster_pairs):
-			chosen_delta = float(chosen[delta_col])
-			rejected_delta = float(rejected[delta_col])
+			chosen_delta = float(chosen["score"])
+			rejected_delta = float(rejected["score"])
 			pair_rows.append(
 				{
 					"source_view": source_view,
 					"cluster_idx": cluster_value,
 					"pair_rank_in_cluster": pair_rank,
 					"pairing_strategy": pairing_strategy,
-					"chosen_sequence": chosen[seq_col],
-					"rejected_sequence": rejected[seq_col],
+					"chosen_sequence": chosen["aa"],
+					"rejected_sequence": rejected["aa"],
 					"chosen_delta": chosen_delta,
 					"rejected_delta": rejected_delta,
 					"delta_margin": chosen_delta - rejected_delta,
@@ -401,8 +425,8 @@ def load_dpo_sequence_pairs(
 	gap: float = 0.5,
 	wt_pairs_frac: float = 0.1,
 	deduplicate_across_views: bool = True,
-) -> List[Tuple[str, str]]:
-	"""Return DPO (chosen_sequence, rejected_sequence) tuples."""
+) -> List[PairTuple]:
+	"""Return DPO preference pairs as ({aa, score}, {aa, score}) tuples."""
 	pairs_df = load_dpo_pair_dataframe(
 		pairing_strategy=pairing_strategy,
 		include_views=include_views,
@@ -415,7 +439,18 @@ def load_dpo_sequence_pairs(
 		wt_pairs_frac=wt_pairs_frac,
 		deduplicate_across_views=deduplicate_across_views,
 	)
-	return list(zip(pairs_df["chosen_sequence"], pairs_df["rejected_sequence"]))
+	return [
+		(
+			{"aa": str(chosen_aa), "score": float(chosen_delta)},
+			{"aa": str(rejected_aa), "score": float(rejected_delta)},
+		)
+		for chosen_aa, rejected_aa, chosen_delta, rejected_delta in zip(
+			pairs_df["chosen_sequence"],
+			pairs_df["rejected_sequence"],
+			pairs_df["chosen_delta"],
+			pairs_df["rejected_delta"],
+		)
+	]
 
 
 def _split_membership_keys(df: pd.DataFrame) -> pd.Series:

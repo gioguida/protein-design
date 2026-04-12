@@ -14,7 +14,7 @@ import logging
 import math
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict
 
 import pandas as pd
 import torch
@@ -48,20 +48,39 @@ else:  # pragma: no cover
 hydra, OmegaConf, HydraConfig, to_absolute_path = load_hydra_runtime_modules()
 
 
+class PairMember(TypedDict):
+    aa: str
+    score: float
+
+
+PairTuple = Tuple[PairMember, PairMember]
+
+
 class PairDataset(Dataset):
-    """Minimal dataset of (chosen, rejected) sequence pairs."""
+    """Minimal dataset of scored (chosen, rejected) sequence pairs."""
 
     def __init__(self, pairs_df: pd.DataFrame):
-        self.pairs = list(zip(pairs_df["chosen_sequence"], pairs_df["rejected_sequence"]))
+        self.pairs: List[PairTuple] = [
+            (
+                {"aa": str(chosen_aa), "score": float(chosen_delta)},
+                {"aa": str(rejected_aa), "score": float(rejected_delta)},
+            )
+            for chosen_aa, rejected_aa, chosen_delta, rejected_delta in zip(
+                pairs_df["chosen_sequence"],
+                pairs_df["rejected_sequence"],
+                pairs_df["chosen_delta"],
+                pairs_df["rejected_delta"],
+            )
+        ]
 
     def __len__(self) -> int:
         return len(self.pairs)
 
-    def __getitem__(self, idx: int) -> Tuple[str, str]:
+    def __getitem__(self, idx: int) -> PairTuple:
         return self.pairs[idx]
 
 
-def _pair_collate(batch: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def _pair_collate(batch: Sequence[PairTuple]) -> List[PairTuple]:
     return list(batch)
 
 
@@ -359,7 +378,7 @@ def _compute_chosen_perplexity(dataloader: DataLoader, scorer: ESM2PLLScorer) ->
 
     with torch.no_grad():
         for batch in dataloader:
-            chosen_seqs = [pair[0] for pair in batch]
+            chosen_seqs = [str(pair[0]["aa"]) for pair in batch]
             if not chosen_seqs:
                 continue
 
