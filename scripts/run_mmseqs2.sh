@@ -3,7 +3,8 @@
 # Usage: ./run_mmseqs2.sh
 set -euo pipefail
 
-INPUT="${SCRATCH_DIR:?Set SCRATCH_DIR env var}/oas_filtered.fasta"
+: "${PROJECT_DIR:?Set PROJECT_DIR in .env (see .env.template)}"
+INPUT="${PROJECT_DIR}/datasets/oas_filtered.fasta"
 OUT_PREFIX="${SCRATCH_DIR}/oas_dedup"
 TMP_DIR="${SCRATCH_DIR}/mmseqs_tmp"
 

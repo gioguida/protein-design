@@ -1,0 +1,5 @@
+model_name: facebook/esm2_t12_35M_UR50D
+batch_size: 512
+seed: 42
+freeze_embeddings: false
+freeze_first_n_layers: 0

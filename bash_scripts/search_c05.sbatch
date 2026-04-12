@@ -2,8 +2,8 @@
 #SBATCH --job-name=c05_search
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=4G
-#SBATCH --time=02:00:00
+#SBATCH --mem-per-cpu=12G
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/c05_search_%j.out
 #SBATCH --error=logs/c05_search_%j.err
 

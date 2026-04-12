@@ -19,12 +19,17 @@ from pathlib import Path
 
 import pandas as pd
 from Bio import SeqIO
+from dotenv import load_dotenv
+
+load_dotenv()
 
 C05_HEAVY = (
     "EVQLQESGGGLVQPGESLRLSCVGSGSSFGESTLSYYAVSWVRQAPGKGLEWLSIINAGGGDIDYADSVEG"
     "RFTISRDNSKETLYLQMTNLRVEDTGVYYCAKHMSMQQVVSAGWERADLVGDAFDVWGQGTMVTVSS"
 )
 C05_CDRH3 = "HMSMQQVVSAGWERADLVGDAFDV"
+# cdr3_aa format in OAS includes the two framework residues before the loop (AK for C05)
+C05_CDRH3_OAS = "AKHMSMQQVVSAGWERADLVGDAFDV"
 
 MMSEQS_FORMAT = (
     "query,target,pident,alnlen,mismatch,gapopen,"
@@ -38,18 +43,29 @@ IDENTITY_BINS = [
     (1.00, 1.0001),  # 100% bin
 ]
 
+CDRH3_BINS = [
+    (0.00, 0.20), (0.20, 0.40), (0.40, 0.60), (0.60, 0.80),
+    (0.80, 0.95), (0.95, 1.00), (1.00, 1.0001),
+]
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
+    _project_dir = os.environ.get("PROJECT_DIR", ".")
     p.add_argument(
         "--fasta",
-        default="/cluster/project/infk/krause/mdenegri/protein-design/oas_filtered.fasta",
+        default=os.path.join(_project_dir, "datasets", "oas_filtered.fasta"),
         help="Target FASTA to search.",
     )
     p.add_argument(
         "--scratch-dir",
         default=os.environ.get("SCRATCH_DIR"),
         help="Scratch directory; work dir is <scratch>/c05_search/. Defaults to $SCRATCH_DIR.",
+    )
+    p.add_argument(
+        "--csv",
+        default=os.path.join(_project_dir, "datasets", "oas_filtered.csv.gz"),
+        help="OAS filtered metadata CSV (gzipped) with cdr3_aa column.",
     )
     p.add_argument("--threads", type=int, default=16)
     p.add_argument("--min-seq-id", type=float, default=0.3)
@@ -101,15 +117,39 @@ def load_results(results: Path) -> pd.DataFrame:
     if not results.exists() or results.stat().st_size == 0:
         return pd.DataFrame(columns=MMSEQS_COLS)
     df = pd.read_csv(results, sep="\t", header=None, names=MMSEQS_COLS)
-    # pident is reported as fraction (0-1) by MMseqs2; keep as fraction internally
+    # MMseqs2 reports pident as a percentage (0-100); convert to fraction for internal use
+    df["pident"] = df["pident"] / 100.0
     return df.sort_values("pident", ascending=False).reset_index(drop=True)
 
 
-def histogram(values: list[float]) -> list[tuple[str, int, float]]:
-    """Bin values into the standard identity bins. Returns (label, count, pct)."""
+def load_cdrh3_from_csv(csv_path: Path, hit_ids: set[str]) -> pd.DataFrame:
+    """Read seq_id and cdr3_aa from the OAS CSV, filtered to hit_ids."""
+    print(f"[cdrh3] Loading CDR-H3 annotations from {csv_path} for {len(hit_ids)} hits...", flush=True)
+    chunks = pd.read_csv(csv_path, usecols=["seq_id", "cdr3_aa"], chunksize=100_000)
+    parts = [chunk[chunk["seq_id"].isin(hit_ids)] for chunk in chunks]
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["seq_id", "cdr3_aa"])
+    print(f"[cdrh3] Matched {len(df)} / {len(hit_ids)} hits in CSV.", flush=True)
+    return df
+
+
+def cdrh3_identity(a: str, b: str) -> float:
+    """Fraction of matching positions / max(len(a), len(b)).
+
+    Conservative metric: penalises both substitutions and length differences.
+    No gap penalties — length difference alone accounts for insertions/deletions.
+    """
+    matches = sum(x == y for x, y in zip(a, b))
+    return matches / max(len(a), len(b))
+
+
+def histogram(
+    values: list[float],
+    bins: list[tuple[float, float]] = IDENTITY_BINS,
+) -> list[tuple[str, int, float]]:
+    """Bin values into identity bins. Returns (label, count, pct)."""
     out = []
     total = len(values) if values else 1
-    for lo, hi in IDENTITY_BINS:
+    for lo, hi in bins:
         if hi > 1.0:
             label = "100%"
             count = sum(1 for v in values if v >= 1.0)
@@ -128,6 +168,7 @@ def ascii_bar(pct: float, width: int = 40) -> str:
 def build_report(
     cdrh3_matches: list[str],
     df: pd.DataFrame,
+    cdrh3_df: pd.DataFrame,
     target_fasta: Path,
     args: argparse.Namespace,
 ) -> str:
@@ -207,6 +248,63 @@ def build_report(
             w(f"  alnlen : {int(best['alnlen'])}")
             w(f"  evalue : {best['evalue']:.2e}")
             w(f"  tseq   : {best['tseq']}")
+    # ── Section 5: Top 20 hits by CDR-H3 identity ───────────────────────────
+    w("-" * 78)
+    w("[5] TOP 20 MOST SIMILAR ANTIBODIES (CDR-H3 identity)")
+    w("-" * 78)
+    w(f"C05 CDR-H3 reference (OAS format) : {C05_CDRH3_OAS} ({len(C05_CDRH3_OAS)} aa)")
+    w(f"Identity metric : matches / max(len_query, len_hit)  [no gap model]")
+    w("")
+    if cdrh3_df.empty:
+        w("No CDR-H3 annotations available (--csv not matched or not provided).")
+    else:
+        merged = df[["target", "pident", "evalue"]].merge(
+            cdrh3_df.rename(columns={"seq_id": "target"}),
+            on="target",
+            how="inner",
+        )
+        merged["cdrh3_id"] = merged["cdr3_aa"].apply(
+            lambda s: cdrh3_identity(str(s), C05_CDRH3_OAS)
+        )
+        top_cdrh3 = merged.sort_values("cdrh3_id", ascending=False).reset_index(drop=True)
+        w(f"{'rank':>4}  {'seq_id':<40}  {'cdrh3_id':>9}  {'cdr3_aa':<30}  {'chain_id':>8}")
+        for i, row in top_cdrh3.head(20).iterrows():
+            w(
+                f"{i+1:>4}  {row['target']:<40}  "
+                f"{row['cdrh3_id']*100:>8.1f}%  {str(row['cdr3_aa']):<30}  "
+                f"{row['pident']*100:>7.2f}%"
+            )
+    w("")
+
+    # ── Section 6: CDR-H3 identity distribution ──────────────────────────────
+    w("-" * 78)
+    w("[6] CDR-H3 IDENTITY DISTRIBUTION")
+    w("-" * 78)
+    if cdrh3_df.empty:
+        w("(no CDR-H3 annotations)")
+    else:
+        merged = df[["target"]].merge(
+            cdrh3_df.rename(columns={"seq_id": "target"}),
+            on="target",
+            how="inner",
+        )
+        cdrh3_ids = [
+            cdrh3_identity(str(s), C05_CDRH3_OAS)
+            for s in merged["cdr3_aa"]
+        ]
+        bins = histogram(cdrh3_ids, CDRH3_BINS)
+        w(f"{'bin':<10}  {'count':>8}  {'pct':>6}  histogram")
+        for label, count, pct in bins:
+            w(f"{label:<10}  {count:>8}  {pct:>5.1f}%  {ascii_bar(pct)}")
+        if cdrh3_ids:
+            w(f"\nMean CDR-H3 identity : {sum(cdrh3_ids)/len(cdrh3_ids)*100:.2f}%")
+            w(f"Max  CDR-H3 identity : {max(cdrh3_ids)*100:.2f}%")
+            annotated = len(cdrh3_ids)
+            total_hits = len(df)
+            if annotated < total_hits:
+                w(f"\nNote: {total_hits - annotated} hits had no CDR-H3 annotation in the CSV.")
+    w("")
+
     w("=" * 78)
 
     return "\n".join(lines) + "\n"
@@ -244,8 +342,17 @@ def main() -> None:
     df = load_results(results_tsv)
     print(f"[parse] Loaded {len(df)} hits from {results_tsv}", flush=True)
 
-    # Step 5: report
-    report = build_report(cdrh3_matches, df, target_fasta, args)
+    # Step 5: CDR-H3 annotations from CSV
+    csv_path = Path(args.csv)
+    if csv_path.exists():
+        hit_ids = set(df["target"].tolist())
+        cdrh3_df = load_cdrh3_from_csv(csv_path, hit_ids)
+    else:
+        print(f"[cdrh3] CSV not found at {csv_path}, skipping CDR-H3 analysis.", flush=True)
+        cdrh3_df = pd.DataFrame(columns=["seq_id", "cdr3_aa"])
+
+    # Step 6: report
+    report = build_report(cdrh3_matches, df, cdrh3_df, target_fasta, args)
     report_path.write_text(report)
     print(report)
     print(f"[done] Report written to {report_path}")

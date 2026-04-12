@@ -25,7 +25,7 @@ def compute_perplexity(
         max_batches: Cap evaluation at this many batches for speed.
 
     Returns:
-        Perplexity = exp(average MLM loss).
+        Tuple of (perplexity, avg_loss) where perplexity = exp(avg_loss).
     """
     model.eval()
     total_loss = 0.0
@@ -43,4 +43,4 @@ def compute_perplexity(
     avg_loss = total_loss / max(n_batches, 1)
     ppl = math.exp(avg_loss)
     logger.info("Perplexity: %.2f (avg loss: %.4f, %d batches)", ppl, avg_loss, n_batches)
-    return ppl
+    return ppl, avg_loss

@@ -75,8 +75,8 @@ def make_dataloaders(
         val_ds,
         batch_size=config["batch_size"],
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=0,
+        pin_memory=False,
         collate_fn=collator,
     )
     return train_loader, val_loader

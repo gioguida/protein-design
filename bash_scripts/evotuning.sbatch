@@ -3,9 +3,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
-#SBATCH --time=24:00:00
-#SBATCH --gpus=nvidia_rtx_pro_6000:1
-#SBATCH --gres=gpumem:96g
+#SBATCH --gpus=1
+#SBATCH --gres=gpumem:80g
+#SBATCH --time=120:00:00
 #SBATCH --output=logs/evotuning_%j.out
 #SBATCH --error=logs/evotuning_%j.err
 
@@ -14,10 +14,9 @@ cd /cluster/home/mdenegri/protein-design
 module load eth_proxy
 set -a; source .env; set +a
 
-# Load environment
 source .venv/bin/activate
-
-# Ensure logs directory exists
 mkdir -p logs
 
-python scripts/train_evotuning.py --config configs/evotuning_5k.yaml
+CONFIG="${1:?Usage: sbatch evotuning.sbatch <config> <run_name>}"
+RUN_NAME="${2:?Usage: sbatch evotuning.sbatch <config> <run_name>}"
+python scripts/train_evotuning.py --config "$CONFIG" --run-name "$RUN_NAME"

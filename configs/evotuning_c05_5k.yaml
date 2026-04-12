@@ -1,0 +1,30 @@
+model_name: facebook/esm2_t12_35M_UR50D
+fasta_path: ${PROJECT_DIR}/datasets/c05_5k.fasta
+learning_rate: 5.0e-5
+warmup_steps: 50
+max_epochs: 10
+batch_size: 128
+gradient_accumulation_steps: 4
+max_seq_len: 256
+mlm_probability: 0.15
+freeze_embeddings: true
+freeze_first_n_layers: 0
+save_every_n_steps: 100
+train_dir: ${TRAIN_DIR}
+project_dir: ${PROJECT_DIR}
+wandb_project: ${WANDB_PROJECT}
+fp16: true
+seed: 42
+# finetune: null  # set to evotuned checkpoint to stack MSA-TTT on top
+scoring_n_samples: 10000
+scoring_batch_size: 512
+scoring_datasets:
+  - name: M22
+    path: ${PROJECT_DIR}/datasets/scoring/D2_M22.csv
+    enrichment_col: M22_binding_enrichment_adj
+  - name: SI06
+    path: ${PROJECT_DIR}/datasets/scoring/D2_SI06.csv
+    enrichment_col: SI06_binding_enrichment_adj
+  - name: exp
+    path: ${PROJECT_DIR}/datasets/scoring/D2_exp.csv
+    enrichment_col: exp_enrichment_adj

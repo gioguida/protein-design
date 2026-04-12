@@ -17,11 +17,13 @@ matplotlib.use("Agg")  # headless backend for compute nodes
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from scipy.stats import gaussian_kde
 
+load_dotenv()
 
-CORPUS_DIR = "/cluster/project/infk/krause/mdenegri/protein-design"
-DEFAULT_CSV = os.path.join(CORPUS_DIR, "oas_filtered.csv.gz")
+_PROJECT_DIR = os.environ.get("PROJECT_DIR", ".")
+DEFAULT_CSV = os.path.join(_PROJECT_DIR, "datasets", "oas_filtered.csv.gz")
 
 
 def main() -> None:

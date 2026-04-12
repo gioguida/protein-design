@@ -4,15 +4,11 @@
 import argparse
 import logging
 
-import yaml
-from dotenv import load_dotenv
-
 from protein_design.train import train
+from protein_design.utils import load_config
 
 
 def main() -> None:
-    load_dotenv()
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,12 +17,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="ESM2 evotuning training")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
+    parser.add_argument("--run-name", required=True, help="Name for this training run")
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-
-    train(config)
+    config = load_config(args.config)
+    train(config, args.run_name)
 
 
 if __name__ == "__main__":

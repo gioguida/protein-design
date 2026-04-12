@@ -43,7 +43,9 @@ echo "After dedup: $(grep -c '^>' ${DEBUG_SCRATCH}/oas_dedup_rep_seq.fasta) sequ
 # ── Step 3: Train ─────────────────────────────────────────────────────────────
 echo "=== Starting debug training ==="
 source .venv/bin/activate
+CONFIG="${1:?Usage: sbatch debug_run.sbatch <config> <run_name>}"
+RUN_NAME="${2:?Usage: sbatch debug_run.sbatch <config> <run_name>}"
 SCRATCH_DIR="$DEBUG_SCRATCH" python scripts/train_evotuning.py \
-    --config configs/evotuning_debug.yaml
+    --config "$CONFIG" --run-name "$RUN_NAME"
 
 echo "=== Debug run complete ==="
