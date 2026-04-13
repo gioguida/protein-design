@@ -2,11 +2,16 @@ from dataclasses import dataclass
 import importlib
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, TypedDict
 
 import pandas as pd
 
-from src.train_dpo import PairTuple
+class PairMember(TypedDict):
+	aa: str
+	score: float
+
+
+PairTuple = Tuple[PairMember, PairMember]
 
 WILD_TYPE = "HMSMQQVVSAGWERADLVGDAFDV"
 
