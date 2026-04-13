@@ -268,6 +268,7 @@ def _run_epoch(
     epoch: int = 0,
 ) -> Tuple[Dict[str, float], int]:
     is_train = optimizer is not None
+    loss_name = str(loss)
 
     if is_train:
         policy.model.train()
@@ -289,16 +290,16 @@ def _run_epoch(
             global_step += 1
 
         try:
-            if loss == "dpo":
-                loss = dpo_loss(
+            if loss_name == "dpo":
+                batch_loss = dpo_loss(
                     batch,
                     beta=beta,
                     scorer=policy,
                     reference=reference,
                     policy_use_grad=is_train,
                 )
-            elif loss == "weighted_dpo":
-                loss = weighted_dpo_loss(
+            elif loss_name == "weighted_dpo":
+                batch_loss = weighted_dpo_loss(
                     batch,
                     beta=beta,
                     temperature=temperature,
@@ -306,6 +307,8 @@ def _run_epoch(
                     reference=reference,
                     policy_use_grad=is_train,
                 )
+            else:
+                raise ValueError(f"Unsupported loss: {loss_name}")
             if track_metrics:
                 with torch.no_grad():
                     batch_metrics = batch_monitoring_metrics(
@@ -319,12 +322,12 @@ def _run_epoch(
             continue
 
         if is_train:
-            loss.backward()
+            batch_loss.backward()
             if grad_clip_norm > 0:
                 clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
 
-        total_loss += float(loss.item())
+        total_loss += float(batch_loss.item())
         num_batches += 1
         if track_metrics:
             num_pairs = float(batch_metrics["num_pairs"])
@@ -337,13 +340,13 @@ def _run_epoch(
             step_record = {
                 "step": global_step,
                 "epoch": epoch,
-                "train_step/loss": float(loss.item()),
+                "train_step/loss": float(batch_loss.item()),
             }
             if track_metrics:
                 logger.info(
                     "step=%d train_loss=%.6f reward_acc=%.4f reward_margin=%.4f implicit_kl=%.4f",
                     step,
-                    float(loss.item()),
+                    float(batch_loss.item()),
                     float(batch_metrics["reward_accuracy"]),
                     float(batch_metrics["reward_margin"]),
                     float(batch_metrics["implicit_kl"]),
@@ -354,7 +357,7 @@ def _run_epoch(
                     "train_step/implicit_kl": float(batch_metrics["implicit_kl"]),
                 })
             else:
-                logger.info("step=%d train_loss=%.6f", step, float(loss.item()))
+                logger.info("step=%d train_loss=%.6f", step, float(batch_loss.item()))
             
             if wandb_mod is not None:
                 wandb_mod.log(step_record, step=global_step)
