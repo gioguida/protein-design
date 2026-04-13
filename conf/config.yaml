@@ -12,6 +12,10 @@ data:
   min_delta_margin: 5.0
   gap: 0.5            # used by delta_based, expected in [0.0, 1.0]
   wt_pairs_frac: 0.1  # used by delta_based, expected in [0.0, 1.0]
+  cross_pairs_frac: 0.1      # used by delta_based, expected in [0.0, 1.0]
+  strong_pos_threshold: 1.0  # used by delta_based for winner>WT anchors
+  strong_neg_threshold: -5.0 # used by delta_based for WT>loser anchors
+  min_score_margin: 0.1      # used by delta_based to filter near-tie pairs
   include_views: [mut1, mut2]
   deduplicate_across_views: true
   train_frac: 0.8
@@ -28,7 +32,9 @@ training:
   num_epochs: 15
   lr: 1e-5
   weight_decay: 0.0
+  loss: dpo     # dpo | weighted_dpo
   beta: 0.04
+  temperature: 1    # only relevant for weighted loss
   grad_clip_norm: 1.0
   patience: 10
   device: cuda

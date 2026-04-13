@@ -2,9 +2,16 @@ from dataclasses import dataclass
 import importlib
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, TypedDict
 
 import pandas as pd
+
+class PairMember(TypedDict):
+	aa: str
+	score: float
+
+
+PairTuple = Tuple[PairMember, PairMember]
 
 WILD_TYPE = "HMSMQQVVSAGWERADLVGDAFDV"
 
@@ -201,3 +208,33 @@ def log_pair_diagnostics(logger: logging.Logger, pairs_df: pd.DataFrame, preview
 			row["chosen_sequence"],
 			row["rejected_sequence"],
 		)
+
+
+def _gap_pairs(
+	sorted_df: pd.DataFrame, 
+	delta_col: str, 
+	seq_col: str, 
+	gap: float
+	) -> List[PairTuple]:
+	"""Pair with uniform rank gap across all pairs."""
+	n = len(sorted_df)
+	if n < 2:
+		return []
+
+	k = 1 + int(gap * (n // 2 - 1))  # rank gap: 1 at gap=0, n//2 at gap=1
+	block_size = 2 * k
+
+	pairs: List[PairTuple] = []
+	for block_start in range(0, n, block_size):
+		for i in range(k):
+			# drop incomplete pairs at the end of the list
+			if block_start + k + i >= n:
+				break
+			w = sorted_df.iloc[block_start + i]
+			l = sorted_df.iloc[block_start + k + i]
+			winner = {"aa": w[seq_col], "score": float(w[delta_col])}
+			loser  = {"aa": l[seq_col], "score": float(l[delta_col])}
+			pairs.append((winner, loser))
+
+	return pairs
+	

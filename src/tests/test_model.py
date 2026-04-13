@@ -85,6 +85,10 @@ class dataset_config:
         self.min_delta_margin = 2.0
         self.gap = 0.5
         self.wt_pairs_frac = 0.1
+        self.cross_pairs_frac = 0.1
+        self.strong_pos_threshold = 1.0
+        self.strong_neg_threshold = -5.0
+        self.min_score_margin = 0.1
         self.include_views = ["mut1", "mut2"]
         self.deduplicate_across_views = True
         self.train_frac = 0.8
@@ -115,6 +119,10 @@ def main():
         min_delta_margin=cfg_data.min_delta_margin,
         gap=cfg_data.gap,
         wt_pairs_frac=cfg_data.wt_pairs_frac,
+        cross_pairs_frac=cfg_data.cross_pairs_frac,
+        strong_pos_threshold=cfg_data.strong_pos_threshold,
+        strong_neg_threshold=cfg_data.strong_neg_threshold,
+        min_score_margin=cfg_data.min_score_margin,
         deduplicate_across_views=cfg_data.deduplicate_across_views,
     )
     train_df, val_df, test_df = create_train_val_test_split(
@@ -164,7 +172,7 @@ def main():
 
     with torch.no_grad():
         for batch in test_loader:
-            chosen_seqs = [pair[0] for pair in batch]
+            chosen_seqs = [str(pair[0]["aa"]) for pair in batch]
             try:
                 if not formula_checked:
                     _assert_perplexity_formula(chosen_seqs, policy)

@@ -1,10 +1,12 @@
-import argparse
 import sys
+import pandas as pd
+import numpy as np
 from pathlib import Path
+from typing import List, Tuple
 
 class test_config:
     def __init__(self):
-        self.pairing_strategy = "both_structured"  # "positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"
+        self.pairing_strategy = "delta_based"  # "positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"
         self.preview_count = 0
         self.include_views = ("mut1", "mut2")
         self.force_rebuild = False
@@ -12,6 +14,10 @@ class test_config:
         self.min_delta_margin = 5.0
         self.gap = 0.5
         self.wt_pairs_frac = 0.1
+        self.cross_pairs_frac = 0.1
+        self.strong_pos_threshold = 1.0
+        self.strong_neg_threshold = -5.0
+        self.min_score_margin = 0.1
         self.deduplicate_across_views = True
 
 def _add_repo_root_to_path() -> None:
@@ -23,6 +29,7 @@ def _add_repo_root_to_path() -> None:
 
 _add_repo_root_to_path()
 
+# from utils import WILD_TYPE, PairTuple
 from src.dataset import default_data_paths, load_dpo_pair_dataframe
 
 
@@ -39,6 +46,10 @@ def main() -> None:
         min_delta_margin=args.min_delta_margin,
         gap=args.gap,
         wt_pairs_frac=args.wt_pairs_frac,
+        cross_pairs_frac=args.cross_pairs_frac,
+        strong_pos_threshold=args.strong_pos_threshold,
+        strong_neg_threshold=args.strong_neg_threshold,
+        min_score_margin=args.min_score_margin,
         deduplicate_across_views=args.deduplicate_across_views,
     )
 
@@ -55,9 +66,6 @@ def main() -> None:
         f"margin mean={margins.mean():.4f} median={margins.median():.4f} "
         f"min={margins.min():.4f} max={margins.max():.4f}"
     )
-
-    by_view = pairs_df.groupby("source_view").size().sort_values(ascending=False)
-    print("Pairs per view: " + ", ".join(f"{k}:{int(v)}" for k, v in by_view.items()))
 
     show_n = min(max(0, int(args.preview_count)), len(pairs_df))
     if show_n == 0:
