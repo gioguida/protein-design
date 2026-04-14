@@ -4,6 +4,11 @@
 venv/
 ENV/
 
+# uv
+uv.lock
+.uv/
+*.egg-info/
+
 # Python
 __pycache__/
 *.py[cod]
