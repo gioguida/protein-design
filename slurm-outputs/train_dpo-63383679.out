@@ -1,0 +1,56 @@
+WARNING: Could not load optional Python module: python/3.11.6
+Continuing without explicit python module; conda env Python will be used.
+Many modules are hidden in this stack. Use "module --show_hidden spider SOFTWARE" if you are not able to find the required software
+DPO environment loaded for user: gguidarini
+DPO output dir: /cluster/scratch/gguidarini/outputs
+DPO best-model export dir: /cluster/scratch/gguidarini/outputs/2026-04-14/11-13-10/dpo_best_models
+DPO last-model export dir: /cluster/scratch/gguidarini/outputs/2026-04-14/11-13-10/dpo_last_models
+W&B dir: /cluster/scratch/gguidarini/dpo_outputs/2026-04-14/11-13-10/wandb
+PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+DPO_USE_UV: 1
+Running on host: eu-ts-01
+/cluster/project/infk/krause/gguidarini/miniconda3/envs/flu/bin/python
+Tue Apr 14 11:13:19 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100 80GB PCIe          On  |   00000000:64:00.0 Off |                    0 |
+| N/A   34C    P0             46W /  300W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+2026-04-14 11:13:26,823 | INFO | Starting DPO training run
+2026-04-14 11:13:26,830 | INFO | Saved resolved config to /cluster/scratch/gguidarini/outputs/2026-04-14/11-13-26/resolved_config.yaml
+2026-04-14 11:13:29,560 | INFO | W&B run name: esm2-t12-35m-ur50d__delta-based__views-mut1-mut2__ep-15__bs-128__lr-1e-05__beta-0.04__s-42
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /cluster/home/gguidarini/.netrc.
+wandb: Network error (ConnectionError), entering retry loop.
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+wandb: Network error (ConnectionError), entering retry loop.
+Error executing job with overrides: ['output_dir=/cluster/scratch/gguidarini/outputs', 'checkpointing.best_export_dir=/cluster/scratch/gguidarini/outputs/2026-04-14/11-13-10/dpo_best_models', 'checkpointing.last_export_dir=/cluster/scratch/gguidarini/outputs/2026-04-14/11-13-10/dpo_last_models']
+Traceback (most recent call last):
+  File "/cluster/home/gguidarini/protein-design/src/train_dpo.py", line 440, in main
+    wandb_mod, wandb_run = init_wandb_run(cfg, output_dir, logger, OmegaConf)
+  File "/cluster/home/gguidarini/protein-design/src/utils.py", line 152, in init_wandb_run
+    run = wandb.init(
+  File "/cluster/home/gguidarini/protein-design/.venv/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1611, in init
+    get_sentry().reraise(e)
+  File "/cluster/home/gguidarini/protein-design/.venv/lib/python3.10/site-packages/wandb/analytics/sentry.py", line 190, in reraise
+    raise exc.with_traceback(tb)
+  File "/cluster/home/gguidarini/protein-design/.venv/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1594, in init
+    run = wi.init(run_settings, run_config, run_printer)
+  File "/cluster/home/gguidarini/protein-design/.venv/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1038, in init
+    raise CommError(
+wandb.errors.errors.CommError: Run initialization has timed out after 90.0 sec. Please try increasing the timeout with the `init_timeout` setting: `wandb.init(settings=wandb.Settings(init_timeout=120))`.
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
