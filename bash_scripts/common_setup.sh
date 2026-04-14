@@ -41,6 +41,8 @@ fi
 module load eth_proxy
 module load "${DPO_STACK_MODULE}" "${DPO_GCC_MODULE}"
 module load "${DPO_CUDA_MODULE}"
+export no_proxy="${no_proxy//api.wandb.ai,/}"
+export NO_PROXY="${no_proxy}"
 
 # Activate conda environment
 source "${DPO_CONDA_BASE}/bin/activate" "${DPO_CONDA_ENV}"
