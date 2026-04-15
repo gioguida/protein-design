@@ -15,7 +15,7 @@ project_dir: ${PROJECT_DIR}
 wandb_project: ${WANDB_PROJECT}
 fp16: true
 seed: 42
-# finetune: null  # set to evotuned checkpoint to stack MSA-TTT on top
+finetune: ${PROJECT_DIR}/checkpoints/REPLACE_WITH_EVOTUNING_RUN_NAME/best.pt
 scoring_n_samples: 10000
 scoring_batch_size: 512
 scoring_datasets:

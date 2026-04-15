@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+import numpy as np
 import torch
 from Bio import SeqIO
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -17,19 +18,38 @@ class OASFastaDataset(Dataset):
     def __init__(self, fasta_path: str, tokenizer: AutoTokenizer, max_seq_len: int) -> None:
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
-        self.sequences: list[str] = []
 
         logger.info("Loading sequences from %s", fasta_path)
-        for record in SeqIO.parse(fasta_path, "fasta"):
-            self.sequences.append(str(record.seq))
-        logger.info("Loaded %d sequences", len(self.sequences))
+
+        # Pass 1: count sequences and find max length for tight numpy dtype
+        n_seqs = 0
+        max_len = 0
+        with open(fasta_path) as f:
+            cur_len = 0
+            for line in f:
+                if line.startswith(">"):
+                    if n_seqs > 0:
+                        max_len = max(max_len, cur_len)
+                    n_seqs += 1
+                    cur_len = 0
+                else:
+                    cur_len += len(line.rstrip())
+            if n_seqs > 0:
+                max_len = max(max_len, cur_len)
+
+        # Pass 2: fill pre-allocated numpy array (CoW-safe across DataLoader workers)
+        self.sequences = np.empty(n_seqs, dtype=f"S{max_len}")
+        for i, record in enumerate(SeqIO.parse(fasta_path, "fasta")):
+            self.sequences[i] = str(record.seq).encode("ascii")
+        logger.info("Loaded %d sequences (max_len=%d, %.1f GB)",
+                    n_seqs, max_len, self.sequences.nbytes / 1e9)
 
     def __len__(self) -> int:
         return len(self.sequences)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         encoding = self.tokenizer(
-            self.sequences[idx],
+            self.sequences[idx].decode("ascii"),
             truncation=True,
             max_length=self.max_seq_len,
             padding=False,

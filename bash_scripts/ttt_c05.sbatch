@@ -18,4 +18,5 @@ source .venv/bin/activate
 mkdir -p logs
 
 CONFIG="${1:-configs/ttt_c05_single.yaml}"
-python scripts/train_evotuning.py --config "$CONFIG" -y
+RUN_NAME="${2:-ttt_c05}"
+python scripts/train_ttt.py --config "$CONFIG" --run-name "$RUN_NAME"

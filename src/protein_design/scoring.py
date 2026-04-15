@@ -345,5 +345,7 @@ def run_multi_scoring_evaluation(
             model, tokenizer, df, enrichment_col, device, batch_size, seed,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
+        results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
         results[f"spearman_random_{name}"] = ds_results["spearman_random"]
+        results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
     return results

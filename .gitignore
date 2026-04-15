@@ -42,4 +42,8 @@ wandb/
 
 # SLURM / job logs
 logs/
+
+# Generated configs (run-name substituted at launch time)
+configs/_generated/*
+!configs/_generated/.gitkeep
 oas_ighg_urls.txt

@@ -1,7 +1,9 @@
 """Training loop for ESM2 evotuning (continued MLM pretraining)."""
 
+import json
 import logging
 import shutil
+import time
 from pathlib import Path
 
 import torch
@@ -120,6 +122,9 @@ def train(config: dict, run_name: str) -> None:
     save_every_n_steps = config["save_every_n_steps"]
     max_epochs = config["max_epochs"]
     hit_max_steps = False
+    train_start = time.time()
+    training_history = []
+    scoring_history = []
 
     for epoch in range(1, max_epochs + 1):
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{max_epochs}")
@@ -155,6 +160,13 @@ def train(config: dict, run_name: str) -> None:
                     "Epoch %d Step %d — loss: %.4f — lr: %.2e",
                     epoch, global_step, avg_loss, lr,
                 )
+                training_history.append({
+                    "step": global_step,
+                    "train_loss": avg_loss,
+                    "learning_rate": lr,
+                    "epoch": epoch,
+                    "wall_time": time.time() - train_start,
+                })
                 running_loss = 0.0
                 log_steps = 0
 
@@ -166,6 +178,13 @@ def train(config: dict, run_name: str) -> None:
                     step=global_step,
                 )
                 logger.info("Step %d — val loss: %.4f — val perplexity: %.2f", global_step, val_loss, ppl)
+                training_history.append({
+                    "step": global_step,
+                    "val_loss": val_loss,
+                    "val_perplexity": ppl,
+                    "epoch": epoch,
+                    "wall_time": time.time() - train_start,
+                })
 
                 ckpt_state = {
                     "epoch": epoch,
@@ -202,6 +221,7 @@ def train(config: dict, run_name: str) -> None:
                         {f"eval/{k}": v for k, v in scoring_results.items()},
                         step=global_step,
                     )
+                    scoring_history.append({"step": global_step, **scoring_results})
 
                 model.train()
 
@@ -226,6 +246,12 @@ def train(config: dict, run_name: str) -> None:
             step=global_step,
         )
         logger.info("Final val loss: %.4f — val perplexity: %.2f", final_val_loss, final_ppl)
+        training_history.append({
+            "step": global_step,
+            "val_loss": final_val_loss,
+            "val_perplexity": final_ppl,
+            "wall_time": time.time() - train_start,
+        })
     else:
         final_ppl = float("inf")
         logger.info("Skipping final perplexity (empty validation set)")
@@ -268,5 +294,22 @@ def train(config: dict, run_name: str) -> None:
             {f"eval/{k}": v for k, v in scoring_results.items()},
             step=global_step,
         )
+        if not scoring_history or scoring_history[-1]["step"] != global_step:
+            scoring_history.append({"step": global_step, **scoring_results})
+
+    # ── Save local metrics ──────────────────────────────────────────────
+    metrics = {
+        "metadata": {
+            "total_steps": global_step,
+            "total_time_seconds": round(time.time() - train_start, 2),
+            "device": str(device),
+            "param_summary": summary,
+        },
+        "training_history": training_history,
+        "scoring_history": scoring_history,
+    }
+    with open(run_dir / "metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info("Saved metrics to %s", run_dir / "metrics.json")
 
     wandb.finish()
