@@ -4,13 +4,10 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --time=0:30:00
-#SBATCH --output=logs/plot_cdrh3_%j.out
-#SBATCH --error=logs/plot_cdrh3_%j.err
+#SBATCH --output=bash_scripts/logs/plot_cdrh3_%j.out
+#SBATCH --error=bash_scripts/logs/plot_cdrh3_%j.err
 
 set -euo pipefail
-cd /cluster/home/mdenegri/protein-design
+source bash_scripts/common_setup.sh
 
-mkdir -p logs
-
-source .venv/bin/activate
 python scripts/plot_cdrh3_lengths.py

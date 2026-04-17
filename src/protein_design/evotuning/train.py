@@ -13,10 +13,14 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
-from protein_design.data import make_dataloaders
-from protein_design.evaluate import compute_perplexity
-from protein_design.model import EvotuningModel
-from protein_design.scoring import load_scoring_datasets, run_multi_scoring_evaluation
+from protein_design.evotuning.data import make_dataloaders
+from protein_design.eval import (
+    compute_perplexity,
+    load_scoring_datasets,
+    run_multi_scoring_evaluation,
+)
+from protein_design.model import ESM2Model
+from protein_design.utils import build_model_config
 from protein_design.utils import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -50,7 +54,7 @@ def train(config: dict, run_name: str) -> None:
     wandb.init(project=config["wandb_project"], name=run_name, config=config)
 
     # ── Model ────────────────────────────────────────────────────────────
-    model = EvotuningModel(config)
+    model = ESM2Model(build_model_config(config, device=str(device)))
 
     # Load finetuning checkpoint (weights only, fresh optimizer/scheduler)
     finetune_path = config.get("finetune")

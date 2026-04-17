@@ -1,30 +1,30 @@
 #!/usr/bin/env python
-"""Entry point for ESM2 evotuning training."""
+"""Entry point for ESM2 evotuning training.
 
-import argparse
+Usage:
+    python scripts/train_evotuning.py task=evotuning data=oas_full run_name=my_run
+    python scripts/train_evotuning.py task=evotuning_c05 data=c05_5k finetune=/path/to/best.pt
+"""
+
 import logging
-from datetime import datetime
 
-from protein_design.train import train
-from protein_design.utils import load_config
+import hydra
+from omegaconf import DictConfig
+
+from protein_design.evotuning.train import train
+from protein_design.utils import flatten_config, generate_run_name
 
 
-def main() -> None:
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    parser = argparse.ArgumentParser(description="ESM2 evotuning training")
-    parser.add_argument("--config", required=True, help="Path to YAML config file")
-    parser.add_argument("--run-name", required=True, help="Name for this training run")
-    args = parser.parse_args()
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{args.run_name}_{timestamp}"
-
-    config = load_config(args.config)
+    run_name = generate_run_name(cfg)
+    config = flatten_config(cfg)
     train(config, run_name)
 
 

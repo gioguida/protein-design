@@ -17,33 +17,35 @@ For each run dir passed in, the script:
   3. Recomputes validation perplexity by loading best.pt and the run's
      fasta_path.
 
-Usage (repeat --run per model, same order as --label):
-    python scripts/plot_results.py \
-        --run ${PROJECT_DIR}/checkpoints/<evotuning_run> --label evotuned \
-        --run ${PROJECT_DIR}/checkpoints/<c05_5k_run>    --label "+C05" \
-        --run ${TRAIN_DIR}/<ttt_only_run>                --label "+TTT" \
-        --run ${TRAIN_DIR}/<c05_ttt_run>                 --label "+C05+TTT" \
-        --scoring-config configs/evotuning_base.yaml \
-        --out-dir ${PROJECT_DIR}/plots/meeting
+Usage (repeat run/label pairs via Hydra list overrides):
+    python scripts/plot_results.py scoring=d2 data=oas_full \\
+        '+runs=[/path/to/run1,/path/to/run2]' \\
+        '+labels=[evotuned,+C05]' \\
+        +out_dir=\${HOME}/protein-design/plots/meeting
 """
 
-import argparse
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
 
+import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import yaml
+from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer
 
-from protein_design.evaluate import compute_cdr_pseudo_perplexity, compute_perplexity
-from protein_design.model import EvotuningModel
-from protein_design.scoring import load_scoring_datasets, run_multi_scoring_evaluation
-from protein_design.utils import load_config
+from protein_design.eval import (
+    compute_cdr_pseudo_perplexity,
+    compute_perplexity,
+    load_scoring_datasets,
+    run_multi_scoring_evaluation,
+)
+from protein_design.model import ESM2Model
+from protein_design.utils import build_model_config, model_config_dict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -158,7 +160,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
 
     need_model = scoring is None or ppl is None
     # Always load model for CDR pseudo-perplexity (cheap, 24 forward passes)
-    model = EvotuningModel(cfg)
+    model = ESM2Model(build_model_config(cfg, device=str(device)))
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
@@ -188,7 +190,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
 def evaluate_base(scoring_config: dict, datasets, tokenizer, device, seed):
     """Score base ESM2 (no checkpoint) and compute val perplexity on the OAS split."""
     logger.info("Evaluating base ESM2")
-    model = EvotuningModel(scoring_config)
+    model = ESM2Model(build_model_config(scoring_config, device=str(device)))
     model.to(device).eval()
     batch_size = scoring_config.get("scoring_batch_size", 512)
     scoring = _score_model(model, tokenizer, datasets, device, batch_size, seed)
@@ -294,51 +296,55 @@ def build_summary_rows(label: str, scoring: dict) -> list[dict]:
     return rows
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--run", action="append", required=True,
-                    help="Path to a run directory; repeat for each model")
-    ap.add_argument("--label", action="append", required=True,
-                    help="Label for each --run (same order, same count)")
-    ap.add_argument("--scoring-config", required=True,
-                    help="Config used to score base ESM2 (e.g. configs/evotuning_base.yaml)")
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--force-rescore", action="store_true")
-    ap.add_argument("--force-reppl", action="store_true")
-    ap.add_argument("--skip-base", action="store_true",
-                    help="Don't evaluate base ESM2 (e.g. if already in the runs)")
-    args = ap.parse_args()
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    runs = list(OmegaConf.to_container(cfg.runs, resolve=True))
+    labels = list(OmegaConf.to_container(cfg.labels, resolve=True))
+    out_dir_str = cfg.out_dir
+    force_rescore = cfg.get("force_rescore", False)
+    force_reppl = cfg.get("force_reppl", False)
+    skip_base = cfg.get("skip_base", False)
 
-    if len(args.run) != len(args.label):
-        ap.error("--run and --label must be provided the same number of times")
+    if len(runs) != len(labels):
+        raise ValueError("runs and labels must have the same length")
 
-    out_dir = Path(args.out_dir)
+    out_dir = Path(out_dir_str)
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    scoring_cfg = load_config(args.scoring_config)
-    seed = scoring_cfg.get("seed", 42)
-    n_samples = scoring_cfg.get("scoring_n_samples", 10000)
-    scoring_batch_size = scoring_cfg.get("scoring_batch_size", 512)
+    # Build a flat scoring config for evaluate_base / evaluate_run fallback
+    scoring_cfg = model_config_dict(cfg)
+    scoring_cfg["seed"] = cfg.seed
+    scoring_cfg["scoring_n_samples"] = cfg.scoring.n_samples
+    scoring_cfg["scoring_batch_size"] = cfg.scoring.batch_size
+    scoring_cfg["scoring_datasets"] = OmegaConf.to_container(cfg.scoring.datasets, resolve=True)
+    scoring_cfg["fasta_path"] = cfg.data.fasta_path
+    scoring_cfg["max_seq_len"] = cfg.data.max_seq_len
+    scoring_cfg["mlm_probability"] = cfg.data.mlm_probability
+    scoring_cfg["batch_size"] = cfg.scoring.batch_size
+
+    seed = cfg.seed
+    n_samples = cfg.scoring.n_samples
+    scoring_batch_size = cfg.scoring.batch_size
     datasets = load_scoring_datasets(scoring_cfg["scoring_datasets"], n_samples, seed)
-    tokenizer = AutoTokenizer.from_pretrained(scoring_cfg["model_name"])
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
 
     rows: list[dict] = []
     ppl_series: dict[str, float | None] = {}
     cdr_ppl_series: dict[str, float | None] = {}
 
-    if not args.skip_base:
+    if not skip_base:
         base_scoring, base_ppl, base_cdr_ppl = evaluate_base(scoring_cfg, datasets, tokenizer, device, seed)
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring))
         ppl_series[BASE_LABEL] = base_ppl
         cdr_ppl_series[BASE_LABEL] = base_cdr_ppl
 
-    for run_dir, label in zip(args.run, args.label):
+    for run_dir, label in zip(runs, labels):
         scoring, ppl, cdr_ppl = evaluate_run(
             Path(run_dir), datasets, tokenizer, device,
             scoring_batch_size, seed,
-            force_rescore=args.force_rescore, force_reppl=args.force_reppl,
+            force_rescore=force_rescore, force_reppl=force_reppl,
             fallback_config=scoring_cfg,
         )
         rows.extend(build_summary_rows(label, scoring))
@@ -370,8 +376,8 @@ def main() -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     (out_dir / "manifest.txt").write_text(
         f"Generated {ts}\n"
-        f"Scoring config: {args.scoring_config}\n\n"
-        + "\n".join(f"{l}\t{r}" for l, r in zip(args.label, args.run))
+        f"Scoring config: Hydra composable (model={cfg.model.name})\n\n"
+        + "\n".join(f"{l}\t{r}" for l, r in zip(labels, runs))
     )
 
 

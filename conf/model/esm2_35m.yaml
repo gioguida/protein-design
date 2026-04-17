@@ -1,0 +1,5 @@
+# @package _global_
+model:
+  name: facebook/esm2_t12_35M_UR50D
+  freeze_embeddings: true
+  freeze_first_n_layers: 0

@@ -1,0 +1,10 @@
+# @package _global_
+training:
+  learning_rate: 2.0e-5
+  warmup_steps: 500
+  max_epochs: 3
+  max_steps: null
+  batch_size: 128
+  gradient_accumulation_steps: 4
+  save_every_n_steps: 5000
+  fp16: true

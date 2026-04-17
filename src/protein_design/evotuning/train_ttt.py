@@ -17,8 +17,9 @@ import yaml
 from Bio import SeqIO
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
-from protein_design.model import EvotuningModel
-from protein_design.scoring import load_scoring_datasets, run_multi_scoring_evaluation
+from protein_design.eval import load_scoring_datasets, run_multi_scoring_evaluation
+from protein_design.model import ESM2Model
+from protein_design.utils import build_model_config
 from protein_design.utils import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def train_ttt(config: dict, run_name: str) -> None:
     wandb.init(project=config["wandb_project"], name=run_name, config=config)
 
     # ── Model ────────────────────────────────────────────────────────────
-    model = EvotuningModel(config)
+    model = ESM2Model(build_model_config(config, device=str(device)))
 
     finetune_path = config.get("finetune")
     if finetune_path:

@@ -1,39 +1,168 @@
-"""Mutational path scoring and Spearman evaluation for evotuned ESM2."""
+"""Shared evaluation: MLM + PLL perplexity, CDR pseudo-perplexity, Spearman scoring."""
 
 import logging
+import math
 import re
+from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 from scipy.stats import spearmanr
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
-logger = logging.getLogger(__name__)
+from protein_design.model import ESM2Model
+from protein_design.utils import (
+    C05_CDRH3,
+    C05_CDRH3_END,
+    C05_CDRH3_START,
+    C05_VH,
+)
 
-C05_CDRH3 = "HMSMQQVVSAGWERADLVGDAFDV"  # 24 aa wild-type CDRH3
+logger = logging.getLogger(__name__)
 
 _MUT_RE = re.compile(r"^([A-Z])(\d+)([A-Z])$")
 
 
-def parse_mutations(mut_str: str, wt: str) -> list[tuple[int, str, str]]:
-    """Parse mutation string into list of (0-indexed position, wt_aa, mut_aa).
+# ---------------------------------------------------------------------------
+# MLM perplexity (evotuning)
+# ---------------------------------------------------------------------------
 
-    Args:
-        mut_str: Semicolon-separated mutations, e.g. "H1A;M2C".
-        wt: Wild-type sequence.
+
+def compute_perplexity(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    max_batches: int = 50,
+) -> tuple[float, float]:
+    """Compute masked-language-model perplexity over a dataloader.
 
     Returns:
-        List of (pos, wt_aa, mut_aa) tuples with 0-indexed positions.
+        (perplexity, avg_loss) where perplexity = exp(avg_loss).
     """
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Eval", total=min(max_batches, len(dataloader))):
+            if n_batches >= max_batches:
+                break
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            total_loss += outputs.loss.item()
+            n_batches += 1
+
+    avg_loss = total_loss / max(n_batches, 1)
+    ppl = math.exp(avg_loss)
+    logger.info("Perplexity: %.2f (avg loss: %.4f, %d batches)", ppl, avg_loss, n_batches)
+    return ppl, avg_loss
+
+
+# ---------------------------------------------------------------------------
+# PLL perplexity (DPO)
+# ---------------------------------------------------------------------------
+
+
+def sequence_perplexity(
+    sequences: Sequence[str],
+    scorer: ESM2Model,
+    cdr_only: bool = True,
+) -> torch.Tensor:
+    """Compute per-sequence perplexity based on Pseudo-Log-Likelihood (PLL).
+
+    Returns a tensor of shape [batch_size] containing perplexity scores.
+    """
+    if len(sequences) == 0:
+        raise ValueError("sequences must not be empty")
+
+    seq_lengths = {len(seq) for seq in sequences}
+    if len(seq_lengths) != 1:
+        raise ValueError("All sequences in a batch must have the same length.")
+
+    pll_scores = scorer.pseudo_log_likelihood(
+        sequences, cdr_only=cdr_only, use_grad=False
+    )
+
+    if cdr_only:
+        N = float(next(iter(seq_lengths)))
+    else:
+        N = float(scorer.tokenize_sequences([sequences[0]]).shape[1])
+
+    if N <= 0:
+        raise ValueError("Number of scored positions must be positive.")
+
+    return torch.exp(-pll_scores / N)
+
+
+def corpus_perplexity(
+    sequences: Sequence[str],
+    scorer: ESM2Model,
+    cdr_only: bool = True,
+) -> float:
+    """Compute corpus-level perplexity as exp(total_nll / total_scored_tokens).
+
+    Unlike mean per-sequence perplexity, this matches the common MLM-style
+    evaluation where loss is averaged before exponentiation.
+    """
+    if len(sequences) == 0:
+        raise ValueError("sequences must not be empty")
+
+    total_pll = 0.0
+    total_scored_tokens = 0
+
+    if cdr_only:
+        by_len: Dict[int, List[str]] = {}
+        for seq in sequences:
+            by_len.setdefault(len(seq), []).append(seq)
+
+        for cdr_len, seq_group in by_len.items():
+            if cdr_len <= 0:
+                continue
+            pll_scores = scorer.pseudo_log_likelihood(
+                seq_group, cdr_only=True, use_grad=False
+            )
+            total_pll += float(pll_scores.sum().item())
+            total_scored_tokens += int(cdr_len) * len(seq_group)
+    else:
+        seq_lengths = {len(seq) for seq in sequences}
+        if len(seq_lengths) != 1:
+            raise ValueError(
+                "All sequences must have the same length when cdr_only=False."
+            )
+        pll_scores = scorer.pseudo_log_likelihood(
+            sequences, cdr_only=False, use_grad=False
+        )
+        tokens_per_sequence = int(
+            scorer.tokenize_sequences([sequences[0]]).shape[1]
+        )
+        total_pll += float(pll_scores.sum().item())
+        total_scored_tokens += tokens_per_sequence * len(sequences)
+
+    if total_scored_tokens <= 0:
+        raise ValueError("No valid tokens were evaluated for perplexity.")
+
+    avg_nll = -total_pll / float(total_scored_tokens)
+    return float(math.exp(avg_nll))
+
+
+# ---------------------------------------------------------------------------
+# Mutation parsing + masked log-prob scoring
+# ---------------------------------------------------------------------------
+
+
+def parse_mutations(mut_str: str, wt: str) -> list[tuple[int, str, str]]:
+    """Parse mutation string into list of (0-indexed position, wt_aa, mut_aa)."""
     mutations = []
     for token in mut_str.split(";"):
         m = _MUT_RE.match(token.strip())
         if m is None:
             raise ValueError(f"Cannot parse mutation token: {token!r}")
         wt_aa, pos_str, mut_aa = m.groups()
-        pos = int(pos_str) - 1  # convert to 0-indexed
+        pos = int(pos_str) - 1
         if wt[pos] != wt_aa:
             raise ValueError(
                 f"WT mismatch at position {pos}: expected {wt[pos]!r}, got {wt_aa!r}"
@@ -51,24 +180,10 @@ def compute_masked_log_probs_batch(
     device: torch.device,
     batch_size: int = 512,
 ) -> np.ndarray:
-    """Compute log P(target_aa | sequence with mask_pos masked) for each sequence.
-
-    Args:
-        model: ESM2 model (EvotuningModel or EsmForMaskedLM wrapper).
-        tokenizer: ESM2 tokenizer.
-        sequences: List of amino acid strings (all same length).
-        mask_positions: List of 0-indexed positions to mask in each sequence.
-        target_aas: List of single amino acid characters to score at each masked position.
-        device: Torch device.
-        batch_size: Batch size for forward passes.
-
-    Returns:
-        Array of log-probabilities, shape (len(sequences),).
-    """
+    """Compute log P(target_aa | sequence with mask_pos masked) for each sequence."""
     n = len(sequences)
     log_probs = np.empty(n, dtype=np.float32)
 
-    # Pre-compute target token IDs
     target_ids = [tokenizer.convert_tokens_to_ids(aa) for aa in target_aas]
     mask_token_id = tokenizer.mask_token_id
 
@@ -78,15 +193,12 @@ def compute_masked_log_probs_batch(
             end = min(start + batch_size, n)
             batch_seqs = sequences[start:end]
 
-            # Tokenize batch (all same length → no padding needed)
             encoding = tokenizer(
                 batch_seqs, return_tensors="pt", padding=False, truncation=False
             )
             input_ids = encoding["input_ids"].clone()
             attention_mask = encoding["attention_mask"]
 
-            # Mask the target position for each sequence
-            # Token offset: ESM2 prepends <cls>, so string pos i → token index i+1
             for i in range(end - start):
                 token_pos = mask_positions[start + i] + 1
                 input_ids[i, token_pos] = mask_token_id
@@ -97,7 +209,7 @@ def compute_masked_log_probs_batch(
             with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
-            logits = outputs.logits  # (batch, seq_len, vocab_size)
+            logits = outputs.logits
             log_softmax = F.log_softmax(logits.float(), dim=-1)
 
             for i in range(end - start):
@@ -118,32 +230,13 @@ def score_double_mutants(
     batch_size: int = 512,
     seed: int = 42,
 ) -> np.ndarray:
-    """Score double-mutant sequences using mutational path scoring.
-
-    For each sequence with mutations at positions i, j:
-      Order A: log P(mut_i | WT) + log P(mut_j | WT + mut_i)
-      Order B: log P(mut_j | WT) + log P(mut_i | WT + mut_j)
-
-    Args:
-        model: ESM2 model.
-        tokenizer: ESM2 tokenizer.
-        wt: Wild-type CDRH3 sequence.
-        df: DataFrame with 'mut' column containing mutation strings.
-        device: Torch device.
-        strategy: "average" (mean of both orderings) or "random" (pick one per sequence).
-        batch_size: Batch size for forward passes.
-        seed: Random seed for "random" strategy.
-
-    Returns:
-        Array of scores, shape (len(df),).
-    """
+    """Score double-mutant sequences using mutational path scoring."""
     n = len(df)
 
-    # Build the 4 arrays: (sequence, mask_pos, target_aa) for each step
-    seqs_a1, pos_a1, tgt_a1 = [], [], []  # Order A step 1: WT, mask i
-    seqs_a2, pos_a2, tgt_a2 = [], [], []  # Order A step 2: WT+mut_i, mask j
-    seqs_b1, pos_b1, tgt_b1 = [], [], []  # Order B step 1: WT, mask j
-    seqs_b2, pos_b2, tgt_b2 = [], [], []  # Order B step 2: WT+mut_j, mask i
+    seqs_a1, pos_a1, tgt_a1 = [], [], []
+    seqs_a2, pos_a2, tgt_a2 = [], [], []
+    seqs_b1, pos_b1, tgt_b1 = [], [], []
+    seqs_b2, pos_b2, tgt_b2 = [], [], []
 
     wt_list = list(wt)
 
@@ -153,24 +246,20 @@ def score_double_mutants(
             raise ValueError(f"Expected exactly 2 mutations, got {len(muts)}: {mut_str}")
         (pos_i, _, mut_i_aa), (pos_j, _, mut_j_aa) = muts
 
-        # Order A step 1: mask pos_i in WT
         seqs_a1.append(wt)
         pos_a1.append(pos_i)
         tgt_a1.append(mut_i_aa)
 
-        # Order A step 2: apply mut_i to WT, mask pos_j
         seq_with_i = wt_list.copy()
         seq_with_i[pos_i] = mut_i_aa
         seqs_a2.append("".join(seq_with_i))
         pos_a2.append(pos_j)
         tgt_a2.append(mut_j_aa)
 
-        # Order B step 1: mask pos_j in WT
         seqs_b1.append(wt)
         pos_b1.append(pos_j)
         tgt_b1.append(mut_j_aa)
 
-        # Order B step 2: apply mut_j to WT, mask pos_i
         seq_with_j = wt_list.copy()
         seq_with_j[pos_j] = mut_j_aa
         seqs_b2.append("".join(seq_with_j))
@@ -197,14 +286,47 @@ def score_double_mutants(
         raise ValueError(f"Unknown strategy: {strategy!r}")
 
 
+# ---------------------------------------------------------------------------
+# CDR pseudo-perplexity (evotuning)
+# ---------------------------------------------------------------------------
+
+
+def compute_cdr_pseudo_perplexity(
+    model: torch.nn.Module,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    full_sequence: str = C05_VH,
+    cdr_start: int = C05_CDRH3_START,
+    cdr_end: int = C05_CDRH3_END,
+) -> float:
+    """Compute pseudo-perplexity over CDR-H3 positions using full-sequence context.
+
+    Masks one CDR position at a time, feeds the full VH sequence as context,
+    and averages the log-probabilities of the correct amino acid.
+    """
+    cdr_len = cdr_end - cdr_start
+    sequences = [full_sequence] * cdr_len
+    mask_positions = list(range(cdr_start, cdr_end))
+    target_aas = list(full_sequence[cdr_start:cdr_end])
+
+    log_probs = compute_masked_log_probs_batch(
+        model, tokenizer, sequences, mask_positions, target_aas, device,
+        batch_size=cdr_len,
+    )
+    ppl = math.exp(-float(np.mean(log_probs)))
+    logger.info("CDR-H3 pseudo-perplexity: %.2f (mean log P: %.4f)", ppl, np.mean(log_probs))
+    return ppl
+
+
+# ---------------------------------------------------------------------------
+# Spearman evaluation
+# ---------------------------------------------------------------------------
+
+
 def evaluate_spearman(
     scores: np.ndarray, enrichment: np.ndarray
 ) -> tuple[float, float]:
-    """Compute Spearman rank correlation, filtering NaN/inf values.
-
-    Returns:
-        (rho, p_value) tuple.
-    """
+    """Compute Spearman rank correlation, filtering NaN/inf values."""
     mask = np.isfinite(scores) & np.isfinite(enrichment)
     n_valid = mask.sum()
     if n_valid < 3:
@@ -220,22 +342,11 @@ def load_scoring_data(
     enrichment_col: str,
     seed: int,
 ) -> pd.DataFrame:
-    """Load ED2 data, filter to exactly 2 mutations, and subsample.
-
-    Args:
-        data_path: Path to CSV file (e.g. data/processed/D2.csv).
-        n_samples: Number of sequences to subsample.
-        enrichment_col: Column name for enrichment values.
-        seed: Random seed for subsampling.
-
-    Returns:
-        Subsampled DataFrame with 'mut' and enrichment_col columns.
-    """
+    """Load ED2 data, filter to exactly 2 mutations, and subsample."""
     df = pd.read_csv(data_path)
     df = df[df["num_mut"] == 2].copy()
     logger.info("Loaded %d double-mutant sequences from %s", len(df), data_path)
 
-    # Filter out rows with NaN/inf enrichment
     df = df[np.isfinite(df[enrichment_col])].copy()
 
     if len(df) > n_samples:
@@ -255,20 +366,7 @@ def run_scoring_evaluation(
     batch_size: int = 512,
     seed: int = 42,
 ) -> dict:
-    """Run full scoring evaluation with both ordering strategies.
-
-    Args:
-        model: ESM2 model (will be set to eval mode, caller should restore train mode).
-        tokenizer: ESM2 tokenizer.
-        df: DataFrame from load_scoring_data.
-        enrichment_col: Column name for enrichment values.
-        device: Torch device.
-        batch_size: Batch size for forward passes.
-        seed: Random seed.
-
-    Returns:
-        Dict with keys: spearman_avg, spearman_avg_pval, spearman_random, spearman_random_pval.
-    """
+    """Run full scoring evaluation with both ordering strategies."""
     enrichment = df[enrichment_col].values
 
     scores_avg = score_double_mutants(
@@ -298,16 +396,7 @@ def load_scoring_datasets(
     n_samples: int,
     seed: int,
 ) -> list[tuple[str, pd.DataFrame, str]]:
-    """Load multiple scoring datasets from config.
-
-    Args:
-        datasets_config: List of dicts with keys 'name', 'path', 'enrichment_col'.
-        n_samples: Number of sequences to subsample per dataset.
-        seed: Random seed for subsampling.
-
-    Returns:
-        List of (name, DataFrame, enrichment_col) tuples.
-    """
+    """Load multiple scoring datasets from config."""
     datasets = []
     for ds in datasets_config:
         name = ds["name"]
@@ -325,19 +414,7 @@ def run_multi_scoring_evaluation(
     batch_size: int = 512,
     seed: int = 42,
 ) -> dict:
-    """Run scoring evaluation across multiple datasets.
-
-    Args:
-        model: ESM2 model.
-        tokenizer: ESM2 tokenizer.
-        datasets: List of (name, df, enrichment_col) from load_scoring_datasets.
-        device: Torch device.
-        batch_size: Batch size for forward passes.
-        seed: Random seed.
-
-    Returns:
-        Flat dict with keys like 'spearman_avg_M22', 'spearman_random_SI06', etc.
-    """
+    """Run scoring evaluation across multiple datasets."""
     results = {}
     for name, df, enrichment_col in datasets:
         logger.info("Scoring dataset: %s", name)

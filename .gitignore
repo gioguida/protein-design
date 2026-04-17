@@ -1,5 +1,6 @@
 # Environments
 .env
+.env.local
 .venv
 venv/
 ENV/
@@ -41,9 +42,8 @@ checkpoints/
 wandb/
 
 # SLURM / job logs
-logs/
+bash_scripts/logs/
 
-# Generated configs (run-name substituted at launch time)
-configs/_generated/*
-!configs/_generated/.gitkeep
+# Hydra output directories
+outputs/
 oas_ighg_urls.txt

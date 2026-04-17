@@ -2,22 +2,26 @@
 """Sweep batch sizes to find the GPU VRAM limit for a forward+backward pass.
 
 Run interactively on the target GPU:
-    srun --gpus=1 --gres=gpumem:24g --mem=32G --pty \\
-        python scripts/find_max_batch_size.py --config configs/evotuning_base.yaml
+    srun --gpus=1 --gres=gpumem:24g --mem=32G --pty \
+        python scripts/find_max_batch_size.py model=esm2_35m data=oas_full task=evotuning
+
+Override sweep params:
+    python scripts/find_max_batch_size.py +start_size=64 +target_util=0.9
 
 The script doubles the batch size each step until OOM, then prints a summary
 table and a recommended config snippet.
 """
 
-import argparse
 import gc
 import time
 
+import hydra
 import torch
+from omegaconf import DictConfig
 from transformers import AutoTokenizer
 
-from protein_design.model import EvotuningModel
-from protein_design.utils import load_config
+from protein_design.model import ESM2Model
+from protein_design.utils import build_model_config
 
 
 def vram_used_gb() -> float:
@@ -83,20 +87,12 @@ def try_batch(
         return False, 0.0, 0.0
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Find max batch size for GPU VRAM")
-    parser.add_argument("--config", required=True, help="Path to training YAML config")
-    parser.add_argument(
-        "--start", type=int, default=32,
-        help="Starting batch size (default: 32)",
-    )
-    parser.add_argument(
-        "--target-util", type=float, default=0.85,
-        help="Target fraction of max successful batch size for recommended config (default: 0.85)",
-    )
-    args = parser.parse_args()
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    start_size = cfg.get("start_size", 32)
+    target_util = cfg.get("target_util", 0.85)
 
-    config = load_config(args.config)
+    mcfg = build_model_config(cfg, device="cuda")
 
     if not torch.cuda.is_available():
         print("ERROR: No CUDA device found. Run this on a GPU node.")
@@ -106,22 +102,22 @@ def main() -> None:
     total_vram = torch.cuda.get_device_properties(device).total_memory / 1024**3
     print(f"\nGPU: {torch.cuda.get_device_name(device)}")
     print(f"Total VRAM: {total_vram:.1f} GB")
-    print(f"Model: {config['model_name']}")
-    print(f"Seq len: {config['max_seq_len']}, fp16: {config.get('fp16', False)}\n")
+    print(f"Model: {cfg.model.name}")
+    print(f"Seq len: {cfg.data.max_seq_len}, fp16: {cfg.training.fp16}\n")
 
-    model = EvotuningModel(config)
+    model = ESM2Model(mcfg)
     model.to(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
     vocab_size = tokenizer.vocab_size
-    seq_len = config["max_seq_len"]
-    use_fp16 = config.get("fp16", False)
+    seq_len = cfg.data.max_seq_len
+    use_fp16 = cfg.training.fp16
     scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)
 
     print(f"{'Batch':>8}  {'Throughput':>14}  {'VRAM used':>10}  {'Status':>8}")
     print("-" * 50)
 
-    batch_size = args.start
+    batch_size = start_size
     last_ok_batch = None
     last_ok_throughput = None
 
@@ -141,7 +137,7 @@ def main() -> None:
     print("-" * 50)
 
     if last_ok_batch is None:
-        print(f"\nStarting batch size {args.start} already OOM. Try a smaller --start value.")
+        print(f"\nStarting batch size {start_size} already OOM. Try a smaller +start_size value.")
         return
 
     # Recommend a batch size at target utilization (round down to power of 2)
