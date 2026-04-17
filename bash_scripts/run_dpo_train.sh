@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
-#SBATCH --gpus=a100_80gb:1	# a100:1 | a100_80gb:1 | pro_6000:1 | rtx_4090
+#SBATCH --gpus=rtx_4090:1	# a100:1 | a100_80gb:1 | pro_6000:1 | rtx_4090:1
 
 set -euo pipefail
 

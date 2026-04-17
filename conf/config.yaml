@@ -14,7 +14,7 @@ data:
   min_positive_delta: 3.0
   min_delta_margin: 5.0
   delta_based:
-    components: [within_pos, within_neg, wt_anchors, cross]  # toggle to experiment
+    components: cross   #[within_pos, within_neg, wt_anchors, cross] toggle to experiment
     gap: 0.5            # expected in [0.0, 1.0]
     wt_pairs_frac: 0.1  # expected in [0.0, 1.0]
     cross_pairs_frac: 0.1      # expected in [0.0, 1.0]
@@ -36,10 +36,10 @@ data:
 model:
   esm_model_path: facebook/esm2_t12_35M_UR50D
   use_context: true
-  pll_mask_chunk_size: 128
+  pll_mask_chunk_size: 32 #128
 
 training:
-  batch_size: 128
+  batch_size: 32 # 128
   num_epochs: 15
   lr: 1e-5
   weight_decay: 0.0
