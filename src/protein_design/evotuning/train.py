@@ -5,10 +5,12 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import Optional
 
 import torch
 import wandb
 import yaml
+from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
@@ -20,47 +22,54 @@ from protein_design.eval import (
     run_multi_scoring_evaluation,
 )
 from protein_design.model import ESM2Model
-from protein_design.utils import build_model_config
-from protein_design.utils import ensure_dir
+from protein_design.utils import (
+    DataConfig,
+    ModelConfig,
+    RunConfig,
+    ScoringConfig,
+    TrainingConfig,
+    ensure_dir,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def train(config: dict, run_name: str) -> None:
-    """Run the evotuning training loop.
-
-    Args:
-        config: Resolved dict loaded from the evotuning YAML config file.
-        run_name: Name for this run (used for output directory and W&B).
-    """
+def train(
+    model_cfg: ModelConfig,
+    data_cfg: DataConfig,
+    training_cfg: TrainingConfig,
+    scoring_cfg: ScoringConfig,
+    run_cfg: RunConfig,
+    run_name: str,
+    cfg: Optional[DictConfig] = None,
+) -> None:
+    """Run the evotuning training loop."""
     # ── Run directory setup ─────────────────────────────────────────────
-    train_dir = config["train_dir"]
-    run_dir = ensure_dir(f"{train_dir}/{run_name}")
+    run_dir = ensure_dir(f"{run_cfg.train_dir}/{run_name}")
     checkpoint_dir = ensure_dir(f"{run_dir}/checkpoints")
 
     # Save resolved config snapshot
+    snapshot = OmegaConf.to_container(cfg, resolve=True) if cfg is not None else {}
     with open(run_dir / "config.yaml", "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(snapshot, f, default_flow_style=False, sort_keys=False)
     logger.info("Run directory: %s", run_dir)
 
     # ── Setup ────────────────────────────────────────────────────────────
-    torch.manual_seed(config["seed"])
+    torch.manual_seed(run_cfg.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config["seed"])
+        torch.cuda.manual_seed_all(run_cfg.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    wandb.init(project=config["wandb_project"], name=run_name, config=config)
+    wandb.init(project=run_cfg.wandb_project, name=run_name, config=snapshot)
 
     # ── Model ────────────────────────────────────────────────────────────
-    model = ESM2Model(build_model_config(config, device=str(device)))
+    model = ESM2Model(model_cfg)
 
-    # Load finetuning checkpoint (weights only, fresh optimizer/scheduler)
-    finetune_path = config.get("finetune")
-    if finetune_path:
-        logger.info("Loading finetune checkpoint: %s", finetune_path)
-        ckpt = torch.load(finetune_path, map_location="cpu")
+    if run_cfg.finetune:
+        logger.info("Loading finetune checkpoint: %s", run_cfg.finetune)
+        ckpt = torch.load(run_cfg.finetune, map_location="cpu")
         model.load_state_dict(ckpt["model_state_dict"])
 
     summary = model.param_summary()
@@ -73,47 +82,51 @@ def train(config: dict, run_name: str) -> None:
     model.to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────
-    fasta_path = config.get("fasta_path")
-    if not fasta_path:
-        scratch_dir = config.get("scratch_dir", ".")
-        fasta_path = f"{scratch_dir}/oas_dedup_rep_seq.fasta"
-    train_loader, val_loader = make_dataloaders(fasta_path, config)
+    train_loader, val_loader = make_dataloaders(
+        fasta_path=data_cfg.fasta_path,
+        tokenizer_name=model_cfg.esm_model_path,
+        max_seq_len=data_cfg.max_seq_len,
+        mlm_probability=data_cfg.mlm_probability,
+        batch_size=training_cfg.batch_size,
+        seed=run_cfg.seed,
+    )
 
     # ── Optimizer + scheduler ────────────────────────────────────────────
     optimizer = AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=config["learning_rate"],
+        lr=training_cfg.learning_rate,
         weight_decay=0.01,
     )
-    accum_steps = config["gradient_accumulation_steps"]
-    max_steps = config.get("max_steps")  # optional: stop after N optimizer steps
-    epoch_based_steps = config["max_epochs"] * len(train_loader) // accum_steps
+    accum_steps = training_cfg.gradient_accumulation_steps
+    max_steps = training_cfg.max_steps
+    epoch_based_steps = training_cfg.max_epochs * len(train_loader) // accum_steps
     num_training_steps = max_steps if max_steps else epoch_based_steps
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=config["warmup_steps"],
+        num_warmup_steps=training_cfg.warmup_steps,
         num_training_steps=num_training_steps,
     )
     if max_steps:
         logger.info("max_steps=%d — will stop after %d optimizer steps", max_steps, max_steps)
 
-    use_fp16 = config.get("fp16", False) and device.type == "cuda"
+    use_fp16 = training_cfg.fp16 and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)
 
     # ── Scoring data (loaded once, reused at every checkpoint) ─────────
-    scoring_datasets_config = config.get("scoring_datasets")
-    if scoring_datasets_config:
-        tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
+    if scoring_cfg.datasets:
+        tokenizer = AutoTokenizer.from_pretrained(model_cfg.esm_model_path)
         scoring_datasets = load_scoring_datasets(
-            scoring_datasets_config,
-            n_samples=config.get("scoring_n_samples", 10000),
-            seed=config["seed"],
+            scoring_cfg.datasets,
+            n_samples=scoring_cfg.n_samples,
+            seed=run_cfg.seed,
         )
-        scoring_batch_size = config.get("scoring_batch_size", 512)
+        scoring_batch_size = scoring_cfg.batch_size
         logger.info("Scoring evaluation enabled: %d datasets", len(scoring_datasets))
     else:
+        tokenizer = None
         scoring_datasets = None
-        logger.info("Scoring evaluation disabled (no scoring_datasets in config)")
+        scoring_batch_size = scoring_cfg.batch_size
+        logger.info("Scoring evaluation disabled (no scoring.datasets in config)")
 
     # ── Training loop ────────────────────────────────────────────────────
     model.train()
@@ -123,8 +136,8 @@ def train(config: dict, run_name: str) -> None:
     optim_step = 0
     best_val_ppl = float("inf")
 
-    save_every_n_steps = config["save_every_n_steps"]
-    max_epochs = config["max_epochs"]
+    save_every_n_steps = training_cfg.save_every_n_steps
+    max_epochs = training_cfg.max_epochs
     hit_max_steps = False
     train_start = time.time()
     training_history = []
@@ -175,7 +188,7 @@ def train(config: dict, run_name: str) -> None:
                 log_steps = 0
 
             # ── Evaluation + checkpoint + scoring ────────────────────────
-            if global_step % save_every_n_steps == 0:
+            if save_every_n_steps and global_step % save_every_n_steps == 0:
                 ppl, val_loss = compute_perplexity(model, val_loader, device)
                 wandb.log(
                     {"val/loss": val_loss, "val/perplexity": ppl, "train/epoch": epoch},
@@ -219,7 +232,7 @@ def train(config: dict, run_name: str) -> None:
                         model, tokenizer, scoring_datasets,
                         device=device,
                         batch_size=scoring_batch_size,
-                        seed=config["seed"],
+                        seed=run_cfg.seed,
                     )
                     wandb.log(
                         {f"eval/{k}": v for k, v in scoring_results.items()},
@@ -278,10 +291,9 @@ def train(config: dict, run_name: str) -> None:
         logger.info("Final checkpoint is also best (ppl=%.2f)", final_ppl)
 
     # ── Archive best checkpoint to project dir ───────────────────────────
-    project_dir = config.get("project_dir")
     best_src = run_dir / "best.pt"
-    if project_dir and best_src.exists():
-        archive_dir = ensure_dir(f"{project_dir}/checkpoints/{run_name}")
+    if run_cfg.project_dir and best_src.exists():
+        archive_dir = ensure_dir(f"{run_cfg.project_dir}/checkpoints/{run_name}")
         archive_path = archive_dir / "best.pt"
         shutil.copy2(best_src, archive_path)
         logger.info("Archived best checkpoint to %s", archive_path)
@@ -292,7 +304,7 @@ def train(config: dict, run_name: str) -> None:
             model, tokenizer, scoring_datasets,
             device=device,
             batch_size=scoring_batch_size,
-            seed=config["seed"],
+            seed=run_cfg.seed,
         )
         wandb.log(
             {f"eval/{k}": v for k, v in scoring_results.items()},

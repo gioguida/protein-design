@@ -45,7 +45,7 @@ from protein_design.eval import (
     run_multi_scoring_evaluation,
 )
 from protein_design.model import ESM2Model
-from protein_design.utils import build_model_config, model_config_dict
+from protein_design.utils import build_model_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -55,15 +55,15 @@ STRATEGY = "avg"  # "avg" or "random" — avg is the headline strategy
 MAX_SEQUENCES_FOR_PPL = 10_000  # cap sequences loaded for perplexity eval
 
 
-def _make_val_loader_lightweight(fasta_path: str, config: dict, max_seqs: int = MAX_SEQUENCES_FOR_PPL):
+def _make_val_loader_lightweight(fasta_path: str, cfg: DictConfig, max_seqs: int = MAX_SEQUENCES_FOR_PPL):
     """Build a small val DataLoader by streaming the FASTA and stopping early."""
     from Bio import SeqIO
     from torch.utils.data import DataLoader, TensorDataset
     from transformers import DataCollatorForLanguageModeling
 
-    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    max_len = config.get("max_seq_len", 256)
-    seed = config.get("seed", 42)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
+    max_len = int(cfg.data.max_seq_len)
+    seed = int(cfg.get("seed", 42))
 
     # Stream sequences, take a reproducible subset for validation
     seqs = []
@@ -92,10 +92,11 @@ def _make_val_loader_lightweight(fasta_path: str, config: dict, max_seqs: int = 
 
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, mlm=True,
-        mlm_probability=config.get("mlm_probability", 0.15),
+        mlm_probability=float(cfg.data.mlm_probability),
         pad_to_multiple_of=8,
     )
-    return DataLoader(_SeqDataset(val_seqs), batch_size=config.get("batch_size", 128),
+    batch_size = int(cfg.training.batch_size) if "training" in cfg else int(cfg.scoring.batch_size)
+    return DataLoader(_SeqDataset(val_seqs), batch_size=batch_size,
                       shuffle=False, num_workers=0, collate_fn=collator)
 
 
@@ -111,13 +112,12 @@ def _find_checkpoint(run_dir: Path) -> Path:
     raise FileNotFoundError(f"No best.pt or final.pt in {run_dir}")
 
 
-def _load_run_config(run_dir: Path) -> dict:
-    """Load the run's resolved config.yaml snapshot."""
+def _load_run_config(run_dir: Path) -> DictConfig:
+    """Load the run's resolved config.yaml snapshot as a DictConfig."""
     cfg_path = run_dir / "config.yaml"
     if not cfg_path.exists():
         raise FileNotFoundError(f"No config.yaml in {run_dir}")
-    with open(cfg_path) as f:
-        return yaml.safe_load(f)
+    return OmegaConf.load(cfg_path)
 
 
 def _score_model(model, tokenizer, datasets, device, batch_size, seed) -> dict:
@@ -139,7 +139,7 @@ def _extract_final_scoring(metrics: dict) -> dict | None:
 
 def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
                  seed, force_rescore: bool, force_reppl: bool,
-                 fallback_config: dict | None = None):
+                 fallback_config: DictConfig | None = None):
     """Return (scoring_dict, final_val_ppl, cdr_ppl) for this run."""
     run_dir = Path(run_dir)
     metrics_path = run_dir / "metrics.json"
@@ -171,7 +171,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
                                scoring_batch_size, seed)
 
     if ppl is None:
-        fasta = cfg.get("fasta_path")
+        fasta = cfg.data.fasta_path if "data" in cfg else None
         if fasta and Path(fasta).exists():
             logger.info("  recomputing val perplexity on %s", fasta)
             val_loader = _make_val_loader_lightweight(fasta, cfg)
@@ -187,18 +187,18 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     return scoring, ppl, cdr_ppl
 
 
-def evaluate_base(scoring_config: dict, datasets, tokenizer, device, seed):
+def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed):
     """Score base ESM2 (no checkpoint) and compute val perplexity on the OAS split."""
     logger.info("Evaluating base ESM2")
-    model = ESM2Model(build_model_config(scoring_config, device=str(device)))
+    model = ESM2Model(build_model_config(scoring_cfg, device=str(device)))
     model.to(device).eval()
-    batch_size = scoring_config.get("scoring_batch_size", 512)
+    batch_size = int(scoring_cfg.scoring.batch_size)
     scoring = _score_model(model, tokenizer, datasets, device, batch_size, seed)
 
     ppl = None
-    fasta = scoring_config.get("fasta_path")
+    fasta = scoring_cfg.data.fasta_path if "data" in scoring_cfg else None
     if fasta and Path(fasta).exists():
-        val_loader = _make_val_loader_lightweight(fasta, scoring_config)
+        val_loader = _make_val_loader_lightweight(fasta, scoring_cfg)
         ppl, _ = compute_perplexity(model, val_loader, device)
 
     cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
@@ -313,21 +313,13 @@ def main(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # Build a flat scoring config for evaluate_base / evaluate_run fallback
-    scoring_cfg = model_config_dict(cfg)
-    scoring_cfg["seed"] = cfg.seed
-    scoring_cfg["scoring_n_samples"] = cfg.scoring.n_samples
-    scoring_cfg["scoring_batch_size"] = cfg.scoring.batch_size
-    scoring_cfg["scoring_datasets"] = OmegaConf.to_container(cfg.scoring.datasets, resolve=True)
-    scoring_cfg["fasta_path"] = cfg.data.fasta_path
-    scoring_cfg["max_seq_len"] = cfg.data.max_seq_len
-    scoring_cfg["mlm_probability"] = cfg.data.mlm_probability
-    scoring_cfg["batch_size"] = cfg.scoring.batch_size
-
+    # Pass the full Hydra cfg as the fallback config for runs missing config.yaml
     seed = cfg.seed
     n_samples = cfg.scoring.n_samples
     scoring_batch_size = cfg.scoring.batch_size
-    datasets = load_scoring_datasets(scoring_cfg["scoring_datasets"], n_samples, seed)
+    datasets = load_scoring_datasets(
+        OmegaConf.to_container(cfg.scoring.datasets, resolve=True), n_samples, seed
+    )
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
 
     rows: list[dict] = []
@@ -335,7 +327,7 @@ def main(cfg: DictConfig) -> None:
     cdr_ppl_series: dict[str, float | None] = {}
 
     if not skip_base:
-        base_scoring, base_ppl, base_cdr_ppl = evaluate_base(scoring_cfg, datasets, tokenizer, device, seed)
+        base_scoring, base_ppl, base_cdr_ppl = evaluate_base(cfg, datasets, tokenizer, device, seed)
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring))
         ppl_series[BASE_LABEL] = base_ppl
         cdr_ppl_series[BASE_LABEL] = base_cdr_ppl
@@ -345,7 +337,7 @@ def main(cfg: DictConfig) -> None:
             Path(run_dir), datasets, tokenizer, device,
             scoring_batch_size, seed,
             force_rescore=force_rescore, force_reppl=force_reppl,
-            fallback_config=scoring_cfg,
+            fallback_config=cfg,
         )
         rows.extend(build_summary_rows(label, scoring))
         ppl_series[label] = ppl

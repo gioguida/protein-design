@@ -12,7 +12,14 @@ import hydra
 from omegaconf import DictConfig
 
 from protein_design.evotuning.train import train
-from protein_design.utils import flatten_config, generate_run_name
+from protein_design.utils import (
+    build_data_config,
+    build_model_config,
+    build_run_config,
+    build_scoring_config,
+    build_training_config,
+    generate_run_name,
+)
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -24,8 +31,15 @@ def main(cfg: DictConfig) -> None:
     )
 
     run_name = generate_run_name(cfg)
-    config = flatten_config(cfg)
-    train(config, run_name)
+    train(
+        model_cfg=build_model_config(cfg),
+        data_cfg=build_data_config(cfg),
+        training_cfg=build_training_config(cfg),
+        scoring_cfg=build_scoring_config(cfg),
+        run_cfg=build_run_config(cfg),
+        run_name=run_name,
+        cfg=cfg,
+    )
 
 
 if __name__ == "__main__":

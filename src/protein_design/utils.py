@@ -49,6 +49,49 @@ class ModelConfig:
     freeze_first_n_layers: int = 0
 
 
+@dataclass
+class DataConfig:
+    """Dataset / tokenizer-side configuration consumed by training."""
+
+    fasta_path: str = ""
+    max_seq_len: int = 256
+    mlm_probability: float = 0.15
+
+
+@dataclass
+class TrainingConfig:
+    """Training-loop hyperparameters (mirrors `cfg.training.*`)."""
+
+    learning_rate: float = 2.0e-5
+    warmup_steps: int = 0
+    max_epochs: int = 1
+    max_steps: Optional[int] = None
+    batch_size: int = 128
+    gradient_accumulation_steps: int = 1
+    save_every_n_steps: Optional[int] = None
+    fp16: bool = False
+
+
+@dataclass
+class ScoringConfig:
+    """Scoring / evaluation configuration."""
+
+    n_samples: int = 10000
+    batch_size: int = 512
+    datasets: Optional[List[dict]] = None
+
+
+@dataclass
+class RunConfig:
+    """Top-level run context (paths, seed, wandb, finetune checkpoint)."""
+
+    train_dir: str = ""
+    project_dir: Optional[str] = None
+    wandb_project: str = "protein-design"
+    seed: int = 42
+    finetune: Optional[str] = None
+
+
 class PairMember(TypedDict):
     aa: str
     score: float
@@ -98,39 +141,59 @@ def setup_train_logger(
     return _logger
 
 
-def model_config_dict(cfg: DictConfig) -> dict:
-    """Extract flat model config dict (for scripts that need a mutable dict)."""
-    return {
-        "model_name": cfg.model.name,
-        "freeze_embeddings": cfg.model.freeze_embeddings,
-        "freeze_first_n_layers": cfg.model.freeze_first_n_layers,
-    }
+def build_model_config(cfg: DictConfig, device: str | None = None) -> "ModelConfig":
+    """Build a ModelConfig from a nested Hydra config.
 
-
-def build_model_config(cfg: Any, device: str | None = None) -> "ModelConfig":
-    """Build a ModelConfig from a flat training dict or nested Hydra config.
-
-    Accepts either:
-      - flat dict with keys `model_name`, `freeze_embeddings`, `freeze_first_n_layers`
-      - DictConfig with `.model.name`, `.model.freeze_embeddings`, ...
     Evotuning trains on raw sequences, so `use_context` defaults to False here.
     """
-    if isinstance(cfg, DictConfig):
-        esm_path = cfg.model.name
-        freeze_emb = bool(cfg.model.freeze_embeddings)
-        freeze_n = int(cfg.model.freeze_first_n_layers)
-    else:
-        esm_path = cfg["model_name"]
-        freeze_emb = bool(cfg.get("freeze_embeddings", False))
-        freeze_n = int(cfg.get("freeze_first_n_layers", 0))
-
     resolved_device = device or ("cuda" if _cuda_available() else "cpu")
     return ModelConfig(
-        esm_model_path=esm_path,
+        esm_model_path=cfg.model.name,
         device=resolved_device,
         use_context=False,
-        freeze_embeddings=freeze_emb,
-        freeze_first_n_layers=freeze_n,
+        freeze_embeddings=bool(cfg.model.freeze_embeddings),
+        freeze_first_n_layers=int(cfg.model.freeze_first_n_layers),
+    )
+
+
+def build_data_config(cfg: DictConfig) -> "DataConfig":
+    return DataConfig(
+        fasta_path=cfg.data.fasta_path,
+        max_seq_len=int(cfg.data.max_seq_len),
+        mlm_probability=float(cfg.data.mlm_probability),
+    )
+
+
+def build_training_config(cfg: DictConfig) -> "TrainingConfig":
+    t = cfg.training
+    return TrainingConfig(
+        learning_rate=float(t.learning_rate),
+        warmup_steps=int(t.warmup_steps),
+        max_epochs=int(t.max_epochs),
+        max_steps=t.max_steps if t.max_steps is not None else None,
+        batch_size=int(t.batch_size),
+        gradient_accumulation_steps=int(t.gradient_accumulation_steps),
+        save_every_n_steps=t.save_every_n_steps if t.save_every_n_steps is not None else None,
+        fp16=bool(t.fp16),
+    )
+
+
+def build_scoring_config(cfg: DictConfig) -> "ScoringConfig":
+    datasets = OmegaConf.to_container(cfg.scoring.datasets, resolve=True) if cfg.scoring.datasets else None
+    return ScoringConfig(
+        n_samples=int(cfg.scoring.n_samples),
+        batch_size=int(cfg.scoring.batch_size),
+        datasets=datasets or None,
+    )
+
+
+def build_run_config(cfg: DictConfig) -> "RunConfig":
+    return RunConfig(
+        train_dir=cfg.paths.train_dir,
+        project_dir=cfg.paths.get("project_dir"),
+        wandb_project=cfg.wandb.project,
+        seed=int(cfg.seed),
+        finetune=cfg.get("finetune"),
     )
 
 
@@ -141,40 +204,6 @@ def _cuda_available() -> bool:
         return bool(torch.cuda.is_available())
     except Exception:
         return False
-
-
-def flatten_config(cfg: DictConfig) -> dict:
-    """Flatten nested Hydra config to the flat dict that train()/train_ttt() expect.
-
-    This is a transitional adapter. A follow-up PR will refactor the training
-    functions to accept nested DictConfig directly.
-    """
-    flat = OmegaConf.to_container(cfg, resolve=True)
-
-    result = {}
-    # Model
-    result["model_name"] = flat["model"]["name"]
-    result["freeze_embeddings"] = flat["model"]["freeze_embeddings"]
-    result["freeze_first_n_layers"] = flat["model"]["freeze_first_n_layers"]
-    # Data
-    result["fasta_path"] = flat["data"]["fasta_path"]
-    result["max_seq_len"] = flat["data"]["max_seq_len"]
-    result["mlm_probability"] = flat["data"]["mlm_probability"]
-    # Training
-    result.update(flat["training"])
-    # Paths
-    result["train_dir"] = flat["paths"]["train_dir"]
-    result["project_dir"] = flat["paths"]["project_dir"]
-    # W&B
-    result["wandb_project"] = flat["wandb"]["project"]
-    # Top-level
-    result["seed"] = flat["seed"]
-    result["finetune"] = flat.get("finetune")
-    # Scoring
-    result["scoring_n_samples"] = flat["scoring"]["n_samples"]
-    result["scoring_batch_size"] = flat["scoring"]["batch_size"]
-    result["scoring_datasets"] = flat["scoring"]["datasets"] or None
-    return result
 
 
 def generate_run_name(cfg: DictConfig) -> str:

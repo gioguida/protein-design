@@ -46,4 +46,8 @@ bash_scripts/logs/
 
 # Hydra output directories
 outputs/
+.hydra/
+
+# Training logs
+*.log
 oas_ighg_urls.txt

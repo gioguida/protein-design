@@ -60,31 +60,35 @@ class OASFastaDataset(Dataset):
 
 def make_dataloaders(
     fasta_path: str,
-    config: dict,
+    tokenizer_name: str,
+    max_seq_len: int,
+    mlm_probability: float,
+    batch_size: int,
+    seed: int,
 ) -> tuple[DataLoader, DataLoader]:
     """Create train (95%) and validation (5%) DataLoaders from a FASTA file."""
-    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    dataset = OASFastaDataset(fasta_path, tokenizer, config["max_seq_len"])
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    dataset = OASFastaDataset(fasta_path, tokenizer, max_seq_len)
 
     n_val = int(len(dataset) * 0.05)
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(
         dataset,
         [n_train, n_val],
-        generator=torch.Generator().manual_seed(config["seed"]),
+        generator=torch.Generator().manual_seed(seed),
     )
     logger.info("Split: %d train, %d val", n_train, n_val)
 
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=True,
-        mlm_probability=config["mlm_probability"],
+        mlm_probability=mlm_probability,
         pad_to_multiple_of=8,
     )
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=config["batch_size"],
+        batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
@@ -93,7 +97,7 @@ def make_dataloaders(
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=config["batch_size"],
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=False,
