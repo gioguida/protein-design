@@ -505,7 +505,7 @@ def _resolve_raw_csv_path(cfg: Any) -> Path:
 
 
 def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
-    """Ensure val_pos/val_neg CSVs exist for validation PLL and Spearman tracking."""
+    """Ensure val_pos/val_neg CSVs exist for validation perplexity and Spearman tracking."""
     processed_dir = _resolve_processed_dir(cfg)
     val_pos_path = processed_dir / "val_pos.csv"
     val_neg_path = processed_dir / "val_neg.csv"
@@ -570,7 +570,7 @@ def _load_validation_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional
 
     if (not val_pos_path.exists()) or (not val_neg_path.exists()):
         logger.warning(
-            "Validation PLL sets missing (expected %s and %s). Skipping validation PLL logging.",
+            "Validation perplexity sets missing (expected %s and %s). Skipping validation perplexity logging.",
             val_pos_path,
             val_neg_path,
         )
@@ -580,13 +580,16 @@ def _load_validation_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional
         val_pos = _load_sequences_from_csv(val_pos_path, logger)
         val_neg = _load_sequences_from_csv(val_neg_path, logger)
     except (FileNotFoundError, ValueError, pd.errors.ParserError) as exc:
-        logger.warning("Could not load validation PLL sets (%s). Skipping validation PLL logging.", exc)
+        logger.warning(
+            "Could not load validation perplexity sets (%s). Skipping validation perplexity logging.",
+            exc,
+        )
         return None
 
     return {
-        "pll/val_pos": val_pos,
-        "pll/val_neg": val_neg,
-        "pll/val_wt": [WILD_TYPE],
+        "ppl/val_pos": val_pos,
+        "ppl/val_neg": val_neg,
+        "ppl/val_wt": [WILD_TYPE],
     }
 
 
@@ -642,20 +645,20 @@ def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[
     processed_dir = _resolve_processed_dir(cfg)
     d5_path = processed_dir / "D5.csv"
     if not d5_path.exists():
-        logger.warning("ED5 processed file missing at %s. Skipping test PLL logging.", d5_path)
+        logger.warning("ED5 processed file missing at %s. Skipping test perplexity logging.", d5_path)
         return None
 
     try:
         d5_df = pd.read_csv(d5_path)
     except pd.errors.ParserError as exc:
-        logger.warning("Could not parse %s (%s). Skipping test PLL logging.", d5_path, exc)
+        logger.warning("Could not parse %s (%s). Skipping test perplexity logging.", d5_path, exc)
         return None
 
     required_cols = {"aa", "M22_binding_enrichment_adj"}
     missing_cols = required_cols.difference(d5_df.columns)
     if missing_cols:
         logger.warning(
-            "%s missing required columns (%s). Skipping test PLL logging.",
+            "%s missing required columns (%s). Skipping test perplexity logging.",
             d5_path,
             ", ".join(sorted(missing_cols)),
         )
@@ -672,13 +675,13 @@ def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[
     test_neg = clean_df[clean_df["M22_binding_enrichment_adj"] < 0.0]["aa"].tolist()
 
     return {
-        "pll/test_pos": test_pos,
-        "pll/test_neg": test_neg,
-        "pll/test_wt": [WILD_TYPE],
+        "ppl/test_pos": test_pos,
+        "ppl/test_neg": test_neg,
+        "ppl/test_wt": [WILD_TYPE],
     }
 
 
-def _mean_pll_for_sequences(
+def _corpus_perplexity_for_sequences(
     scorer: ESM2,
     sequences: Sequence[str],
     batch_size: int,
@@ -698,11 +701,11 @@ def _mean_pll_for_sequences(
 
     scorer.model.eval()
     total_pll = 0.0
-    total_sequences = 0
+    total_scored_tokens = 0
     batch_size = max(1, int(batch_size))
 
     with torch.no_grad():
-        for _, seq_group in grouped_by_len.items():
+        for cdr_len, seq_group in grouped_by_len.items():
             for start in range(0, len(seq_group), batch_size):
                 batch = seq_group[start : start + batch_size]
                 pll_scores = scorer.pseudo_log_likelihood(
@@ -711,11 +714,13 @@ def _mean_pll_for_sequences(
                     use_grad=False,
                 )
                 total_pll += float(pll_scores.sum().item())
-                total_sequences += len(batch)
+                total_scored_tokens += int(cdr_len) * len(batch)
 
-    if total_sequences <= 0:
+    if total_scored_tokens <= 0:
         return float("nan")
-    return float(total_pll / float(total_sequences))
+
+    avg_nll = -total_pll / float(total_scored_tokens)
+    return float(math.exp(avg_nll))
 
 
 def evaluate_perplexity(
@@ -727,7 +732,7 @@ def evaluate_perplexity(
     sequence_batch_size = int(getattr(model, "pll_mask_chunk_size", 64))
     metrics: Dict[str, float] = {}
     for metric_name, sequences in eval_sets.items():
-        metrics[metric_name] = _mean_pll_for_sequences(
+        metrics[metric_name] = _corpus_perplexity_for_sequences(
             scorer=model,
             sequences=sequences,
             batch_size=sequence_batch_size,
@@ -960,17 +965,17 @@ def main(cfg: Any) -> None:
 
         val_eval_sets = _load_validation_pll_eval_sets(cfg, logger)
         if val_eval_sets is not None:
-            val_pll_metrics = evaluate_perplexity(
+            val_ppl_metrics = evaluate_perplexity(
                 model=policy,
                 eval_sets=val_eval_sets,
                 device=str(cfg.training.device),
             )
-            epoch_record.update(val_pll_metrics)
+            epoch_record.update(val_ppl_metrics)
             logger.info(
-                "Validation PLL | pll/val_pos=%.4f | pll/val_neg=%.4f | pll/val_wt=%.4f",
-                float(val_pll_metrics["pll/val_pos"]),
-                float(val_pll_metrics["pll/val_neg"]),
-                float(val_pll_metrics["pll/val_wt"]),
+                "Validation Perplexity | ppl/val_pos=%.4f | ppl/val_neg=%.4f | ppl/val_wt=%.4f",
+                float(val_ppl_metrics["ppl/val_pos"]),
+                float(val_ppl_metrics["ppl/val_neg"]),
+                float(val_ppl_metrics["ppl/val_wt"]),
             )
 
         if wandb_run is not None:
@@ -1050,19 +1055,19 @@ def main(cfg: Any) -> None:
     avg_test_perplexity = _compute_chosen_perplexity(test_loader, policy)
     logger.info("Test Chosen Perplexity: %.4f", avg_test_perplexity)
 
-    test_pll_metrics: Dict[str, float] = {}
+    test_ppl_metrics: Dict[str, float] = {}
     test_eval_sets = _load_test_pll_eval_sets(cfg, logger)
     if test_eval_sets is not None:
-        test_pll_metrics = evaluate_perplexity(
+        test_ppl_metrics = evaluate_perplexity(
             model=policy,
             eval_sets=test_eval_sets,
             device=str(cfg.training.device),
         )
         logger.info(
-            "Test PLL (ED5) | pll/test_pos=%.4f | pll/test_neg=%.4f | pll/test_wt=%.4f",
-            float(test_pll_metrics["pll/test_pos"]),
-            float(test_pll_metrics["pll/test_neg"]),
-            float(test_pll_metrics["pll/test_wt"]),
+            "Test Perplexity (ED5) | ppl/test_pos=%.4f | ppl/test_neg=%.4f | ppl/test_wt=%.4f",
+            float(test_ppl_metrics["ppl/test_pos"]),
+            float(test_ppl_metrics["ppl/test_neg"]),
+            float(test_ppl_metrics["ppl/test_wt"]),
         )
 
     history_df = pd.DataFrame(history)
@@ -1126,8 +1131,8 @@ def main(cfg: Any) -> None:
     logger.info("Saved metrics to %s", metrics_path)
 
     if wandb_run is not None:
-        if test_pll_metrics:
-            wandb_mod.log(test_pll_metrics, step=global_step)
+        if test_ppl_metrics:
+            wandb_mod.log(test_ppl_metrics, step=global_step)
         wandb_mod.log({f"test/{k}": v for k, v in summary.items()})
         wandb_mod.log({f"metrics/{k}": v for k, v in metrics_payload.items() if k != "run_name"})
         wandb_run.summary.update(summary)
