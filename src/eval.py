@@ -9,12 +9,16 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from scipy.stats import spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .model import ESM2
 from .utils import WILD_TYPE
+
+try:
+    from scipy.stats import spearmanr as _scipy_spearmanr
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    _scipy_spearmanr = None
 
 logger = logging.getLogger(__name__)
 
@@ -318,8 +322,19 @@ def evaluate_spearman(
     if n_valid < 3:
         logger.warning("Too few valid values for Spearman: %d", n_valid)
         return float("nan"), float("nan")
-    rho, pval = spearmanr(scores[mask], enrichment[mask])
-    return float(rho), float(pval)
+    scores_valid = np.asarray(scores[mask], dtype=float)
+    enrichment_valid = np.asarray(enrichment[mask], dtype=float)
+
+    if _scipy_spearmanr is not None:
+        rho, pval = _scipy_spearmanr(scores_valid, enrichment_valid)
+        return float(rho), float(pval)
+
+    # Fallback when scipy is unavailable: compute rho via ranked Pearson.
+    rank_scores = pd.Series(scores_valid).rank(method="average").to_numpy(dtype=float)
+    rank_enrichment = pd.Series(enrichment_valid).rank(method="average").to_numpy(dtype=float)
+    rho = float(np.corrcoef(rank_scores, rank_enrichment)[0, 1])
+    logger.warning("scipy is not installed; returning Spearman rho with p-value set to NaN.")
+    return rho, float("nan")
 
 
 def load_scoring_data(
