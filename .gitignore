@@ -39,4 +39,4 @@ data/raw/
 data/processed/
 
 # Keep data structure but ignore large files if desired
-# data/**/*.csv
+data/**/*.csv
