@@ -224,6 +224,7 @@ def _train_evotuning(
                         device=device,
                         batch_size=scoring_cfg.batch_size,
                         seed=run_cfg.seed,
+                        flank_ks=scoring_cfg.flank_ks,
                     )
                     wandb.log(
                         {f"eval/{k}": v for k, v in scoring_results.items()},
@@ -283,6 +284,7 @@ def _train_evotuning(
             device=device,
             batch_size=scoring_cfg.batch_size,
             seed=run_cfg.seed,
+            flank_ks=scoring_cfg.flank_ks,
         )
         wandb.log(
             {f"eval/{k}": v for k, v in scoring_results.items()},
@@ -393,6 +395,7 @@ def _train_ttt(
             device=device,
             batch_size=scoring_cfg.batch_size,
             seed=run_cfg.seed,
+            flank_ks=scoring_cfg.flank_ks,
         )
         wandb.log(
             {f"eval/{k}": v for k, v in scoring_results.items()},

@@ -4,7 +4,7 @@ Evotuning- and DPO-specific configs (DataConfig/TrainingConfig, DpoConfig, ...)
 live in their respective subpackages.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple, TypedDict
 
@@ -30,6 +30,7 @@ class ScoringConfig:
     n_samples: int = 10000
     batch_size: int = 512
     datasets: Optional[List[dict]] = None
+    flank_ks: List[int] = field(default_factory=lambda: [1, 3, 5])
 
 
 @dataclass
@@ -81,10 +82,13 @@ def build_scoring_config(cfg: DictConfig) -> ScoringConfig:
         if cfg.scoring.datasets
         else None
     )
+    flank_ks_cfg = cfg.scoring.get("flank_ks", [1, 3, 5])
+    flank_ks = [int(k) for k in flank_ks_cfg]
     return ScoringConfig(
         n_samples=int(cfg.scoring.n_samples),
         batch_size=int(cfg.scoring.batch_size),
         datasets=datasets or None,
+        flank_ks=flank_ks,
     )
 
 

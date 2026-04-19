@@ -66,6 +66,7 @@ def main(cfg: DictConfig) -> None:
         model, tokenizer, scoring_datasets,
         device=device, batch_size=scoring_cfg.batch_size, seed=int(cfg.seed),
         scores_csv_dir=cfg.get("output_csv_dir"),
+        flank_ks=scoring_cfg.flank_ks,
     )
 
     out_path = out_dir / "eval_metrics.json"

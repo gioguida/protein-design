@@ -358,6 +358,15 @@ def load_scoring_data(
     return df
 
 
+def _mutation_positions_per_row(df: pd.DataFrame, wt: str) -> list[set[int]]:
+    """For each row, return the set of 0-based CDR positions that were mutated."""
+    out = []
+    for mut_str in df["mut"]:
+        muts = parse_mutations(mut_str, wt)
+        out.append({pos for pos, _, _ in muts})
+    return out
+
+
 def run_scoring_evaluation(
     model: torch.nn.Module,
     tokenizer: AutoTokenizer,
@@ -366,9 +375,15 @@ def run_scoring_evaluation(
     device: torch.device,
     batch_size: int = 512,
     seed: int = 42,
+    flank_ks: Sequence[int] = (),
 ) -> dict:
-    """Run full scoring evaluation with both ordering strategies."""
-    enrichment = df[enrichment_col].values
+    """Run full scoring evaluation with both ordering strategies.
+
+    If `flank_ks` is non-empty, also compute Spearman restricted to pairs
+    where at least one mutation lies in the LEFT or RIGHT k-wide flank of
+    CDRH3, for each k.
+    """
+    enrichment = np.asarray(df[enrichment_col].values)
 
     scores_avg = score_double_mutants(
         model, tokenizer, C05_CDRH3, df, device,
@@ -384,7 +399,7 @@ def run_scoring_evaluation(
     rho_rnd, pval_rnd = evaluate_spearman(scores_rnd, enrichment)
     logger.info("Spearman (random ordering):  rho=%.4f, p=%.2e", rho_rnd, pval_rnd)
 
-    return {
+    results = {
         "spearman_avg": rho_avg,
         "spearman_avg_pval": pval_avg,
         "spearman_random": rho_rnd,
@@ -392,6 +407,30 @@ def run_scoring_evaluation(
         "scores_avg": scores_avg,
         "scores_random": scores_rnd,
     }
+
+    if flank_ks:
+        cdr_len = len(C05_CDRH3)
+        row_muts = _mutation_positions_per_row(df, C05_CDRH3)
+        for k in flank_ks:
+            left_window = set(range(k))
+            right_window = set(range(cdr_len - k, cdr_len))
+            left_mask = np.array([bool(m & left_window) for m in row_muts])
+            right_mask = np.array([bool(m & right_window) for m in row_muts])
+            for side, mask in (("left", left_mask), ("right", right_mask)):
+                n_sel = int(mask.sum())
+                results[f"n_{side}_{k}"] = n_sel
+                rho_a, p_a = evaluate_spearman(scores_avg[mask], enrichment[mask])
+                rho_r, p_r = evaluate_spearman(scores_rnd[mask], enrichment[mask])
+                results[f"spearman_avg_{side}{k}"] = rho_a
+                results[f"spearman_avg_pval_{side}{k}"] = p_a
+                results[f"spearman_random_{side}{k}"] = rho_r
+                results[f"spearman_random_pval_{side}{k}"] = p_r
+                logger.info(
+                    "Spearman %s-%d (n=%d): avg rho=%.4f p=%.2e | random rho=%.4f p=%.2e",
+                    side, k, n_sel, rho_a, p_a, rho_r, p_r,
+                )
+
+    return results
 
 
 def load_scoring_datasets(
@@ -417,6 +456,7 @@ def run_multi_scoring_evaluation(
     batch_size: int = 512,
     seed: int = 42,
     scores_csv_dir: str | None = None,
+    flank_ks: Sequence[int] = (),
 ) -> dict:
     """Run scoring evaluation across multiple datasets.
 
@@ -432,11 +472,23 @@ def run_multi_scoring_evaluation(
         logger.info("Scoring dataset: %s", name)
         ds_results = run_scoring_evaluation(
             model, tokenizer, df, enrichment_col, device, batch_size, seed,
+            flank_ks=flank_ks,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
         results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
         results[f"spearman_random_{name}"] = ds_results["spearman_random"]
         results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
+
+        for k in flank_ks:
+            for side in ("left", "right"):
+                for metric in (
+                    f"spearman_avg_{side}{k}",
+                    f"spearman_avg_pval_{side}{k}",
+                    f"spearman_random_{side}{k}",
+                    f"spearman_random_pval_{side}{k}",
+                ):
+                    results[f"{metric}_{name}"] = ds_results[metric]
+                results[f"n_{side}_{k}_{name}"] = ds_results[f"n_{side}_{k}"]
 
         if csv_dir is not None:
             cols = [c for c in ("aa", "mut", enrichment_col) if c in df.columns]
