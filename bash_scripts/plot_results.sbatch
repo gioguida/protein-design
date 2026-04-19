@@ -9,7 +9,7 @@
 #SBATCH --output=bash_scripts/logs/plot_results_%j.out
 #SBATCH --error=bash_scripts/logs/plot_results_%j.err
 
-# Passes all arguments straight through to scripts/plot_results.py.
+# Passes all arguments straight through to scripts/analysis/plot_results.py.
 # Example:
 #   sbatch bash_scripts/plot_results.sbatch \
 #     scoring=d2 data=oas_full \
@@ -20,4 +20,4 @@
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
-python scripts/plot_results.py "$@"
+python scripts/analysis/plot_results.py "$@"

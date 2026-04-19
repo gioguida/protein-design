@@ -10,4 +10,4 @@
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
-bash scripts/download_oas.sh oas_ighg_urls.txt
+bash scripts/data_prep/download_oas.sh oas_ighg_urls.txt

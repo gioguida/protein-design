@@ -30,16 +30,11 @@ from protein_design.eval import (
     load_scoring_datasets,
     run_multi_scoring_evaluation,
 )
+from protein_design.config import ModelConfig, RunConfig, ScoringConfig
+from protein_design.evotuning.config import DataConfig, TrainingConfig
+from protein_design.evotuning.data import make_dataloaders
 from protein_design.model import ESM2Model
-from protein_design.training.data import make_dataloaders
-from protein_design.utils import (
-    DataConfig,
-    ModelConfig,
-    RunConfig,
-    ScoringConfig,
-    TrainingConfig,
-    ensure_dir,
-)
+from protein_design.utils import ensure_dir
 
 logger = logging.getLogger(__name__)
 

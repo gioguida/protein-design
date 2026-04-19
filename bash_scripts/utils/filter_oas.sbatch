@@ -10,4 +10,4 @@
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
-python scripts/filter_oas.py
+python scripts/data_prep/filter_oas.py

@@ -3,6 +3,7 @@
 import logging
 import math
 import re
+from pathlib import Path
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -15,7 +16,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from protein_design.model import ESM2Model
-from protein_design.utils import (
+from protein_design.constants import (
     C05_CDRH3,
     C05_CDRH3_END,
     C05_CDRH3_START,
@@ -388,6 +389,8 @@ def run_scoring_evaluation(
         "spearman_avg_pval": pval_avg,
         "spearman_random": rho_rnd,
         "spearman_random_pval": pval_rnd,
+        "scores_avg": scores_avg,
+        "scores_random": scores_rnd,
     }
 
 
@@ -413,9 +416,18 @@ def run_multi_scoring_evaluation(
     device: torch.device,
     batch_size: int = 512,
     seed: int = 42,
+    scores_csv_dir: str | None = None,
 ) -> dict:
-    """Run scoring evaluation across multiple datasets."""
+    """Run scoring evaluation across multiple datasets.
+
+    If `scores_csv_dir` is set, write `<dataset>_scores.csv` with per-pair
+    scores (both strategies) alongside the metrics.
+    """
     results = {}
+    csv_dir = Path(scores_csv_dir) if scores_csv_dir else None
+    if csv_dir is not None:
+        csv_dir.mkdir(parents=True, exist_ok=True)
+
     for name, df, enrichment_col in datasets:
         logger.info("Scoring dataset: %s", name)
         ds_results = run_scoring_evaluation(
@@ -425,4 +437,14 @@ def run_multi_scoring_evaluation(
         results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
         results[f"spearman_random_{name}"] = ds_results["spearman_random"]
         results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
+
+        if csv_dir is not None:
+            cols = [c for c in ("aa", "mut", enrichment_col) if c in df.columns]
+            out = df[cols].copy()
+            out["score_avg"] = ds_results["scores_avg"]
+            out["score_random"] = ds_results["scores_random"]
+            out_path = csv_dir / f"{name}_scores.csv"
+            out.to_csv(out_path, index=False)
+            logger.info("Wrote per-pair scores: %s", out_path)
+
     return results

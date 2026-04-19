@@ -10,4 +10,4 @@
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
-python scripts/clean_d2.py
+python scripts/data_prep/clean_d2.py

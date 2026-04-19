@@ -7,6 +7,7 @@ retraining. Writes metrics.json next to the checkpoint (or in +out_dir).
 Example:
     python scripts/eval.py +checkpoint=/path/to/best.pt scoring=d2
     python scripts/eval.py +checkpoint=/path/to/best.pt +out_dir=/tmp/eval_out
+    python scripts/eval.py +checkpoint=/path/to/best.pt scoring=d2 +output_csv_dir=/tmp/scores
 """
 
 import json
@@ -20,7 +21,7 @@ from transformers import AutoTokenizer
 
 from protein_design.eval import load_scoring_datasets, run_multi_scoring_evaluation
 from protein_design.model import ESM2Model
-from protein_design.utils import build_model_config, build_scoring_config
+from protein_design.config import build_model_config, build_scoring_config
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ def main(cfg: DictConfig) -> None:
     results = run_multi_scoring_evaluation(
         model, tokenizer, scoring_datasets,
         device=device, batch_size=scoring_cfg.batch_size, seed=int(cfg.seed),
+        scores_csv_dir=cfg.get("output_csv_dir"),
     )
 
     out_path = out_dir / "eval_metrics.json"

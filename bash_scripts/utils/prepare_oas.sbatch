@@ -11,8 +11,8 @@ set -euo pipefail
 source bash_scripts/common_setup.sh
 
 # Step 1: Filter OAS sequences
-python scripts/filter_oas.py
+python scripts/data_prep/filter_oas.py
 
 # Step 2: Deduplicate with MMseqs2
 module load stack/2024-06 gcc/12.2.0 mmseqs2/14-7e284
-bash scripts/run_mmseqs2.sh
+bash scripts/data_prep/run_mmseqs2.sh

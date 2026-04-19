@@ -8,7 +8,8 @@ import torch.nn as nn
 from transformers import AutoTokenizer, EsmForMaskedLM
 from transformers.modeling_outputs import MaskedLMOutput
 
-from protein_design.utils import LEFT_CONTEXT, ModelConfig, add_context
+from protein_design.config import ModelConfig
+from protein_design.constants import LEFT_CONTEXT, add_context
 
 logger = logging.getLogger(__name__)
 

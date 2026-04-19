@@ -21,7 +21,7 @@ from omegaconf import DictConfig
 from transformers import AutoTokenizer
 
 from protein_design.model import ESM2Model
-from protein_design.utils import build_model_config
+from protein_design.config import build_model_config
 
 
 def vram_used_gb() -> float:

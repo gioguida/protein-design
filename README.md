@@ -152,22 +152,26 @@ conf/
   task/ model/ data/ scoring/
 scripts/
   train.py                 pipeline entry point
-  eval.py                  standalone scorer
+  eval.py                  standalone scorer (+output_csv_dir for per-pair CSVs)
   find_max_batch_size.py   VRAM sweep
-  plot_results.py          comparison plots
-  filter_oas.py, search_c05.py, clean_d2.py, ...   data prep
+  data_prep/               filter_oas, search_c05, clean_d2, ...
+  analysis/                plot_results, plot_cdrh3_lengths
 bash_scripts/
   train.sbatch, eval.sbatch, plot_results.sbatch
   utils/                   data-prep sbatches
   common_setup.sh          sourced by every sbatch
 src/protein_design/
   model.py                 ESM2 wrapper (training + PLL scoring)
-  eval.py                  MLM + PLL + CDR pseudo-ppl + Spearman
-  utils.py                 config dataclasses, builders, constants
-  pipeline.py              sequential stage runner
-  training/
+  eval.py                  MLM + PLL + CDR pseudo-ppl + Spearman (shared)
+  constants.py             C05 sequences (shared)
+  config.py                shared configs: ModelConfig, ScoringConfig, RunConfig
+  utils.py                 fs + tokenizer helpers
+  evotuning/
+    config.py              DataConfig, TrainingConfig (MLM)
+    pipeline.py            sequential stage runner
     train.py               unified trainer (evotuning + TTT)
     data.py                OAS FASTA dataloaders
+  # dpo/ — to be added alongside evotuning/
 ```
 
 ---

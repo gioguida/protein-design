@@ -10,4 +10,4 @@
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
-python scripts/plot_cdrh3_lengths.py
+python scripts/analysis/plot_cdrh3_lengths.py

@@ -11,4 +11,4 @@ set -euo pipefail
 source bash_scripts/common_setup.sh
 
 module load stack/2024-06 gcc/12.2.0 mmseqs2/14-7e284
-python scripts/search_c05.py --threads 16
+python scripts/data_prep/search_c05.py --threads 16

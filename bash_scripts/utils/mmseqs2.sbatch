@@ -11,4 +11,4 @@ set -euo pipefail
 source bash_scripts/common_setup.sh
 
 module load stack/2024-06 gcc/12.2.0 mmseqs2/14-7e284
-bash scripts/run_mmseqs2.sh
+bash scripts/data_prep/run_mmseqs2.sh

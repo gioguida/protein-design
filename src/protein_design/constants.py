@@ -1,0 +1,25 @@
+"""C05 antibody constants shared across evotuning and DPO pipelines."""
+
+C05_CDRH3 = "HMSMQQVVSAGWERADLVGDAFDV"
+WILD_TYPE = C05_CDRH3  # alias used by DPO code
+
+# VH framework flanking the CDR-H3
+LEFT_CONTEXT = (
+    "EVQLQESGGGLVQPGESLRLSCVGSGSSFGESTLSYYAVSWVRQAPGKGLEWLSIINAGGGDIDYADSVEG"
+    "RFTISRDNSKETLYLQMTNLRVEDTGVYYCAK"
+)
+# Framework 4 + CH1 domain (extends beyond VH terminus)
+RIGHT_CONTEXT = (
+    "WGQGTMVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSS"
+    "GLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSC"
+)
+
+# Full C05 VH sequence (framework only, no CH1)
+C05_VH = LEFT_CONTEXT + C05_CDRH3 + RIGHT_CONTEXT[:11]
+C05_CDRH3_START = len(LEFT_CONTEXT)  # 103
+C05_CDRH3_END = C05_CDRH3_START + len(C05_CDRH3)  # 127
+
+
+def add_context(cdr: str) -> str:
+    """Add fixed heavy-chain context around a CDR sequence."""
+    return LEFT_CONTEXT + cdr + RIGHT_CONTEXT

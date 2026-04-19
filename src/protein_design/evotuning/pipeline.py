@@ -13,15 +13,14 @@ from hydra import compose as hydra_compose
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
-from protein_design.training.train import run_stage
-from protein_design.utils import (
-    build_data_config,
+from protein_design.config import (
     build_model_config,
     build_run_config,
     build_scoring_config,
-    build_training_config,
     generate_run_name,
 )
+from protein_design.evotuning.config import build_data_config, build_training_config
+from protein_design.evotuning.train import run_stage
 
 logger = logging.getLogger(__name__)
 

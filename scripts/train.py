@@ -12,7 +12,7 @@ import logging
 import hydra
 from omegaconf import DictConfig
 
-from protein_design.pipeline import run_pipeline
+from protein_design.evotuning.pipeline import run_pipeline
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")

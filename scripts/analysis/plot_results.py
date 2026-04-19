@@ -45,7 +45,7 @@ from protein_design.eval import (
     run_multi_scoring_evaluation,
 )
 from protein_design.model import ESM2Model
-from protein_design.utils import build_model_config
+from protein_design.config import build_model_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
