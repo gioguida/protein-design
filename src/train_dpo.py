@@ -31,7 +31,7 @@ if __package__:
         default_data_paths,
         validate_delta_based_components,
     )
-    from scripts.data_processing import build_validation_perplexity_csvs
+    from scripts.data_processing import build_clean_ed5_csv, build_validation_perplexity_csvs
     from .loss import batch_monitoring_metrics, dpo_loss, weighted_dpo_loss
     from .model import ESM2
     from .utils import (
@@ -51,7 +51,7 @@ else:  # pragma: no cover
         default_data_paths,
         validate_delta_based_components,
     )
-    from scripts.data_processing import build_validation_perplexity_csvs
+    from scripts.data_processing import build_clean_ed5_csv, build_validation_perplexity_csvs
     from loss import batch_monitoring_metrics, dpo_loss, weighted_dpo_loss
     from model import ESM2
     from utils import (
@@ -504,6 +504,14 @@ def _resolve_raw_csv_path(cfg: Any) -> Path:
     )
 
 
+def _resolve_ed5_raw_csv_path(cfg: Any) -> Path:
+    defaults = default_data_paths()
+    fallback = defaults["raw_m22"].parent / "ED5_M22_enrichment.csv"
+    test_cfg = getattr(cfg.data, "test", None)
+    ed5_csv = None if test_cfg is None else getattr(test_cfg, "ed5_csv", None)
+    return fallback if ed5_csv is None else Path(to_absolute_path(str(ed5_csv)))
+
+
 def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
     """Ensure val_pos/val_neg CSVs exist for validation perplexity and Spearman tracking."""
     processed_dir = _resolve_processed_dir(cfg)
@@ -545,6 +553,38 @@ def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
         outputs["val_neg"],
     )
     return True
+
+
+def _ensure_test_eval_csv(cfg: Any, logger: logging.Logger) -> Optional[Path]:
+    """Ensure processed ED5 CSV exists for test perplexity logging."""
+    processed_dir = _resolve_processed_dir(cfg)
+    d5_path = processed_dir / "D5.csv"
+    raw_ed5_path = _resolve_ed5_raw_csv_path(cfg)
+
+    try:
+        output_path = build_clean_ed5_csv(
+            raw_csv_path=raw_ed5_path,
+            processed_dir=processed_dir,
+            force=bool(getattr(cfg.data, "force_rebuild", False)),
+            verbose=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not build ED5 processed CSV at %s from %s (%s). Skipping test perplexity logging.",
+            d5_path,
+            raw_ed5_path,
+            exc,
+        )
+        return None
+
+    if not output_path.exists():
+        logger.warning(
+            "ED5 processed CSV build finished but file is still missing at %s. Skipping test perplexity logging.",
+            output_path,
+        )
+        return None
+
+    return output_path
 
 
 def _load_sequences_from_csv(csv_path: Path, logger: logging.Logger) -> List[str]:
@@ -642,10 +682,8 @@ def _load_validation_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[p
 
 
 def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[str, List[str]]]:
-    processed_dir = _resolve_processed_dir(cfg)
-    d5_path = processed_dir / "D5.csv"
-    if not d5_path.exists():
-        logger.warning("ED5 processed file missing at %s. Skipping test perplexity logging.", d5_path)
+    d5_path = _ensure_test_eval_csv(cfg, logger)
+    if d5_path is None:
         return None
 
     try:
