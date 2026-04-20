@@ -6,8 +6,7 @@
 #SBATCH --gpus=1
 #SBATCH --gres=gpumem:20g
 #SBATCH --time=00:30:00
-#SBATCH --output=bash_scripts/logs/plot_results_%j.out
-#SBATCH --error=bash_scripts/logs/plot_results_%j.err
+#SBATCH --output=bash_scripts/logs/plot_results_%j.log
 
 # Passes all arguments straight through to scripts/analysis/plot_results.py.
 # Example:

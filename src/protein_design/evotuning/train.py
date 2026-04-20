@@ -26,6 +26,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
 
 from protein_design.eval import (
+    compute_cdr_pseudo_perplexity,
     compute_perplexity,
     load_scoring_datasets,
     run_multi_scoring_evaluation,
@@ -113,8 +114,9 @@ def _train_evotuning(
     use_fp16 = training_cfg.fp16 and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)
 
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg.esm_model_path)
+
     if scoring_cfg.datasets:
-        tokenizer = AutoTokenizer.from_pretrained(model_cfg.esm_model_path)
         scoring_datasets = load_scoring_datasets(
             scoring_cfg.datasets,
             n_samples=scoring_cfg.n_samples,
@@ -122,7 +124,6 @@ def _train_evotuning(
         )
         logger.info("Scoring evaluation enabled: %d datasets", len(scoring_datasets))
     else:
-        tokenizer = None
         scoring_datasets = None
         logger.info("Scoring evaluation disabled (no scoring.datasets in config)")
 
@@ -185,15 +186,25 @@ def _train_evotuning(
 
             if save_every_n_steps and global_step % save_every_n_steps == 0:
                 ppl, val_loss = compute_perplexity(model, val_loader, device)
+                cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
                 wandb.log(
-                    {"val/loss": val_loss, "val/perplexity": ppl, "train/epoch": epoch},
+                    {
+                        "val/loss": val_loss,
+                        "val/perplexity": ppl,
+                        "val/cdr_ppl": cdr_ppl,
+                        "train/epoch": epoch,
+                    },
                     step=global_step,
                 )
-                logger.info("Step %d — val loss: %.4f — val perplexity: %.2f", global_step, val_loss, ppl)
+                logger.info(
+                    "Step %d — val loss: %.4f — val perplexity: %.2f — CDR-H3 ppl: %.2f",
+                    global_step, val_loss, ppl, cdr_ppl,
+                )
                 training_history.append({
                     "step": global_step,
                     "val_loss": val_loss,
                     "val_perplexity": ppl,
+                    "val_cdr_ppl": cdr_ppl,
                     "epoch": epoch,
                     "wall_time": time.time() - train_start,
                 })
@@ -246,15 +257,20 @@ def _train_evotuning(
     final_path = checkpoint_dir / "final.pt"
     if len(val_loader.dataset) > 0:
         final_ppl, final_val_loss = compute_perplexity(model, val_loader, device)
+        final_cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
         wandb.log(
-            {"val/loss": final_val_loss, "val/perplexity": final_ppl},
+            {"val/loss": final_val_loss, "val/perplexity": final_ppl, "val/cdr_ppl": final_cdr_ppl},
             step=global_step,
         )
-        logger.info("Final val loss: %.4f — val perplexity: %.2f", final_val_loss, final_ppl)
+        logger.info(
+            "Final val loss: %.4f — val perplexity: %.2f — CDR-H3 ppl: %.2f",
+            final_val_loss, final_ppl, final_cdr_ppl,
+        )
         training_history.append({
             "step": global_step,
             "val_loss": final_val_loss,
             "val_perplexity": final_ppl,
+            "val_cdr_ppl": final_cdr_ppl,
             "wall_time": time.time() - train_start,
         })
     else:
@@ -471,6 +487,7 @@ def run_stage(
             run_dir, checkpoint_dir, device, train_start,
         )
 
+    archive_dir: Optional[Path] = None
     if run_cfg.project_dir and handoff_ckpt.exists():
         archive_dir = ensure_dir(f"{run_cfg.project_dir}/checkpoints/{run_name}")
         archive_path = archive_dir / handoff_ckpt.name
@@ -490,6 +507,10 @@ def run_stage(
     with open(run_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
     logger.info("Saved metrics to %s", run_dir / "metrics.json")
+
+    if archive_dir is not None:
+        shutil.copy2(run_dir / "metrics.json", archive_dir / "metrics.json")
+        logger.info("Archived metrics to %s", archive_dir / "metrics.json")
 
     wandb.finish()
     return handoff_ckpt

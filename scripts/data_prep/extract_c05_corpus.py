@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output-dir",
-        default=os.path.join(project, "datasets"),
+        default=os.path.join(project, "datasets", "c05"),
         help="Directory for output FASTA files.",
     )
     return p.parse_args()

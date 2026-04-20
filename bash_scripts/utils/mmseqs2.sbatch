@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=04:00:00
-#SBATCH --output=bash_scripts/logs/mmseqs2_%j.out
-#SBATCH --error=bash_scripts/logs/mmseqs2_%j.err
+#SBATCH --output=bash_scripts/logs/mmseqs2_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh

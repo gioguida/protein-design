@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=00:30:00
-#SBATCH --output=bash_scripts/logs/clean_d2_%j.out
-#SBATCH --error=bash_scripts/logs/clean_d2_%j.err
+#SBATCH --output=bash_scripts/logs/clean_d2_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh

@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=2G
 #SBATCH --time=4:00:00
-#SBATCH --output=bash_scripts/logs/oas_download_%j.out
-#SBATCH --error=bash_scripts/logs/oas_download_%j.err
+#SBATCH --output=bash_scripts/logs/oas_download_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh

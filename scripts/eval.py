@@ -19,7 +19,7 @@ import torch
 from omegaconf import DictConfig
 from transformers import AutoTokenizer
 
-from protein_design.eval import load_scoring_datasets, run_multi_scoring_evaluation
+from protein_design.eval import compute_cdr_pseudo_perplexity, load_scoring_datasets, run_multi_scoring_evaluation
 from protein_design.model import ESM2Model
 from protein_design.config import build_model_config, build_scoring_config
 
@@ -69,8 +69,11 @@ def main(cfg: DictConfig) -> None:
         flank_ks=scoring_cfg.flank_ks,
     )
 
+    cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
+    logger.info("CDR-H3 pseudo-perplexity: %.2f", cdr_ppl)
+
     out_path = out_dir / "eval_metrics.json"
-    payload = {"checkpoint": str(ckpt_path), "scoring": results}
+    payload = {"checkpoint": str(ckpt_path), "cdr_ppl": cdr_ppl, "scoring": results}
     with open(out_path, "w") as f:
         json.dump(payload, f, indent=2)
     logger.info("Wrote %s", out_path)

@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=12G
 #SBATCH --time=04:00:00
-#SBATCH --output=bash_scripts/logs/c05_search_%j.out
-#SBATCH --error=bash_scripts/logs/c05_search_%j.err
+#SBATCH --output=bash_scripts/logs/c05_search_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh

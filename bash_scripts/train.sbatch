@@ -6,8 +6,7 @@
 #SBATCH --gpus=1
 #SBATCH --gres=gpumem:24g
 #SBATCH --time=24:00:00
-#SBATCH --output=bash_scripts/logs/train_%j.out
-#SBATCH --error=bash_scripts/logs/train_%j.err
+#SBATCH --output=bash_scripts/logs/train_%j.log
 
 # Usage:
 #   sbatch bash_scripts/train.sbatch <pipeline_name> [hydra overrides...]

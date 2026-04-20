@@ -6,8 +6,7 @@
 #SBATCH --gpus=1
 #SBATCH --gres=gpumem:20g
 #SBATCH --time=01:00:00
-#SBATCH --output=bash_scripts/logs/eval_%j.out
-#SBATCH --error=bash_scripts/logs/eval_%j.err
+#SBATCH --output=bash_scripts/logs/eval_%j.log
 
 # Usage:
 #   sbatch bash_scripts/eval.sbatch <checkpoint_path> [hydra overrides...]

@@ -4,8 +4,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --time=0:30:00
-#SBATCH --output=bash_scripts/logs/plot_cdrh3_%j.out
-#SBATCH --error=bash_scripts/logs/plot_cdrh3_%j.err
+#SBATCH --output=bash_scripts/logs/plot_cdrh3_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh
