@@ -1,0 +1,97 @@
+﻿defaults:
+  - _self_
+
+seed: 42
+
+run:
+  base_name: null  # optional base name; final run name is <base_name>_<YYYYMMDD_HHMMSS>
+
+data:
+  raw_csv: data/raw/ED2_M22_binding_enrichment.csv
+  processed_dir: data/processed
+  force_rebuild: false
+  pairing_strategy: delta_based   # positive_vs_tail | positive_only_extremes | both_structured | delta_based
+  min_positive_delta: 3.0
+  min_delta_margin: 5.0
+  delta_based:
+    components: [cross, wt_anchors, within_pos, within_neg]   #[within_pos, within_neg, wt_anchors, cross] 
+    gap: 0.5            # expected in [0.0, 1.0]
+    wt_pairs_frac: 0.1  # expected in [0.0, 1.0]
+    cross_pairs_frac: 0.1      # expected in [0.0, 1.0]
+    strong_pos_threshold: 1.0  # for winner>WT anchors
+    strong_neg_threshold: -5.0 # for WT>loser anchors
+    min_score_margin: 0.1      # filter near-tie pairs
+  include_views: [mut1, mut2]
+  deduplicate_across_views: true
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  val:
+    n_val_pos: 200
+    n_val_neg: 400
+  test:
+    ed5_csv: data/raw/ED5_M22_enrichment.csv
+    pos_threshold: 0.0
+
+model:
+  esm_model_path: facebook/esm2_t12_35M_UR50D
+  use_context: true
+  pll_mask_chunk_size: 32 #128
+
+training:
+  batch_size: 32 # 128
+  num_epochs: 15
+  lr: 1e-5
+  weight_decay: 0.0
+  loss: weighted_dpo     # dpo | weighted_dpo
+  beta: 0.04
+  temperature: 1    # only relevant for weighted loss
+  grad_clip_norm: 1.0
+  patience: 10
+  device: cuda
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+  resume_checkpoint: null
+  evaluate_best_checkpoint: true
+  scheduler:
+    enabled: false
+    step_size: 100
+    gamma: 0.95
+
+logging:
+  level: INFO
+  preview_count: 0
+  log_every_n_steps: 20
+  history_csv: history.csv
+
+checkpointing:
+  dir: checkpoints
+  best_filename: best.pt
+  last_filename: last.pt
+  step_prefix: step
+  best_export_dir: ${oc.env:DPO_BEST_MODEL_DIR,null}
+  best_export_filename: best.pt
+  last_export_dir: ${oc.env:DPO_LAST_MODEL_DIR,null}
+  last_export_filename: last.pt
+
+output_dir: ${oc.env:TRAIN_DIR,${oc.env:DPO_OUTPUT_DIR,outputs}}
+wandb:
+  enabled: true
+  project: dpo
+  entity: null
+  run_name: null  # treated as base run name when run.base_name is null
+  init_timeout: 180
+  fallback_mode: offline  # offline | disable
+  tags: []
+  notes: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  sweep:
+    dir: .
+
