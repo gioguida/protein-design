@@ -12,7 +12,7 @@ import numpy as np
 
 
 from scripts.data_processing import build_processed_views
-from utils import WILD_TYPE, _gap_pairs
+from .utils import WILD_TYPE, _gap_pairs
 
 RANDOM_SEED = 42
 

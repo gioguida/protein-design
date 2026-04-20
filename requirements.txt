@@ -2,6 +2,7 @@ hydra-core
 numpy
 omegaconf
 pandas
+scipy
 safetensors
 pytest
 torch

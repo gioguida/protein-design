@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Any, Dict, List, Sequence, Tuple, TypedDict, Union
 
-from model import ESM2
+from .model import ESM2
 
 
 def _diff_positions(winner: str, loser: str) -> List[int]:
