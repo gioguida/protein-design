@@ -25,8 +25,10 @@ Usage (repeat run/label pairs via Hydra list overrides):
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import Sequence
 
 import hydra
 import matplotlib.pyplot as plt
@@ -53,6 +55,10 @@ logger = logging.getLogger(__name__)
 
 BASE_LABEL = "base ESM2"
 STRATEGY = "avg"  # headline strategy for the Spearman bar plot
+# Matches `spearman_{strategy}[_{side}{k}]_{dataset}` with optional flank slice.
+_SCORING_KEY_RE = re.compile(
+    r"^spearman_(?P<strategy>[a-zA-Z]+)(?:_(?P<side>left|right)(?P<k>\d+))?_(?P<dataset>[^_]+)$"
+)
 
 
 def _split_cfg_from(cfg: DictConfig) -> SplitConfig:
@@ -112,9 +118,11 @@ def _load_run_config(run_dir: Path) -> DictConfig:
     return OmegaConf.load(cfg_path)
 
 
-def _score_model(model, tokenizer, datasets, device, batch_size, seed) -> dict:
+def _score_model(model, tokenizer, datasets, device, batch_size, seed,
+                 flank_ks: Sequence[int] = ()) -> dict:
     return run_multi_scoring_evaluation(
         model, tokenizer, datasets, device=device, batch_size=batch_size, seed=seed,
+        flank_ks=flank_ks,
     )
 
 
@@ -125,7 +133,8 @@ def _extract_final_scoring(metrics: dict) -> dict | None:
 
 def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
                  seed, force_rescore: bool, force_reppl: bool,
-                 fallback_config: DictConfig | None = None):
+                 fallback_config: DictConfig | None = None,
+                 flank_ks: Sequence[int] = ()):
     """Return (scoring, val_ppl, test_ppl, cdr_ppl, training_history) for this run."""
     run_dir = Path(run_dir)
     metrics_path = run_dir / "metrics.json"
@@ -154,7 +163,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     if scoring is None:
         logger.info("  re-scoring on D2 datasets")
         scoring = _score_model(model, tokenizer, datasets, device,
-                               scoring_batch_size, seed)
+                               scoring_batch_size, seed, flank_ks=flank_ks)
 
     if val_ppl is None or test_ppl is None:
         fasta = cfg.data.fasta_path if "data" in cfg else None
@@ -182,13 +191,15 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     return scoring, val_ppl, test_ppl, cdr_ppl, training_history
 
 
-def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed):
+def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed,
+                  flank_ks: Sequence[int] = ()):
     """Score base ESM2 and compute val/test perplexity on the OAS split."""
     logger.info("Evaluating base ESM2")
     model = ESM2Model(build_model_config(scoring_cfg, device=str(device)))
     model.to(device).eval()
     batch_size = int(scoring_cfg.scoring.batch_size)
-    scoring = _score_model(model, tokenizer, datasets, device, batch_size, seed)
+    scoring = _score_model(model, tokenizer, datasets, device, batch_size, seed,
+                           flank_ks=flank_ks)
 
     val_ppl, test_ppl = None, None
     fasta = scoring_cfg.data.fasta_path if "data" in scoring_cfg else None
@@ -305,26 +316,91 @@ def plot_loss_curves(history_by_label: dict[str, list], out_path: Path) -> None:
 
 
 def build_summary_rows(label: str, scoring: dict) -> list[dict]:
+    """Parse all rho keys into rows with (model, dataset, strategy, slice, rho, pval).
+
+    `slice == "all"` for whole-dataset Spearman; otherwise e.g. "left1", "right5".
+    """
     rows = []
     if not scoring:
         return rows
     for key, val in scoring.items():
-        if "pval" in key or not key.startswith("spearman_"):
+        if "_pval_" in key:
             continue
-        parts = key.split("_")
-        if len(parts) < 3:
+        m = _SCORING_KEY_RE.match(key)
+        if m is None:
             continue
-        strategy = parts[1]
-        ds = "_".join(parts[2:])
-        pval_key = f"spearman_{strategy}_pval_{ds}"
+        strategy = m.group("strategy")
+        dataset = m.group("dataset")
+        side, k = m.group("side"), m.group("k")
+        slice_name = f"{side}{k}" if side else "all"
+        pval_key = (
+            f"spearman_{strategy}_pval_{side}{k}_{dataset}"
+            if side else f"spearman_{strategy}_pval_{dataset}"
+        )
         rows.append({
             "model": label,
-            "dataset": ds,
+            "dataset": dataset,
             "strategy": strategy,
+            "slice": slice_name,
             "rho": float(val) if val is not None else float("nan"),
             "pval": float(scoring.get(pval_key, float("nan"))),
         })
     return rows
+
+
+def plot_flank_spearman(rows_df: pd.DataFrame, out_path: Path,
+                        flank_ks: Sequence[int]) -> None:
+    """One subplot per dataset; x-axis = slice (all, left_k..., right_k...), groups = model."""
+    if rows_df.empty:
+        logger.warning("No flank rows to plot; skipping %s", out_path.name)
+        return
+
+    datasets = sorted(rows_df["dataset"].unique())
+    models = list(rows_df["model"].drop_duplicates())
+    n_models = len(models)
+    slice_order = ["all"] + [f"left{k}" for k in flank_ks] + [f"right{k}" for k in flank_ks]
+
+    fig, axes = plt.subplots(
+        1, len(datasets),
+        figsize=(max(5, 1.6 * len(slice_order) * n_models / 3) * len(datasets), 5),
+        sharey=True, squeeze=False,
+    )
+    width = 0.8 / max(n_models, 1)
+    x = np.arange(len(slice_order))
+
+    for ax, ds in zip(axes.flatten(), datasets):
+        ds_df = rows_df[rows_df["dataset"] == ds]
+        for i, model in enumerate(models):
+            sub = (
+                ds_df[ds_df["model"] == model]
+                .set_index("slice")
+                .reindex(slice_order)
+            )
+            rhos = sub["rho"].values
+            pvals = sub["pval"].values
+            positions = x + (i - (n_models - 1) / 2) * width
+            bars = ax.bar(positions, rhos, width=width, label=model)
+            for bar, rho, p in zip(bars, rhos, pvals):
+                if np.isnan(rho):
+                    continue
+                stars = ("***" if p < 1e-3 else "**" if p < 1e-2 else "*" if p < 5e-2 else "ns")
+                y = rho + (0.01 if rho >= 0 else -0.03)
+                ax.text(bar.get_x() + bar.get_width() / 2, y, stars,
+                        ha="center", va="bottom" if rho >= 0 else "top", fontsize=7)
+
+        ax.axhline(0, color="k", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(slice_order, rotation=30, ha="right")
+        ax.set_title(ds)
+        ax.grid(True, axis="y", alpha=0.3)
+
+    axes[0, 0].set_ylabel(f"Spearman ρ  (strategy: {STRATEGY})")
+    axes[0, -1].legend(loc="best", fontsize=8, frameon=False)
+    fig.suptitle("Spearman by CDR-H3 flank slice (mutation must hit left_k or right_k window)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", out_path)
 
 
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
@@ -347,6 +423,7 @@ def main(cfg: DictConfig) -> None:
     seed = cfg.seed
     n_samples = cfg.scoring.n_samples
     scoring_batch_size = cfg.scoring.batch_size
+    flank_ks = [int(k) for k in cfg.scoring.get("flank_ks", [])]
     datasets = load_scoring_datasets(
         OmegaConf.to_container(cfg.scoring.datasets, resolve=True), n_samples, seed
     )
@@ -360,7 +437,7 @@ def main(cfg: DictConfig) -> None:
 
     if not skip_base:
         base_scoring, base_val, base_test, base_cdr = evaluate_base(
-            cfg, datasets, tokenizer, device, seed,
+            cfg, datasets, tokenizer, device, seed, flank_ks=flank_ks,
         )
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring))
         val_ppl_series[BASE_LABEL] = base_val
@@ -372,7 +449,7 @@ def main(cfg: DictConfig) -> None:
             Path(run_dir), datasets, tokenizer, device,
             scoring_batch_size, seed,
             force_rescore=force_rescore, force_reppl=force_reppl,
-            fallback_config=cfg,
+            fallback_config=cfg, flank_ks=flank_ks,
         )
         rows.extend(build_summary_rows(label, scoring))
         val_ppl_series[label] = val_ppl
@@ -385,8 +462,11 @@ def main(cfg: DictConfig) -> None:
         logger.error("No scoring rows collected; aborting plots")
         return
 
-    headline = df[df["strategy"] == STRATEGY].copy()
+    headline = df[(df["strategy"] == STRATEGY) & (df["slice"] == "all")].copy()
     plot_spearman_bar(headline, out_dir / "spearman_bar.png")
+    if flank_ks:
+        flank_df = df[(df["strategy"] == STRATEGY)].copy()
+        plot_flank_spearman(flank_df, out_dir / "spearman_flank.png", flank_ks)
     plot_perplexity_bar(
         test_ppl_series, out_dir / "test_perplexity_comparison.png",
         ylabel="Test perplexity  (↓ better)",
