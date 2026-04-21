@@ -1,0 +1,10 @@
+# @package _global_
+checkpointing:
+  dir: checkpoints
+  best_filename: best.pt
+  last_filename: last.pt
+  step_prefix: step
+  best_export_dir: ${oc.env:DPO_BEST_MODEL_DIR,null}
+  best_export_filename: best.pt
+  last_export_dir: ${oc.env:DPO_LAST_MODEL_DIR,null}
+  last_export_filename: last.pt

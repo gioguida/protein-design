@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 
 
 from protein_design.eval import run_scoring_evaluation
+from protein_design.utils import init_wandb, setup_train_logger
 from .dataset import (
     DELTA_BASED_COMPONENTS,
     build_split_pair_dataframes_from_raw,
@@ -38,10 +39,8 @@ from protein_design.constants import WILD_TYPE
 from protein_design.model import ESM2Model
 from .utils import (
     build_full_run_name,
-    init_wandb_run,
     load_hydra_runtime_modules,
     log_pair_diagnostics,
-    setup_train_logger,
 )
 
 
@@ -172,7 +171,45 @@ def _build_dataloader(
     )
 
 
-def _build_scorers(cfg: Any) -> Tuple[ESM2Model, ESM2Model]:
+def _resolve_model_init_checkpoint(cfg: Any) -> Optional[Path]:
+    init_cfg = getattr(cfg.model, "init", None)
+    if init_cfg is None:
+        return None
+
+    source = str(getattr(init_cfg, "source", "base")).strip().lower()
+    checkpoint = getattr(init_cfg, "checkpoint", None)
+    if source == "base":
+        return None
+    if source != "checkpoint":
+        raise ValueError(
+            f"Unsupported model.init.source={source!r}. Expected 'base' or 'checkpoint'."
+        )
+    if checkpoint is None:
+        raise ValueError(
+            "model.init.checkpoint is required when model.init.source='checkpoint'."
+        )
+    checkpoint_path = Path(to_absolute_path(str(checkpoint)))
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Model init checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
+
+
+def _load_model_init_state_dict(checkpoint_path: Path) -> Tuple[str, Dict[str, torch.Tensor]]:
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(ckpt, dict):
+        raise TypeError(
+            f"Checkpoint at {checkpoint_path} must contain a dict payload, got {type(ckpt)}."
+        )
+    if "model_state_dict" in ckpt:
+        return "model_state_dict", ckpt["model_state_dict"]
+    if "policy_state_dict" in ckpt:
+        return "policy_state_dict", ckpt["policy_state_dict"]
+    raise KeyError(
+        f"Checkpoint at {checkpoint_path} does not include 'model_state_dict' or 'policy_state_dict'."
+    )
+
+
+def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Model]:
     model_cfg = ModelConfig(
         esm_model_path=str(cfg.model.esm_model_path),
         device=str(cfg.training.device),
@@ -182,6 +219,21 @@ def _build_scorers(cfg: Any) -> Tuple[ESM2Model, ESM2Model]:
 
     policy = ESM2Model(model_cfg)
     reference = ESM2Model(model_cfg)
+
+    init_checkpoint = _resolve_model_init_checkpoint(cfg)
+    if init_checkpoint is not None:
+        state_key, state_dict = _load_model_init_state_dict(init_checkpoint)
+        if state_key == "model_state_dict":
+            policy.load_state_dict(state_dict)
+            reference.load_state_dict(state_dict)
+        else:
+            policy.model.load_state_dict(state_dict)
+            reference.model.load_state_dict(state_dict)
+        logger.info(
+            "Initialized policy/reference from checkpoint: %s",
+            init_checkpoint,
+        )
+
     policy.to(policy.device)
     reference.to(reference.device)
 
@@ -761,11 +813,7 @@ def evaluate_perplexity(
     return metrics
 
 
-@hydra.main(version_base=None, config_path="../../../conf", config_name="dpo")
-def main(cfg: Any) -> None:
-    # Ensure Hydra runtime is initialized (used by Hydra internals/logging).
-    HydraConfig.get().runtime.output_dir
-
+def run_dpo(cfg: Any) -> Path:
     full_run_name = build_full_run_name(cfg, timestamp=datetime.now().strftime("%Y%m%d_%H%M%S"))
     storage = _resolve_storage_paths(full_run_name)
     output_dir = storage["run_dir"]
@@ -791,12 +839,12 @@ def main(cfg: Any) -> None:
     logger.info("Saved resolved config to %s", resolved_cfg_path)
     logger.info("Saved run config to %s", run_cfg_path)
 
-    wandb_mod, wandb_run = init_wandb_run(
+    wandb_mod, wandb_run = init_wandb(
         cfg,
         output_dir,
         logger,
-        OmegaConf,
         run_name=full_run_name,
+        group="dpo",
     )
 
     train_df, val_df, test_df = _build_split_pair_dataframes(cfg)
@@ -847,7 +895,7 @@ def main(cfg: Any) -> None:
         prefetch_factor=getattr(cfg.training, "prefetch_factor", None),
     )
 
-    policy, reference = _build_scorers(cfg)
+    policy, reference = _build_scorers(cfg, logger)
     optimizer, scheduler = _build_optimizer_and_scheduler(cfg, policy)
 
     ckpt_dir = output_dir / str(cfg.checkpointing.dir)
@@ -1159,6 +1207,17 @@ def main(cfg: Any) -> None:
         wandb_mod.log({f"metrics/{k}": v for k, v in metrics_payload.items() if k != "run_name"})
         wandb_run.summary.update(summary)
         wandb_run.finish()
+
+    if root_best_ckpt.exists():
+        return root_best_ckpt
+    return final_ckpt
+
+
+@hydra.main(version_base=None, config_path="../../../conf", config_name="dpo")
+def main(cfg: Any) -> None:
+    # Ensure Hydra runtime is initialized (used by Hydra internals/logging).
+    HydraConfig.get().runtime.output_dir
+    run_dpo(cfg)
 
 
 if __name__ == "__main__":

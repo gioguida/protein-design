@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Training entry point. Runs a pipeline selected via `+pipeline=<name>`.
+"""Training entry point. Runs a pipeline selected via `+evotuning/pipeline=<name>`.
 
 Examples:
-    python scripts/train.py +pipeline=evotuning run_name=my_run
-    python scripts/train.py +pipeline=evotune_c05_ttt
-    python scripts/train.py +pipeline=c05 pipeline.init_from=/path/to/best.pt
+    python scripts/train.py +evotuning/pipeline=evotuning run_name=my_run
+    python scripts/train.py +evotuning/pipeline=evotune_c05_ttt
+    python scripts/train.py +evotuning/pipeline=c05 pipeline.init_from=/path/to/best.pt
 """
 
 import logging

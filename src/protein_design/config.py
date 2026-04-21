@@ -35,11 +35,10 @@ class ScoringConfig:
 
 @dataclass
 class RunConfig:
-    """Top-level run context (paths, seed, wandb, finetune checkpoint)."""
+    """Top-level run context (paths, seed, finetune checkpoint)."""
 
     train_dir: str = ""
     project_dir: Optional[str] = None
-    wandb_project: str = "protein-design"
     seed: int = 42
     finetune: Optional[str] = None
 
@@ -96,7 +95,6 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
     return RunConfig(
         train_dir=cfg.paths.train_dir,
         project_dir=cfg.paths.get("project_dir"),
-        wandb_project=cfg.wandb.project,
         seed=int(cfg.seed),
         finetune=cfg.get("finetune"),
     )

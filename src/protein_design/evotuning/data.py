@@ -7,6 +7,7 @@ import torch
 from Bio import SeqIO
 from torch.utils.data import DataLoader, Dataset, random_split
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,12 @@ logger = logging.getLogger(__name__)
 class OASFastaDataset(Dataset):
     """Torch dataset that reads antibody sequences from a FASTA file."""
 
-    def __init__(self, fasta_path: str, tokenizer: AutoTokenizer, max_seq_len: int) -> None:
+    def __init__(
+        self,
+        fasta_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+        max_seq_len: int,
+    ) -> None:
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
 
@@ -57,14 +63,18 @@ class OASFastaDataset(Dataset):
 
 def make_dataloaders(
     fasta_path: str,
-    tokenizer_name: str,
     max_seq_len: int,
     mlm_probability: float,
     batch_size: int,
     seed: int,
+    tokenizer: PreTrainedTokenizerBase | None = None,
+    tokenizer_name: str | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Create train (95%) and validation (5%) DataLoaders from a FASTA file."""
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    if tokenizer is None:
+        if tokenizer_name is None:
+            raise ValueError("Pass either tokenizer or tokenizer_name to make_dataloaders.")
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     dataset = OASFastaDataset(fasta_path, tokenizer, max_seq_len)
 
     n_val = int(len(dataset) * 0.05)

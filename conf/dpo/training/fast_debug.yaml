@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - /dpo/training: default
+  - _self_
+
+# Variant preset: lightweight debug run.
+training:
+  num_epochs: 2
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  prefetch_factor: null

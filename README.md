@@ -18,7 +18,7 @@ sbatch bash_scripts/train.sbatch c05 \
     pipeline.init_from=$PROJECT_DIR/checkpoints/<evo_run>/best.pt
 ```
 
-Pipelines live in `conf/pipeline/`. Add a new YAML there to define a new
+Pipelines live in `conf/evotuning/pipeline/`. Add a new YAML there to define a new
 chain; no new sbatch needed.
 
 ---
@@ -60,11 +60,11 @@ WANDB_DIR=$SCRATCH_DIR/wandb
 ## Training
 
 A **pipeline** is a list of stages. Each stage names a `task` (hyperparams
-in `conf/task/`) and a `data` group (`conf/data/`). The output checkpoint
+in `conf/evotuning/task/`) and a `data` group (`conf/evotuning/data/`). The output checkpoint
 of stage *n* is automatically threaded as the `finetune` input to stage
 *n+1*.
 
-Available pipelines (`conf/pipeline/`):
+Available pipelines (`conf/evotuning/pipeline/`):
 
 | Pipeline | Stages |
 |---|---|
@@ -91,6 +91,31 @@ Each stage writes to `$TRAIN_DIR/<pipeline_name>__<stage_name>_<timestamp>/`
 and archives the handoff checkpoint to
 `$PROJECT_DIR/checkpoints/<same_name>/`.
 
+### DPO training (standalone)
+
+```bash
+sbatch bash_scripts/train_dpo.sbatch my_dpo_run
+python scripts/train_dpo.py dpo/data=mut1_only dpo/training=fast_debug --cfg job
+```
+
+`conf/dpo.yaml` is now a thin composition root; tune DPO via grouped configs
+under `conf/dpo/{data,model,training,logging,checkpointing,wandb}/`.
+
+### Composable workflow (evotuning -> dpo)
+
+```bash
+python scripts/train_workflow.py workflow.steps=[evotuning,dpo]
+python scripts/train_workflow.py workflow.steps=[dpo] workflow.handoff.mode=path workflow.handoff.path=/path/to/best.pt
+```
+
+Workflow-specific group selectors are namespaced to keep stages isolated:
+
+```bash
+python scripts/train_workflow.py workflow.steps=[evotuning,dpo] \
+    evotuning/pipeline=evotuning \
+    dpo/training=default
+```
+
 ---
 
 ## Evaluation
@@ -98,7 +123,7 @@ and archives the handoff checkpoint to
 Score an existing checkpoint against the D2 datasets without retraining:
 
 ```bash
-sbatch bash_scripts/eval.sbatch $PROJECT_DIR/checkpoints/<run>/best.pt scoring=d2
+sbatch bash_scripts/eval.sbatch $PROJECT_DIR/checkpoints/<run>/best.pt evotuning/scoring=d2
 ```
 
 Writes `eval_metrics.json` next to the checkpoint.
@@ -147,11 +172,14 @@ batch ≈512. Scale `learning_rate` by √(effective-batch-ratio).
 
 ```
 conf/
-  config.yaml              base defaults (task/model/data/scoring)
-  pipeline/                stage lists — pick one via +pipeline=<name>
-  task/ model/ data/ scoring/
+  config.yaml              evotuning root defaults
+  evotuning/               canonical evotuning config center
+  dpo/                     composable DPO config groups
+  model/                   shared model presets (evotuning + dpo)
+  workflow.yaml            orchestrates evotuning and/or dpo steps
 scripts/
   train.py                 pipeline entry point
+  train_workflow.py        workflow entry point (steps=[evotuning,dpo])
   eval.py                  standalone scorer (+output_csv_dir for per-pair CSVs)
   find_max_batch_size.py   VRAM sweep
   data_prep/               filter_oas, search_c05, clean_d2, ...
@@ -187,3 +215,4 @@ src/protein_design/
   login node once; the key is cached.
 - **Downloads fail on compute nodes** → `eth_proxy` module must be
   loaded (common_setup.sh does this).
+

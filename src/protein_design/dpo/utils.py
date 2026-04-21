@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 import importlib
 import logging
 from pathlib import Path
@@ -8,6 +8,17 @@ from typing import Any, List, Optional, Tuple, TypedDict
 import pandas as pd
 
 from protein_design.constants import WILD_TYPE
+from protein_design.utils import get_mask_token_idx, init_wandb, setup_train_logger
+
+__all__ = [
+    "get_mask_token_idx",
+    "init_wandb",
+    "setup_train_logger",
+    "load_hydra_runtime_modules",
+    "resolve_base_run_name",
+    "build_full_run_name",
+    "log_pair_diagnostics",
+]
 
 
 class PairMember(TypedDict):
@@ -16,23 +27,6 @@ class PairMember(TypedDict):
 
 
 PairTuple = Tuple[PairMember, PairMember]
-
-
-def get_mask_token_idx(token_source: Any) -> int:
-    """Resolve mask token index across tokenizer/alphabet API variants."""
-    for attr in ("mask_idx", "mask_index", "mask_token_id"):
-        if hasattr(token_source, attr):
-            return int(getattr(token_source, attr))
-
-    for attr in ("tok_to_idx", "token_to_idx", "stoi", "vocab"):
-        mapping = getattr(token_source, attr, None)
-        if isinstance(mapping, dict):
-            if "<mask>" in mapping:
-                return int(mapping["<mask>"])
-            if "<mask_token>" in mapping:
-                return int(mapping["<mask_token>"])
-
-    raise AttributeError("Could not find mask token index in provided token source.")
 
 
 def load_hydra_runtime_modules() -> Tuple[Any, Any, Any, Any]:
@@ -48,30 +42,6 @@ def load_hydra_runtime_modules() -> Tuple[Any, Any, Any, Any]:
         ) from exc
 
     return hydra, omegaconf.OmegaConf, hydra_config_mod.HydraConfig, hydra_utils_mod.to_absolute_path
-
-
-def setup_train_logger(
-    output_dir: Path, level_name: str, logger_name: str = "dpo_train"
-) -> logging.Logger:
-    """Create a console + file logger for training."""
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(getattr(logging, str(level_name).upper(), logging.INFO))
-    logger.propagate = False
-
-    if logger.handlers:
-        logger.handlers.clear()
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-
-    file_handler = logging.FileHandler(output_dir / "train.log", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    return logger
 
 
 def _infer_model_label(esm_model_path: Any) -> str:
@@ -145,70 +115,6 @@ def build_full_run_name(cfg: Any, timestamp: Optional[str] = None) -> str:
     base_name = resolve_base_run_name(cfg).replace("/", "-").replace("\\", "-").replace(" ", "_")
     ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"{base_name}_{ts}"
-
-
-def init_wandb_run(
-    cfg: Any,
-    output_dir: Path,
-    logger: logging.Logger,
-    omegaconf_cls: Any,
-    run_name: Optional[str] = None,
-) -> Tuple[Optional[Any], Optional[Any]]:
-    """Initialize Weights & Biases run if enabled in config."""
-    if not bool(cfg.wandb.enabled):
-        return None, None
-
-    try:
-        wandb = importlib.import_module("wandb")
-    except ModuleNotFoundError:  # pragma: no cover
-        logger.warning("wandb is not available; continuing without Weights & Biases logging.")
-        return None, None
-
-    resolved_run_name = run_name or resolve_base_run_name(cfg)
-    logger.info("W&B run name: %s", resolved_run_name)
-
-    init_timeout = int(getattr(cfg.wandb, "init_timeout", 120))
-    fallback_mode = str(getattr(cfg.wandb, "fallback_mode", "offline")).strip().lower()
-    init_kwargs = {
-        "project": str(cfg.wandb.project),
-        "entity": None if cfg.wandb.entity is None else str(cfg.wandb.entity),
-        "name": resolved_run_name,
-        "tags": None if cfg.wandb.tags is None else list(cfg.wandb.tags),
-        "notes": None if cfg.wandb.notes is None else str(cfg.wandb.notes),
-        "dir": str(output_dir),
-        "config": omegaconf_cls.to_container(cfg, resolve=True),
-        "settings": wandb.Settings(init_timeout=init_timeout),
-    }
-
-    try:
-        run = wandb.init(**init_kwargs)
-        return wandb, run
-    except Exception as exc:  # pragma: no cover - depends on runtime env
-        logger.warning(
-            "W&B online init failed (%s). Fallback mode is '%s'.",
-            exc,
-            fallback_mode,
-        )
-
-    if fallback_mode == "offline":
-        try:
-            run = wandb.init(mode="offline", **init_kwargs)
-            logger.warning("Continuing with W&B in offline mode.")
-            return wandb, run
-        except Exception as exc:  # pragma: no cover
-            logger.warning("W&B offline init failed (%s). Disabling W&B logging.", exc)
-            return None, None
-
-    if fallback_mode in {"disable", "disabled", "none"}:
-        logger.warning("Continuing without W&B logging.")
-        return None, None
-
-    logger.warning(
-        "Unknown wandb.fallback_mode='%s'. Expected 'offline' or 'disable'. "
-        "Continuing without W&B logging.",
-        fallback_mode,
-    )
-    return None, None
 
 
 def log_pair_diagnostics(

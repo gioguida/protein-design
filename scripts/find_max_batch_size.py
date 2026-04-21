@@ -3,7 +3,7 @@
 
 Run interactively on the target GPU:
     srun --gpus=1 --gres=gpumem:24g --mem=32G --pty \
-        python scripts/find_max_batch_size.py model=esm2_35m data=oas_full task=evotuning
+        python scripts/find_max_batch_size.py model=esm2_35m evotuning/data=oas_full evotuning/task=evotuning
 
 Override sweep params:
     python scripts/find_max_batch_size.py +start_size=64 +target_util=0.9
@@ -18,7 +18,6 @@ import time
 import hydra
 import torch
 from omegaconf import DictConfig
-from transformers import AutoTokenizer
 
 from protein_design.model import ESM2Model
 from protein_design.config import build_model_config
@@ -102,14 +101,13 @@ def main(cfg: DictConfig) -> None:
     total_vram = torch.cuda.get_device_properties(device).total_memory / 1024**3
     print(f"\nGPU: {torch.cuda.get_device_name(device)}")
     print(f"Total VRAM: {total_vram:.1f} GB")
-    print(f"Model: {cfg.model.name}")
+    print(f"Model: {mcfg.esm_model_path}")
     print(f"Seq len: {cfg.data.max_seq_len}, fp16: {cfg.training.fp16}\n")
 
     model = ESM2Model(mcfg)
     model.to(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
-    vocab_size = tokenizer.vocab_size
+    vocab_size = model.tokenizer.vocab_size
     seq_len = cfg.data.max_seq_len
     use_fp16 = cfg.training.fp16
     scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)

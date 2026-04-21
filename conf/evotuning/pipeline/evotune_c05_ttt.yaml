@@ -1,5 +1,5 @@
 # @package _global_
-# Full chain: evotuning on OAS → C05-5k finetune → TTT on a single CDRH3.
+# Full chain: evotuning on OAS -> C05-5k finetune -> TTT on a single CDRH3.
 # Each stage seeds from the previous stage's best/final checkpoint automatically.
 pipeline:
   init_from: null

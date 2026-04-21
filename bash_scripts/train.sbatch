@@ -25,4 +25,4 @@ source bash_scripts/common_setup.sh
 PIPELINE="${1:?Usage: sbatch train.sbatch <pipeline_name> [hydra overrides...]}"
 shift
 
-python scripts/train.py "+pipeline=${PIPELINE}" "$@"
+python scripts/train.py "+evotuning/pipeline=${PIPELINE}" "$@"

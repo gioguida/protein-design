@@ -1,27 +1,3 @@
 defaults:
-  - task: evotuning
-  - model: esm2_35m
-  - data: oas_full
-  - scoring: d2
+  - evotuning/config
   - _self_
-
-# Pipelines under conf/pipeline/ declare one or more training stages.
-# Select with `+pipeline=<name>` (e.g. +pipeline=evotune_c05_ttt).
-pipeline: null
-
-run_name: null
-seed: 42
-finetune: null
-
-paths:
-  project_dir: ${oc.env:PROJECT_DIR}
-  train_dir: ${oc.env:TRAIN_DIR}
-
-wandb:
-  project: ${oc.env:WANDB_PROJECT,protein-design-evotuning}
-
-hydra:
-  job:
-    chdir: false
-  run:
-    dir: .

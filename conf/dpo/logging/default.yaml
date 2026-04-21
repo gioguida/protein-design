@@ -1,0 +1,6 @@
+# @package _global_
+logging:
+  level: INFO
+  preview_count: 0
+  log_every_n_steps: 20
+  history_csv: history.csv

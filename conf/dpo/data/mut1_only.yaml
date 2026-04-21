@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - /dpo/data: default
+  - _self_
+
+# Variant preset: use only mut1 view when building DPO pairs.
+data:
+  include_views: [mut1]

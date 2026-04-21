@@ -5,9 +5,9 @@ Useful for re-scoring a completed run (or any .pt checkpoint) without
 retraining. Writes metrics.json next to the checkpoint (or in +out_dir).
 
 Example:
-    python scripts/eval.py +checkpoint=/path/to/best.pt scoring=d2
+    python scripts/eval.py +checkpoint=/path/to/best.pt evotuning/scoring=d2
     python scripts/eval.py +checkpoint=/path/to/best.pt +out_dir=/tmp/eval_out
-    python scripts/eval.py +checkpoint=/path/to/best.pt scoring=d2 +output_csv_dir=/tmp/scores
+    python scripts/eval.py +checkpoint=/path/to/best.pt evotuning/scoring=d2 +output_csv_dir=/tmp/scores
 """
 
 import json
