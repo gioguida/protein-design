@@ -63,3 +63,23 @@ def test_discover_run_artifacts_falls_back_to_archive_metrics(tmp_path: Path) ->
     artifact = artifacts[0]
     assert artifact.metrics_path == archive_run_dir / "metrics.json"
     assert artifact.metrics["val_ppl"] == 11.0
+
+
+def test_discover_run_artifacts_uses_custom_run_labels(tmp_path: Path) -> None:
+    train_root = tmp_path / "train"
+    run_name = "esm2-35M__delta_based-c__weighted_dpo__loss-1__ep-15__bs-16__lr-1e-05__beta-0.04_20260421_111111"
+
+    run_dir = train_root / run_name
+    run_dir.mkdir(parents=True)
+    _write_csv(run_dir / "history.csv", [{"epoch": 1, "train_loss": 1.0}])
+    (run_dir / "summary.json").write_text('{"run_name": "' + run_name + '"}', encoding="utf-8")
+
+    artifacts = discover_run_artifacts(
+        ["20260421_111111"],
+        train_root=train_root,
+        run_labels=["baseline-dpo"],
+    )
+
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.display_name == "baseline-dpo"

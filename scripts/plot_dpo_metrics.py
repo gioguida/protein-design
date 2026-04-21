@@ -63,6 +63,7 @@ DEFAULT_TEST_SUMMARY_METRICS = [
 @dataclass
 class RunArtifacts:
     run_name: str
+    display_name: str
     timestamp: str
     run_dir: Path
     archive_dir: Path | None
@@ -161,13 +162,17 @@ def discover_run_artifacts(
     run_ids: Sequence[str],
     train_root: Path,
     archive_root: Path | None = None,
+    run_labels: Sequence[str] | None = None,
 ) -> list[RunArtifacts]:
+    if run_labels is not None and len(run_labels) != len(run_ids):
+        raise ValueError("run_labels must have the same length as run_ids.")
+
     roots: list[Path] = [train_root]
     if archive_root is not None:
         roots.append(archive_root)
 
     artifacts: list[RunArtifacts] = []
-    for run_id in run_ids:
+    for index, run_id in enumerate(run_ids):
         selector = _extract_timestamp(str(run_id))
         candidate_dirs = _candidate_run_dirs(selector, roots)
         if not candidate_dirs:
@@ -197,10 +202,12 @@ def discover_run_artifacts(
 
         resolved_name = str(summary.get("run_name") or metrics.get("run_name") or run_name)
         timestamp = _extract_timestamp(resolved_name)
+        display_name = run_labels[index] if run_labels is not None else timestamp
 
         artifacts.append(
             RunArtifacts(
                 run_name=resolved_name,
+                display_name=display_name,
                 timestamp=timestamp,
                 run_dir=run_dir,
                 archive_dir=archive_dir,
@@ -274,7 +281,7 @@ def _plot_curve_group(
                 linewidth=1.8,
                 marker="o",
                 markersize=3,
-                label=artifact.timestamp,
+                label=artifact.display_name,
             )
             plotted_any = True
 
@@ -321,7 +328,7 @@ def _plot_summary_group(
     if len(selected_metrics) == 1:
         axes = [axes]
 
-    run_labels = [artifact.timestamp for artifact in artifacts]
+    run_labels = [artifact.display_name for artifact in artifacts]
     x_positions = list(range(len(run_labels)))
 
     for axis, metric in zip(axes, selected_metrics):
@@ -390,6 +397,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help="Run identifier or timestamp to plot. Repeat for multiple runs.",
     )
+    parser.add_argument(
+        "--run-label",
+        action="append",
+        default=None,
+        help="Display name for the corresponding --run-id. Repeat in the same order as --run-id.",
+    )
     parser.add_argument("--train-root", type=Path, default=_default_train_root())
     parser.add_argument("--archive-root", type=Path, default=_default_archive_root())
     parser.add_argument("--output-dir", type=Path, default=_default_output_root())
@@ -422,6 +435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_ids=args.run_id,
         train_root=args.train_root,
         archive_root=args.archive_root,
+        run_labels=args.run_label,
     )
 
     written_files: list[Path] = []

@@ -15,11 +15,13 @@ source "${HOME}/protein-design/bash_scripts/common_setup.sh"
 PROJECT_ROOT="${DPO_PROJECT_ROOT:-${HOME}/protein-design}"
 cd "${PROJECT_ROOT}"
 
+mkdir -p plots
+
 echo "Running on host: $(hostname)"
 which python
 
 # Edit these values before submitting.
-PLOT_OUTPUT_DIR="${PLOT_OUTPUT_DIR:-${TRAIN_DIR}/plots}"
+PLOT_OUTPUT_DIR="${PLOT_OUTPUT_DIR:-${PROJECT_ROOT}/plots}"
 PLOT_TRAINING_CURVES="${PLOT_TRAINING_CURVES:-true}"
 PLOT_VALIDATION_CURVES="${PLOT_VALIDATION_CURVES:-true}"
 PLOT_VALIDATION_SUMMARY="${PLOT_VALIDATION_SUMMARY:-true}"
@@ -31,10 +33,16 @@ RUN_TIMESTAMPS=(
     "20260419_232123"
 )
 
+RUN_LABELS=(
+    "cross"
+    "cross + wt"
+    "cros + wt + pos"
+)
+
 TRAINING_METRICS=(loss reward_accuracy reward_margin)
-VALIDATION_METRICS=(loss reward_accuracy reward_margin spearman_avg spearman_random ppl/val_pos ppl/val_neg ppl/val_wt)
-VALIDATION_SUMMARY_METRICS=(val_ppl spearman_M22 spearman_SI06 spearman_exp)
-TEST_SUMMARY_METRICS=(test_loss test_reward_accuracy test_reward_margin test_implicit_kl test_perplexity)
+VALIDATION_METRICS=(loss reward_accuracy reward_margin perplexity spearman_avg spearman_random ppl/val_pos ppl/val_neg ppl/val_wt)
+VALIDATION_SUMMARY_METRICS=(val_ppl spearman_M22)
+TEST_SUMMARY_METRICS=(test_reward_accuracy test_reward_margin test_implicit_kl test_perplexity)
 
 PLOT_ARGS=(
     --output-dir "${PLOT_OUTPUT_DIR}"
@@ -66,8 +74,9 @@ else
     PLOT_ARGS+=(--no-plot-test-summary)
 fi
 
-for run_timestamp in "${RUN_TIMESTAMPS[@]}"; do
-    PLOT_ARGS+=(--run-id "${run_timestamp}")
+for index in "${!RUN_TIMESTAMPS[@]}"; do
+    PLOT_ARGS+=(--run-id "${RUN_TIMESTAMPS[index]}")
+    PLOT_ARGS+=(--run-label "${RUN_LABELS[index]}")
 done
 
 PLOT_ARGS+=(--training-metrics "${TRAINING_METRICS[@]}")

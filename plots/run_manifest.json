@@ -1,0 +1,29 @@
+[
+  {
+    "run_name": "esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621",
+    "timestamp": "20260419_120621",
+    "run_dir": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621",
+    "archive_dir": "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621",
+    "history_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621/history.csv",
+    "summary_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621/summary.json",
+    "metrics_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_120621/metrics.json"
+  },
+  {
+    "run_name": "esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257",
+    "timestamp": "20260419_165257",
+    "run_dir": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257",
+    "archive_dir": "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257",
+    "history_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257/history.csv",
+    "summary_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257/summary.json",
+    "metrics_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_165257/metrics.json"
+  },
+  {
+    "run_name": "esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123",
+    "timestamp": "20260419_232123",
+    "run_dir": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123",
+    "archive_dir": "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123",
+    "history_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123/history.csv",
+    "summary_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123/summary.json",
+    "metrics_path": "/cluster/scratch/gguidarini/protein-design/train/esm2-35M__delta_based__weighted_dpo__loss-1__ep-15__bs-32__lr-1e-05__beta-0.04_20260419_232123/metrics.json"
+  }
+]
