@@ -51,3 +51,4 @@ outputs/
 # Training logs
 *.log
 oas_ighg_urls.txt
+.tmp_test_runs
