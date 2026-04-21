@@ -4,10 +4,12 @@ These mirror the MLM training loop's shape (`cfg.data`, `cfg.training`).
 DPO will add its own `DpoConfig` alongside.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from omegaconf import DictConfig
+
+from protein_design.evotuning.splits import SplitConfig
 
 
 @dataclass
@@ -17,6 +19,7 @@ class DataConfig:
     fasta_path: str = ""
     max_seq_len: int = 256
     mlm_probability: float = 0.15
+    split: SplitConfig = field(default_factory=SplitConfig)
 
 
 @dataclass
@@ -34,10 +37,21 @@ class TrainingConfig:
 
 
 def build_data_config(cfg: DictConfig) -> DataConfig:
+    split_node = cfg.data.get("split") if "split" in cfg.data else None
+    if split_node is None:
+        split_cfg = SplitConfig()
+    else:
+        split_cfg = SplitConfig(
+            salt=str(split_node.get("salt", "oas-v1")),
+            train_pct=int(split_node.get("train_pct", 90)),
+            val_pct=int(split_node.get("val_pct", 5)),
+            test_pct=int(split_node.get("test_pct", 5)),
+        )
     return DataConfig(
         fasta_path=cfg.data.fasta_path,
         max_seq_len=int(cfg.data.max_seq_len),
         mlm_probability=float(cfg.data.mlm_probability),
+        split=split_cfg,
     )
 
 

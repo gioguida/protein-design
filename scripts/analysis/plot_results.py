@@ -2,23 +2,22 @@
 """Generate comparison plots across evotuning / C05 / TTT runs.
 
 Produces:
-    spearman_bar.png          Grouped bar chart of Spearman rho per
-                              {model} x {dataset}, with p-values annotated.
-    perplexity_comparison.png Bar chart of final val perplexity per model
-                              (base ESM2 computed once on the OAS val split
-                              for reference).
-    metrics_summary.csv       One row per (model, dataset, strategy):
-                              columns rho, pval, n.
+    spearman_bar.png              Grouped bar chart of Spearman rho per
+                                  {model} x {dataset}, with p-value significance.
+    test_perplexity_comparison.png   Headline: final test-set MLM perplexity per model.
+    val_perplexity_comparison.png    Diagnostic: final val-set MLM perplexity per model.
+    cdr_perplexity_comparison.png    CDR-H3 pseudo-perplexity on the C05 reference VH.
+    train_val_loss_curves.png     One subplot per run: train loss vs. val loss over steps.
+    metrics_summary.csv           One row per (model, dataset, strategy): rho, pval, ppls.
 
 For each run dir passed in, the script:
-  1. Reads metrics.json if present.
-  2. If the run dir has no scoring entry (or --force-rescore), re-scores
-     best.pt (or final.pt) on the three datasets.
-  3. Recomputes validation perplexity by loading best.pt and the run's
-     fasta_path.
+  1. Reads metrics.json if present (contains final_val_perplexity, final_test_perplexity).
+  2. If the run lacks scoring or final perplexities (or --force-rescore/--force-reppl),
+     re-scores best.pt (or final.pt) on the D2 datasets and recomputes val/test ppl
+     using the run's hash-based split config.
 
 Usage (repeat run/label pairs via Hydra list overrides):
-    python scripts/plot_results.py scoring=d2 data=oas_full \\
+    python scripts/analysis/plot_results.py scoring=d2 data=oas_full \\
         '+runs=[/path/to/run1,/path/to/run2]' \\
         '+labels=[evotuned,+C05]' \\
         +out_dir=\${HOME}/protein-design/plots/meeting
@@ -44,6 +43,8 @@ from protein_design.eval import (
     load_scoring_datasets,
     run_multi_scoring_evaluation,
 )
+from protein_design.evotuning.data import make_dataloaders
+from protein_design.evotuning.splits import SplitConfig
 from protein_design.model import ESM2Model
 from protein_design.config import build_model_config
 
@@ -51,53 +52,44 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 BASE_LABEL = "base ESM2"
-STRATEGY = "avg"  # "avg" or "random" — avg is the headline strategy
-MAX_SEQUENCES_FOR_PPL = 10_000  # cap sequences loaded for perplexity eval
+STRATEGY = "avg"  # headline strategy for the Spearman bar plot
 
 
-def _make_val_loader_lightweight(fasta_path: str, cfg: DictConfig, max_seqs: int = MAX_SEQUENCES_FOR_PPL):
-    """Build a small val DataLoader by streaming the FASTA and stopping early."""
-    from Bio import SeqIO
-    from torch.utils.data import DataLoader, TensorDataset
-    from transformers import DataCollatorForLanguageModeling
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
-    max_len = int(cfg.data.max_seq_len)
-    seed = int(cfg.get("seed", 42))
-
-    # Stream sequences, take a reproducible subset for validation
-    seqs = []
-    for record in SeqIO.parse(fasta_path, "fasta"):
-        seqs.append(str(record.seq))
-        if len(seqs) >= max_seqs:
-            break
-
-    # Use last 5% as val (matches make_dataloaders split convention for small n)
-    rng = torch.Generator().manual_seed(seed)
-    n_val = max(int(len(seqs) * 0.05), 1)
-    indices = torch.randperm(len(seqs), generator=rng).tolist()
-    val_seqs = [seqs[i] for i in indices[-n_val:]]
-
-    class _SeqDataset(torch.utils.data.Dataset):
-        def __init__(self, sequences):
-            self.sequences = sequences
-            self.tokenizer = tokenizer
-            self.max_len = max_len
-        def __len__(self):
-            return len(self.sequences)
-        def __getitem__(self, idx):
-            enc = self.tokenizer(self.sequences[idx], truncation=True,
-                                 max_length=self.max_len, padding=False, return_tensors=None)
-            return {k: torch.tensor(v) for k, v in enc.items()}
-
-    collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, mlm=True,
-        mlm_probability=float(cfg.data.mlm_probability),
-        pad_to_multiple_of=8,
+def _split_cfg_from(cfg: DictConfig) -> SplitConfig:
+    """Read the hash-split policy from a Hydra config, with safe defaults."""
+    split_node = cfg.data.get("split") if "split" in cfg.data else None
+    if split_node is None:
+        return SplitConfig()
+    return SplitConfig(
+        salt=str(split_node.get("salt", "oas-v1")),
+        train_pct=int(split_node.get("train_pct", 90)),
+        val_pct=int(split_node.get("val_pct", 5)),
+        test_pct=int(split_node.get("test_pct", 5)),
     )
-    batch_size = int(cfg.training.batch_size) if "training" in cfg else int(cfg.scoring.batch_size)
-    return DataLoader(_SeqDataset(val_seqs), batch_size=batch_size,
-                      shuffle=False, num_workers=0, collate_fn=collator)
+
+
+def _batch_size_from(cfg: DictConfig) -> int:
+    if "training" in cfg:
+        return int(cfg.training.batch_size)
+    return int(cfg.scoring.batch_size)
+
+
+def _make_eval_loaders(fasta_path: str, cfg: DictConfig):
+    """Build (val_loader, test_loader) using the run's exact split policy.
+
+    Uses make_dataloaders so the split identity is bit-for-bit identical to
+    what training used — no more reconstruction drift.
+    """
+    split_cfg = _split_cfg_from(cfg)
+    _train, val_loader, test_loader = make_dataloaders(
+        fasta_path=fasta_path,
+        tokenizer_name=cfg.model.name,
+        max_seq_len=int(cfg.data.max_seq_len),
+        mlm_probability=float(cfg.data.mlm_probability),
+        batch_size=_batch_size_from(cfg),
+        split_cfg=split_cfg,
+    )
+    return val_loader, test_loader
 
 
 def _find_checkpoint(run_dir: Path) -> Path:
@@ -126,12 +118,6 @@ def _score_model(model, tokenizer, datasets, device, batch_size, seed) -> dict:
     )
 
 
-def _extract_final_ppl(metrics: dict) -> float | None:
-    history = metrics.get("training_history", [])
-    ppls = [e["val_perplexity"] for e in history if "val_perplexity" in e]
-    return ppls[-1] if ppls else None
-
-
 def _extract_final_scoring(metrics: dict) -> dict | None:
     history = metrics.get("scoring_history", [])
     return history[-1] if history else None
@@ -140,7 +126,7 @@ def _extract_final_scoring(metrics: dict) -> dict | None:
 def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
                  seed, force_rescore: bool, force_reppl: bool,
                  fallback_config: DictConfig | None = None):
-    """Return (scoring_dict, final_val_ppl, cdr_ppl) for this run."""
+    """Return (scoring, val_ppl, test_ppl, cdr_ppl, training_history) for this run."""
     run_dir = Path(run_dir)
     metrics_path = run_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
@@ -150,68 +136,84 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     except FileNotFoundError:
         if fallback_config is None:
             raise
-        logger.warning("No config.yaml in %s; using scoring config as fallback", run_dir)
+        logger.warning("No config.yaml in %s; using global config as fallback", run_dir)
         cfg = fallback_config
     ckpt_path = _find_checkpoint(run_dir)
     logger.info("Run %s — checkpoint: %s", run_dir.name, ckpt_path)
 
     scoring = _extract_final_scoring(metrics) if not force_rescore else None
-    ppl = _extract_final_ppl(metrics) if not force_reppl else None
+    val_ppl = metrics.get("final_val_perplexity") if not force_reppl else None
+    test_ppl = metrics.get("final_test_perplexity") if not force_reppl else None
+    training_history = metrics.get("training_history", [])
 
-    need_model = scoring is None or ppl is None
-    # Always load model for CDR pseudo-perplexity (cheap, 24 forward passes)
     model = ESM2Model(build_model_config(cfg, device=str(device)))
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
 
     if scoring is None:
-        logger.info("  re-scoring on M22/SI06/exp")
+        logger.info("  re-scoring on D2 datasets")
         scoring = _score_model(model, tokenizer, datasets, device,
                                scoring_batch_size, seed)
 
-    if ppl is None:
+    if val_ppl is None or test_ppl is None:
         fasta = cfg.data.fasta_path if "data" in cfg else None
         if fasta and Path(fasta).exists():
-            logger.info("  recomputing val perplexity on %s", fasta)
-            val_loader = _make_val_loader_lightweight(fasta, cfg)
-            ppl, _ = compute_perplexity(model, val_loader, device)
+            logger.info("  recomputing val/test perplexity on %s", fasta)
+            val_loader, test_loader = _make_eval_loaders(fasta, cfg)
+            if val_ppl is None and len(val_loader.dataset) > 0:
+                val_ppl, _ = compute_perplexity(
+                    model, val_loader, device, max_batches=max(len(val_loader), 1),
+                )
+            if test_ppl is None and len(test_loader.dataset) > 0:
+                test_ppl, _ = compute_perplexity(
+                    model, test_loader, device, max_batches=max(len(test_loader), 1),
+                )
         else:
-            logger.warning("  fasta path missing, skipping perplexity")
+            logger.warning("  fasta path missing, skipping perplexity recomputation")
 
-    cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
+    cdr_ppl = metrics.get("final_cdr_pseudo_perplexity")
+    if cdr_ppl is None:
+        cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
 
     del model
     torch.cuda.empty_cache()
 
-    return scoring, ppl, cdr_ppl
+    return scoring, val_ppl, test_ppl, cdr_ppl, training_history
 
 
 def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed):
-    """Score base ESM2 (no checkpoint) and compute val perplexity on the OAS split."""
+    """Score base ESM2 and compute val/test perplexity on the OAS split."""
     logger.info("Evaluating base ESM2")
     model = ESM2Model(build_model_config(scoring_cfg, device=str(device)))
     model.to(device).eval()
     batch_size = int(scoring_cfg.scoring.batch_size)
     scoring = _score_model(model, tokenizer, datasets, device, batch_size, seed)
 
-    ppl = None
+    val_ppl, test_ppl = None, None
     fasta = scoring_cfg.data.fasta_path if "data" in scoring_cfg else None
     if fasta and Path(fasta).exists():
-        val_loader = _make_val_loader_lightweight(fasta, scoring_cfg)
-        ppl, _ = compute_perplexity(model, val_loader, device)
+        val_loader, test_loader = _make_eval_loaders(fasta, scoring_cfg)
+        if len(val_loader.dataset) > 0:
+            val_ppl, _ = compute_perplexity(
+                model, val_loader, device, max_batches=max(len(val_loader), 1),
+            )
+        if len(test_loader.dataset) > 0:
+            test_ppl, _ = compute_perplexity(
+                model, test_loader, device, max_batches=max(len(test_loader), 1),
+            )
 
     cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
 
     del model
     torch.cuda.empty_cache()
-    return scoring, ppl, cdr_ppl
+    return scoring, val_ppl, test_ppl, cdr_ppl
 
 
 def plot_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
     """Grouped bar chart: x = dataset, groups = model. Annotate p-value significance."""
     datasets = sorted(rows_df["dataset"].unique())
-    models = list(rows_df["model"].drop_duplicates())  # preserves input order
+    models = list(rows_df["model"].drop_duplicates())
     n_models = len(models)
 
     fig, ax = plt.subplots(figsize=(max(8, 2 * len(datasets) * n_models / 3), 5))
@@ -247,13 +249,13 @@ def plot_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
 def plot_perplexity_bar(
     ppl_series: dict,
     out_path: Path,
-    ylabel: str = "Validation perplexity  (↓ better)",
-    title: str = "Masked-LM perplexity on the run's validation split",
+    ylabel: str,
+    title: str,
 ) -> None:
     labels = [k for k, v in ppl_series.items() if v is not None]
     values = [ppl_series[k] for k in labels]
     if not labels:
-        logger.warning("No perplexity values to plot; skipping")
+        logger.warning("No perplexity values to plot for %s; skipping", out_path.name)
         return
 
     fig, ax = plt.subplots(figsize=(max(6, 1.2 * len(labels)), 5))
@@ -270,20 +272,49 @@ def plot_perplexity_bar(
     logger.info("Saved %s", out_path)
 
 
+def plot_loss_curves(history_by_label: dict[str, list], out_path: Path) -> None:
+    """One subplot per run: train-loss dots + val-perplexity (log y on right axis)."""
+    labels = [l for l, h in history_by_label.items() if h]
+    if not labels:
+        logger.warning("No training histories available; skipping loss curves")
+        return
+
+    n = len(labels)
+    fig, axes = plt.subplots(n, 1, figsize=(9, 3.2 * n), sharex=False, squeeze=False)
+    for ax, label in zip(axes.flatten(), labels):
+        history = history_by_label[label]
+        train_steps = [e["step"] for e in history if "train_loss" in e]
+        train_losses = [e["train_loss"] for e in history if "train_loss" in e]
+        val_steps = [e["step"] for e in history if "val_loss" in e]
+        val_losses = [e["val_loss"] for e in history if "val_loss" in e]
+
+        if train_steps:
+            ax.plot(train_steps, train_losses, label="train", color="tab:blue", linewidth=1)
+        if val_steps:
+            ax.plot(val_steps, val_losses, label="val", color="tab:orange",
+                    marker="o", linestyle="--", linewidth=1)
+        ax.set_title(label)
+        ax.set_xlabel("step")
+        ax.set_ylabel("MLM loss")
+        ax.legend(loc="best", fontsize=8, frameon=False)
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", out_path)
+
+
 def build_summary_rows(label: str, scoring: dict) -> list[dict]:
-    """Flatten a scoring dict into long-format rows for the plot + CSV."""
     rows = []
     if not scoring:
         return rows
-    # Scoring keys: spearman_avg_<DS>, spearman_avg_pval_<DS>, spearman_random_<DS>, ...
     for key, val in scoring.items():
         if "pval" in key or not key.startswith("spearman_"):
             continue
-        # spearman_avg_M22 -> strategy=avg, ds=M22
         parts = key.split("_")
         if len(parts) < 3:
             continue
-        strategy = parts[1]  # "avg" or "random"
+        strategy = parts[1]
         ds = "_".join(parts[2:])
         pval_key = f"spearman_{strategy}_pval_{ds}"
         rows.append({
@@ -296,7 +327,7 @@ def build_summary_rows(label: str, scoring: dict) -> list[dict]:
     return rows
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="config")
+@hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     runs = list(OmegaConf.to_container(cfg.runs, resolve=True))
     labels = list(OmegaConf.to_container(cfg.labels, resolve=True))
@@ -313,7 +344,6 @@ def main(cfg: DictConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # Pass the full Hydra cfg as the fallback config for runs missing config.yaml
     seed = cfg.seed
     n_samples = cfg.scoring.n_samples
     scoring_batch_size = cfg.scoring.batch_size
@@ -323,44 +353,61 @@ def main(cfg: DictConfig) -> None:
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
 
     rows: list[dict] = []
-    ppl_series: dict[str, float | None] = {}
+    val_ppl_series: dict[str, float | None] = {}
+    test_ppl_series: dict[str, float | None] = {}
     cdr_ppl_series: dict[str, float | None] = {}
+    history_by_label: dict[str, list] = {}
 
     if not skip_base:
-        base_scoring, base_ppl, base_cdr_ppl = evaluate_base(cfg, datasets, tokenizer, device, seed)
+        base_scoring, base_val, base_test, base_cdr = evaluate_base(
+            cfg, datasets, tokenizer, device, seed,
+        )
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring))
-        ppl_series[BASE_LABEL] = base_ppl
-        cdr_ppl_series[BASE_LABEL] = base_cdr_ppl
+        val_ppl_series[BASE_LABEL] = base_val
+        test_ppl_series[BASE_LABEL] = base_test
+        cdr_ppl_series[BASE_LABEL] = base_cdr
 
     for run_dir, label in zip(runs, labels):
-        scoring, ppl, cdr_ppl = evaluate_run(
+        scoring, val_ppl, test_ppl, cdr_ppl, history = evaluate_run(
             Path(run_dir), datasets, tokenizer, device,
             scoring_batch_size, seed,
             force_rescore=force_rescore, force_reppl=force_reppl,
             fallback_config=cfg,
         )
         rows.extend(build_summary_rows(label, scoring))
-        ppl_series[label] = ppl
+        val_ppl_series[label] = val_ppl
+        test_ppl_series[label] = test_ppl
         cdr_ppl_series[label] = cdr_ppl
+        history_by_label[label] = history
 
     df = pd.DataFrame(rows)
     if df.empty:
         logger.error("No scoring rows collected; aborting plots")
         return
 
-    # Headline plot uses strategy = STRATEGY only (avg)
     headline = df[df["strategy"] == STRATEGY].copy()
     plot_spearman_bar(headline, out_dir / "spearman_bar.png")
-    plot_perplexity_bar(ppl_series, out_dir / "perplexity_comparison.png")
+    plot_perplexity_bar(
+        test_ppl_series, out_dir / "test_perplexity_comparison.png",
+        ylabel="Test perplexity  (↓ better)",
+        title="Masked-LM perplexity on held-out test split",
+    )
+    plot_perplexity_bar(
+        val_ppl_series, out_dir / "val_perplexity_comparison.png",
+        ylabel="Val perplexity  (↓ better)",
+        title="Masked-LM perplexity on validation split (diagnostic)",
+    )
     plot_perplexity_bar(
         cdr_ppl_series, out_dir / "cdr_perplexity_comparison.png",
         ylabel="CDR-H3 pseudo-perplexity  (↓ better)",
         title="CDR-H3 pseudo-perplexity (full VH context, single-position masking)",
     )
+    plot_loss_curves(history_by_label, out_dir / "train_val_loss_curves.png")
 
     csv_path = out_dir / "metrics_summary.csv"
     df_out = df.copy()
-    df_out["final_val_perplexity"] = df_out["model"].map(ppl_series)
+    df_out["final_val_perplexity"] = df_out["model"].map(val_ppl_series)
+    df_out["final_test_perplexity"] = df_out["model"].map(test_ppl_series)
     df_out["cdr_pseudo_perplexity"] = df_out["model"].map(cdr_ppl_series)
     df_out.to_csv(csv_path, index=False)
     logger.info("Saved %s", csv_path)

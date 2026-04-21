@@ -3,3 +3,9 @@ data:
   fasta_path: ${paths.project_dir}/datasets/oas_dedup_rep_seq.fasta
   max_seq_len: 256
   mlm_probability: 0.15
+  # Hash-based train/val/test partitioning. Bump `salt` to create a new split.
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

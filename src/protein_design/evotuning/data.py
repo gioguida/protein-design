@@ -5,41 +5,21 @@ import logging
 import numpy as np
 import torch
 from Bio import SeqIO
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+
+from protein_design.evotuning.splits import Split, SplitConfig, split_for
 
 logger = logging.getLogger(__name__)
 
 
 class OASFastaDataset(Dataset):
-    """Torch dataset that reads antibody sequences from a FASTA file."""
+    """Torch dataset over a pre-partitioned numpy array of ASCII sequences."""
 
-    def __init__(self, fasta_path: str, tokenizer: AutoTokenizer, max_seq_len: int) -> None:
+    def __init__(self, sequences: np.ndarray, tokenizer: AutoTokenizer, max_seq_len: int) -> None:
+        self.sequences = sequences
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
-
-        logger.info("Loading sequences from %s", fasta_path)
-
-        n_seqs = 0
-        max_len = 0
-        with open(fasta_path) as f:
-            cur_len = 0
-            for line in f:
-                if line.startswith(">"):
-                    if n_seqs > 0:
-                        max_len = max(max_len, cur_len)
-                    n_seqs += 1
-                    cur_len = 0
-                else:
-                    cur_len += len(line.rstrip())
-            if n_seqs > 0:
-                max_len = max(max_len, cur_len)
-
-        self.sequences = np.empty(n_seqs, dtype=f"S{max_len}")
-        for i, record in enumerate(SeqIO.parse(fasta_path, "fasta")):
-            self.sequences[i] = str(record.seq).encode("ascii")
-        logger.info("Loaded %d sequences (max_len=%d, %.1f GB)",
-                    n_seqs, max_len, self.sequences.nbytes / 1e9)
 
     def __len__(self) -> int:
         return len(self.sequences)
@@ -55,26 +35,60 @@ class OASFastaDataset(Dataset):
         return {k: torch.tensor(v) for k, v in encoding.items()}
 
 
+def _load_fasta_by_split(
+    fasta_path: str, split_cfg: SplitConfig
+) -> dict[Split, np.ndarray]:
+    """Two-pass FASTA load that partitions sequences by hash-based split."""
+    counts: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+    max_lens: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+    total = 0
+
+    logger.info("Scanning %s for split assignment (salt=%r)", fasta_path, split_cfg.salt)
+    for record in SeqIO.parse(fasta_path, "fasta"):
+        split = split_for(record.id, split_cfg)
+        L = len(record.seq)
+        counts[split] += 1
+        if L > max_lens[split]:
+            max_lens[split] = L
+        total += 1
+
+    logger.info(
+        "Scanned %d sequences; split counts: train=%d val=%d test=%d",
+        total, counts["train"], counts["val"], counts["test"],
+    )
+
+    arrays: dict[Split, np.ndarray] = {
+        split: np.empty(counts[split], dtype=f"S{max(max_lens[split], 1)}")
+        for split in ("train", "val", "test")
+    }
+    cursors: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+
+    for record in SeqIO.parse(fasta_path, "fasta"):
+        split = split_for(record.id, split_cfg)
+        arrays[split][cursors[split]] = str(record.seq).encode("ascii")
+        cursors[split] += 1
+
+    return arrays
+
+
 def make_dataloaders(
     fasta_path: str,
     tokenizer_name: str,
     max_seq_len: int,
     mlm_probability: float,
     batch_size: int,
-    seed: int,
-) -> tuple[DataLoader, DataLoader]:
-    """Create train (95%) and validation (5%) DataLoaders from a FASTA file."""
+    split_cfg: SplitConfig,
+) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """Build train / val / test DataLoaders from a single FASTA using
+    hash-based split assignment. Splits are stable across runs given the
+    same salt and sequence IDs."""
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    dataset = OASFastaDataset(fasta_path, tokenizer, max_seq_len)
+    arrays = _load_fasta_by_split(fasta_path, split_cfg)
 
-    n_val = int(len(dataset) * 0.05)
-    n_train = len(dataset) - n_val
-    train_ds, val_ds = random_split(
-        dataset,
-        [n_train, n_val],
-        generator=torch.Generator().manual_seed(seed),
-    )
-    logger.info("Split: %d train, %d val", n_train, n_val)
+    datasets = {
+        split: OASFastaDataset(arrays[split], tokenizer, max_seq_len)
+        for split in ("train", "val", "test")
+    }
 
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
@@ -84,7 +98,7 @@ def make_dataloaders(
     )
 
     train_loader = DataLoader(
-        train_ds,
+        datasets["train"],
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
@@ -93,11 +107,19 @@ def make_dataloaders(
         drop_last=True,
     )
     val_loader = DataLoader(
-        val_ds,
+        datasets["val"],
         batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=False,
         collate_fn=collator,
     )
-    return train_loader, val_loader
+    test_loader = DataLoader(
+        datasets["test"],
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False,
+        collate_fn=collator,
+    )
+    return train_loader, val_loader, test_loader

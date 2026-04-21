@@ -84,14 +84,14 @@ def _train_evotuning(
     train_start: float,
 ) -> tuple[list, list, int, Optional[Path]]:
     """Run corpus-MLM training. Returns (training_history, scoring_history,
-    global_step, best_ckpt_path_or_None)."""
-    train_loader, val_loader = make_dataloaders(
+    global_step, best_ckpt_path_or_None, final_metrics)."""
+    train_loader, val_loader, test_loader = make_dataloaders(
         fasta_path=data_cfg.fasta_path,
         tokenizer_name=model_cfg.esm_model_path,
         max_seq_len=data_cfg.max_seq_len,
         mlm_probability=data_cfg.mlm_probability,
         batch_size=training_cfg.batch_size,
-        seed=run_cfg.seed,
+        split_cfg=data_cfg.split,
     )
 
     optimizer = AdamW(
@@ -255,8 +255,12 @@ def _train_evotuning(
             break
 
     final_path = checkpoint_dir / "final.pt"
+    final_metrics: dict = {}
     if len(val_loader.dataset) > 0:
-        final_ppl, final_val_loss = compute_perplexity(model, val_loader, device)
+        # Full-pass val eval (no 50-batch cap) for the headline final number.
+        final_ppl, final_val_loss = compute_perplexity(
+            model, val_loader, device, max_batches=max(len(val_loader), 1),
+        )
         final_cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
         wandb.log(
             {"val/loss": final_val_loss, "val/perplexity": final_ppl, "val/cdr_ppl": final_cdr_ppl},
@@ -273,9 +277,23 @@ def _train_evotuning(
             "val_cdr_ppl": final_cdr_ppl,
             "wall_time": time.time() - train_start,
         })
+        final_metrics["final_val_perplexity"] = float(final_ppl)
+        final_metrics["final_val_loss"] = float(final_val_loss)
+        final_metrics["final_cdr_pseudo_perplexity"] = float(final_cdr_ppl)
     else:
         final_ppl = float("inf")
-        logger.info("Skipping final perplexity (empty validation set)")
+        logger.info("Skipping final val perplexity (empty validation set)")
+
+    if len(test_loader.dataset) > 0:
+        test_ppl, test_loss = compute_perplexity(
+            model, test_loader, device, max_batches=max(len(test_loader), 1),
+        )
+        wandb.log({"test/loss": test_loss, "test/perplexity": test_ppl}, step=global_step)
+        logger.info("Final test loss: %.4f — test perplexity: %.2f", test_loss, test_ppl)
+        final_metrics["final_test_perplexity"] = float(test_ppl)
+        final_metrics["final_test_loss"] = float(test_loss)
+    else:
+        logger.info("Skipping final test perplexity (empty test split)")
 
     final_state = {
         "epoch": max_epochs,
@@ -309,7 +327,7 @@ def _train_evotuning(
         if not scoring_history or scoring_history[-1]["step"] != global_step:
             scoring_history.append({"step": global_step, **scoring_results})
 
-    return training_history, scoring_history, global_step, best_ckpt_path
+    return training_history, scoring_history, global_step, best_ckpt_path, final_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +437,7 @@ def _train_ttt(
         )
         scoring_history.append({"step": max_steps, **scoring_results})
 
-    return training_history, scoring_history, max_steps, final_path
+    return training_history, scoring_history, max_steps, final_path, {}
 
 
 # ---------------------------------------------------------------------------
@@ -476,13 +494,13 @@ def run_stage(
     train_start = time.time()
 
     if stage_type == "evotuning":
-        training_history, scoring_history, global_step, best_ckpt_path = _train_evotuning(
+        training_history, scoring_history, global_step, best_ckpt_path, final_metrics = _train_evotuning(
             model, model_cfg, data_cfg, training_cfg, scoring_cfg, run_cfg,
             run_dir, checkpoint_dir, device, train_start,
         )
         handoff_ckpt = best_ckpt_path if best_ckpt_path is not None else checkpoint_dir / "final.pt"
     else:  # ttt
-        training_history, scoring_history, global_step, handoff_ckpt = _train_ttt(
+        training_history, scoring_history, global_step, handoff_ckpt, final_metrics = _train_ttt(
             model, model_cfg, data_cfg, training_cfg, scoring_cfg, run_cfg,
             run_dir, checkpoint_dir, device, train_start,
         )
@@ -503,6 +521,7 @@ def run_stage(
         },
         "training_history": training_history,
         "scoring_history": scoring_history,
+        **final_metrics,
     }
     with open(run_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
