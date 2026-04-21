@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=8G
 #SBATCH --gpus=1
-#SBATCH --gres=gpumem:20g
+#SBATCH --gres=gpumem:24g
 #SBATCH --time=00:30:00
 #SBATCH --output=bash_scripts/logs/plot_results_%j.log
 

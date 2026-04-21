@@ -134,7 +134,8 @@ def _extract_final_scoring(metrics: dict) -> dict | None:
 def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
                  seed, force_rescore: bool, force_reppl: bool,
                  fallback_config: DictConfig | None = None,
-                 flank_ks: Sequence[int] = ()):
+                 flank_ks: Sequence[int] = (),
+                 max_ppl_batches: int = 500):
     """Return (scoring, val_ppl, test_ppl, cdr_ppl, training_history) for this run."""
     run_dir = Path(run_dir)
     metrics_path = run_dir / "metrics.json"
@@ -168,15 +169,15 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     if val_ppl is None or test_ppl is None:
         fasta = cfg.data.fasta_path if "data" in cfg else None
         if fasta and Path(fasta).exists():
-            logger.info("  recomputing val/test perplexity on %s", fasta)
+            logger.info("  recomputing val/test perplexity on %s (max %d batches)", fasta, max_ppl_batches)
             val_loader, test_loader = _make_eval_loaders(fasta, cfg)
             if val_ppl is None and len(val_loader.dataset) > 0:
                 val_ppl, _ = compute_perplexity(
-                    model, val_loader, device, max_batches=max(len(val_loader), 1),
+                    model, val_loader, device, max_batches=max_ppl_batches,
                 )
             if test_ppl is None and len(test_loader.dataset) > 0:
                 test_ppl, _ = compute_perplexity(
-                    model, test_loader, device, max_batches=max(len(test_loader), 1),
+                    model, test_loader, device, max_batches=max_ppl_batches,
                 )
         else:
             logger.warning("  fasta path missing, skipping perplexity recomputation")
@@ -192,7 +193,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
 
 
 def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed,
-                  flank_ks: Sequence[int] = ()):
+                  flank_ks: Sequence[int] = (), max_ppl_batches: int = 500):
     """Score base ESM2 and compute val/test perplexity on the OAS split."""
     logger.info("Evaluating base ESM2")
     model = ESM2Model(build_model_config(scoring_cfg, device=str(device)))
@@ -204,14 +205,15 @@ def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed,
     val_ppl, test_ppl = None, None
     fasta = scoring_cfg.data.fasta_path if "data" in scoring_cfg else None
     if fasta and Path(fasta).exists():
+        logger.info("  computing val/test perplexity on %s (max %d batches)", fasta, max_ppl_batches)
         val_loader, test_loader = _make_eval_loaders(fasta, scoring_cfg)
         if len(val_loader.dataset) > 0:
             val_ppl, _ = compute_perplexity(
-                model, val_loader, device, max_batches=max(len(val_loader), 1),
+                model, val_loader, device, max_batches=max_ppl_batches,
             )
         if len(test_loader.dataset) > 0:
             test_ppl, _ = compute_perplexity(
-                model, test_loader, device, max_batches=max(len(test_loader), 1),
+                model, test_loader, device, max_batches=max_ppl_batches,
             )
 
     cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
@@ -423,6 +425,7 @@ def main(cfg: DictConfig) -> None:
     seed = cfg.seed
     n_samples = cfg.scoring.n_samples
     scoring_batch_size = cfg.scoring.batch_size
+    max_ppl_batches = int(cfg.scoring.get("max_ppl_batches", 500))
     flank_ks = [int(k) for k in cfg.scoring.get("flank_ks", [])]
     datasets = load_scoring_datasets(
         OmegaConf.to_container(cfg.scoring.datasets, resolve=True), n_samples, seed
@@ -438,6 +441,7 @@ def main(cfg: DictConfig) -> None:
     if not skip_base:
         base_scoring, base_val, base_test, base_cdr = evaluate_base(
             cfg, datasets, tokenizer, device, seed, flank_ks=flank_ks,
+            max_ppl_batches=max_ppl_batches,
         )
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring))
         val_ppl_series[BASE_LABEL] = base_val
@@ -450,6 +454,7 @@ def main(cfg: DictConfig) -> None:
             scoring_batch_size, seed,
             force_rescore=force_rescore, force_reppl=force_reppl,
             fallback_config=cfg, flank_ks=flank_ks,
+            max_ppl_batches=max_ppl_batches,
         )
         rows.extend(build_summary_rows(label, scoring))
         val_ppl_series[label] = val_ppl
