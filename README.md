@@ -79,6 +79,21 @@ For heavy jobs on the Euler cluster, submit the provided bash script. Check `bas
 sbatch bash_scripts/run_dpo_train.sh
 ```
 
+### Plotting Metrics
+Training writes each run to `TRAIN_DIR/<run_name>/` with `history.csv`, `summary.json`, `metrics.json`, and `best.pt`. To compare multiple runs after training, use the plotting wrapper in `bash_scripts/run_plot_dpo_metrics.sh` and edit the run timestamps at the top of the file in `YYYYMMDD_HHmmss` form.
+
+```bash
+sbatch bash_scripts/run_plot_dpo_metrics.sh
+```
+
+The plotting script groups metrics by origin:
+- training curves from `history.csv`
+- validation curves from `history.csv`
+- validation summary metrics from `metrics.json`
+- test summary metrics from `summary.json`
+
+For test metrics, the plots use run-comparison bar charts, which are a better fit than histograms because each run contributes a single scalar value per metric.
+
 ---
 
 ## 🧬 Key Features

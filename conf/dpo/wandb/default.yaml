@@ -1,0 +1,10 @@
+# @package _global_
+wandb:
+  enabled: true
+  project: ${oc.env:WANDB_PROJECT,protein-design}
+  entity: null
+  run_name: null  # treated as base run name when run.base_name is null
+  init_timeout: 180
+  fallback_mode: offline  # offline | disable
+  tags: []
+  notes: null

@@ -8,3 +8,4 @@ pytest
 torch
 transformers
 wandb
+matplotlib

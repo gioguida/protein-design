@@ -18,6 +18,7 @@ dependencies = [
     "torch",
     "transformers",
     "wandb",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
