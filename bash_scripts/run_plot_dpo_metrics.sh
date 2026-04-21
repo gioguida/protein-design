@@ -26,11 +26,13 @@ PLOT_VALIDATION_SUMMARY="${PLOT_VALIDATION_SUMMARY:-true}"
 PLOT_TEST_SUMMARY="${PLOT_TEST_SUMMARY:-true}"
 
 RUN_TIMESTAMPS=(
-    "20260420_231634"
+    "20260419_120621"
+    "20260419_165257"
+    "20260419_232123"
 )
 
-TRAINING_METRICS=(loss reward_accuracy reward_margin implicit_kl)
-VALIDATION_METRICS=(loss reward_accuracy reward_margin implicit_kl perplexity spearman_avg spearman_random ppl/val_pos ppl/val_neg ppl/val_wt)
+TRAINING_METRICS=(loss reward_accuracy reward_margin)
+VALIDATION_METRICS=(loss reward_accuracy reward_margin spearman_avg spearman_random ppl/val_pos ppl/val_neg ppl/val_wt)
 VALIDATION_SUMMARY_METRICS=(val_ppl spearman_M22 spearman_SI06 spearman_exp)
 TEST_SUMMARY_METRICS=(test_loss test_reward_accuracy test_reward_margin test_implicit_kl test_perplexity)
 
