@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.plot_dpo_metrics import discover_run_artifacts
+from scripts.plot_dpo_metrics import _resolve_metric_series, discover_run_artifacts
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -83,3 +83,37 @@ def test_discover_run_artifacts_uses_custom_run_labels(tmp_path: Path) -> None:
     assert len(artifacts) == 1
     artifact = artifacts[0]
     assert artifact.display_name == "baseline-dpo"
+
+
+def test_resolve_metric_series_supports_slash_validation_metrics() -> None:
+    history = pd.DataFrame(
+        {
+            "epoch": [1, 2],
+            "ppl/val_wt": [20.0, 19.5],
+        }
+    )
+
+    resolved = _resolve_metric_series(history, value_prefix="val", metric="ppl/val_wt")
+
+    assert resolved is not None
+    column, epochs, values = resolved
+    assert column == "ppl/val_wt"
+    assert epochs.tolist() == [1, 2]
+    assert values.tolist() == [20.0, 19.5]
+
+
+def test_resolve_metric_series_prefers_prefixed_standard_metrics() -> None:
+    history = pd.DataFrame(
+        {
+            "epoch": [1, 2],
+            "val_loss": [0.9, 0.8],
+            "loss": [9.0, 8.0],
+        }
+    )
+
+    resolved = _resolve_metric_series(history, value_prefix="val", metric="loss")
+
+    assert resolved is not None
+    column, _epochs, values = resolved
+    assert column == "val_loss"
+    assert values.tolist() == [0.9, 0.8]

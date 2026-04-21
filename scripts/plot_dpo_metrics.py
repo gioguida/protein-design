@@ -241,6 +241,38 @@ def _prepare_epoch_series(history: pd.DataFrame, value_column: str) -> tuple[pd.
     return epochs.loc[valid], values.loc[valid]
 
 
+def _resolve_metric_series(
+    history: pd.DataFrame,
+    *,
+    value_prefix: str,
+    metric: str,
+) -> tuple[str, pd.Series, pd.Series] | None:
+    candidate_columns: list[str] = []
+    prefixed_metric = f"{value_prefix}_{metric}"
+
+    if "/" in metric:
+        candidate_columns.extend([metric, prefixed_metric])
+    elif metric.startswith(f"{value_prefix}_"):
+        candidate_columns.append(metric)
+    else:
+        candidate_columns.extend([prefixed_metric, metric])
+
+    seen: set[str] = set()
+    for column in candidate_columns:
+        if column in seen:
+            continue
+        seen.add(column)
+
+        series = _prepare_epoch_series(history, column)
+        if series is None:
+            continue
+
+        epochs, values = series
+        return column, epochs, values
+
+    return None
+
+
 def _plot_curve_group(
     artifacts: Sequence[RunArtifacts],
     *,
@@ -267,14 +299,19 @@ def _plot_curve_group(
 
     for axis, metric in zip(axes, selected_metrics):
         plotted_any = False
-        value_column = f"{value_prefix}_{metric}"
         for artifact in artifacts:
             if artifact.history is None:
                 continue
-            series = _prepare_epoch_series(artifact.history, value_column)
-            if series is None:
+
+            resolved_series = _resolve_metric_series(
+                artifact.history,
+                value_prefix=value_prefix,
+                metric=metric,
+            )
+            if resolved_series is None:
                 continue
-            epochs, values = series
+
+            _column, epochs, values = resolved_series
             axis.plot(
                 epochs,
                 values,
@@ -289,7 +326,7 @@ def _plot_curve_group(
         axis.set_ylabel(metric)
         axis.grid(True, alpha=0.25)
         if not plotted_any:
-            axis.text(0.5, 0.5, f"No data for {value_column}", ha="center", va="center", transform=axis.transAxes)
+            axis.text(0.5, 0.5, f"No data for {metric}", ha="center", va="center", transform=axis.transAxes)
         else:
             axis.legend(fontsize=8, loc="best")
 
