@@ -130,6 +130,7 @@ def _run_probe(cfg: Any) -> Path:
             enrichment_col="M22_binding_enrichment_adj",
             batch_size=spearman_batch_size,
             seed=int(cfg.seed),
+            scoring_mode="cdr_pll",
         )
         record = {
             "epoch": 1.0,

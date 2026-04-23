@@ -1038,6 +1038,7 @@ def run_dpo(cfg: Any) -> Path:
                     enrichment_col="M22_binding_enrichment_adj",
                     batch_size=val_spearman_batch_size,
                     seed=int(cfg.seed),
+                    scoring_mode="cdr_pll",
                 )
                 epoch_record.update(
                     {
@@ -1189,6 +1190,7 @@ def run_dpo(cfg: Any) -> Path:
                 enrichment_col="M22_binding_enrichment_adj",
                 batch_size=val_spearman_batch_size,
                 seed=int(cfg.seed),
+                scoring_mode="cdr_pll",
             )
             test_spearman_metrics = {
                 "test_spearman_avg": float(test_spearman["spearman_avg"]),

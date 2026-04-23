@@ -326,6 +326,39 @@ def score_double_mutants(
         raise ValueError(f"Unknown strategy: {strategy!r}")
 
 
+def score_sequences_cdr_pll(
+    scorer: ESM2Model,
+    sequences: Sequence[str],
+    batch_size: int = 512,
+) -> np.ndarray:
+    """Score sequences by CDR-only PLL (all CDR positions, context-aware if enabled)."""
+    clean_sequences = [str(seq).strip() for seq in sequences]
+    if not clean_sequences:
+        return np.empty(0, dtype=np.float32)
+
+    scores = np.empty(len(clean_sequences), dtype=np.float32)
+    by_len: Dict[int, List[tuple[int, str]]] = {}
+    for idx, seq in enumerate(clean_sequences):
+        by_len.setdefault(len(seq), []).append((idx, seq))
+
+    with torch.no_grad():
+        for _, seq_pairs in by_len.items():
+            idxs = [idx for idx, _ in seq_pairs]
+            seqs = [seq for _, seq in seq_pairs]
+            for start in range(0, len(seqs), max(1, int(batch_size))):
+                end = min(start + max(1, int(batch_size)), len(seqs))
+                batch = seqs[start:end]
+                batch_idxs = idxs[start:end]
+                pll_scores = scorer.pseudo_log_likelihood(
+                    batch,
+                    cdr_only=True,
+                    use_grad=False,
+                )
+                scores[batch_idxs] = pll_scores.detach().float().cpu().numpy()
+
+    return scores
+
+
 # ---------------------------------------------------------------------------
 # CDR pseudo-perplexity (evotuning)
 # ---------------------------------------------------------------------------
@@ -416,6 +449,7 @@ def run_scoring_evaluation(
     seed: int = 42,
     flank_ks: Sequence[int] = (),
     scorer: Optional[ESM2Model] = None,
+    scoring_mode: str = "mutation_path",
 ) -> dict:
     """Run full scoring evaluation with both ordering strategies.
 
@@ -429,22 +463,40 @@ def run_scoring_evaluation(
         raise ValueError("enrichment_col must be provided.")
 
     enrichment = np.asarray(df[enrichment_col].values)
+    mode = str(scoring_mode).strip().lower()
 
-    scores_avg = score_double_mutants(
-        model, tokenizer, C05_CDRH3, df, device,
-        strategy="average", batch_size=batch_size, seed=seed,
-        scorer=scorer,
-    )
-    rho_avg, pval_avg = evaluate_spearman(scores_avg, enrichment)
-    logger.info("Spearman (average ordering): rho=%.4f, p=%.2e", rho_avg, pval_avg)
+    if mode == "cdr_pll":
+        if scorer is None:
+            raise ValueError("scoring_mode='cdr_pll' requires scorer.")
+        if "aa" not in df.columns:
+            raise ValueError("scoring_mode='cdr_pll' requires column 'aa' in df.")
+        sequences = df["aa"].astype(str).str.strip().tolist()
+        scores_avg = score_sequences_cdr_pll(
+            scorer=scorer,
+            sequences=sequences,
+            batch_size=batch_size,
+        )
+        rho_avg, pval_avg = evaluate_spearman(scores_avg, enrichment)
+        logger.info("Spearman (cdr_pll): rho=%.4f, p=%.2e", rho_avg, pval_avg)
+        # Keep result keys stable for downstream logging/storage.
+        scores_rnd = scores_avg.copy()
+        rho_rnd, pval_rnd = rho_avg, pval_avg
+    else:
+        scores_avg = score_double_mutants(
+            model, tokenizer, C05_CDRH3, df, device,
+            strategy="average", batch_size=batch_size, seed=seed,
+            scorer=scorer,
+        )
+        rho_avg, pval_avg = evaluate_spearman(scores_avg, enrichment)
+        logger.info("Spearman (average ordering): rho=%.4f, p=%.2e", rho_avg, pval_avg)
 
-    scores_rnd = score_double_mutants(
-        model, tokenizer, C05_CDRH3, df, device,
-        strategy="random", batch_size=batch_size, seed=seed,
-        scorer=scorer,
-    )
-    rho_rnd, pval_rnd = evaluate_spearman(scores_rnd, enrichment)
-    logger.info("Spearman (random ordering):  rho=%.4f, p=%.2e", rho_rnd, pval_rnd)
+        scores_rnd = score_double_mutants(
+            model, tokenizer, C05_CDRH3, df, device,
+            strategy="random", batch_size=batch_size, seed=seed,
+            scorer=scorer,
+        )
+        rho_rnd, pval_rnd = evaluate_spearman(scores_rnd, enrichment)
+        logger.info("Spearman (random ordering):  rho=%.4f, p=%.2e", rho_rnd, pval_rnd)
 
     results = {
         "spearman_avg": rho_avg,
@@ -505,6 +557,7 @@ def run_multi_scoring_evaluation(
     scores_csv_dir: str | None = None,
     flank_ks: Sequence[int] = (),
     scorer: Optional[ESM2Model] = None,
+    scoring_mode: str = "mutation_path",
 ) -> dict:
     """Run scoring evaluation across multiple datasets.
 
@@ -522,6 +575,7 @@ def run_multi_scoring_evaluation(
             model, tokenizer, df, enrichment_col, device, batch_size, seed,
             flank_ks=flank_ks,
             scorer=scorer,
+            scoring_mode=scoring_mode,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
         results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
