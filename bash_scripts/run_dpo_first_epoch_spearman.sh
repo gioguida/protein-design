@@ -7,17 +7,21 @@
 #SBATCH --gres=gpumem:24g
 #SBATCH --time=24:00:00
 #SBATCH --output=bash_scripts/logs/dpo_spearman_probe_%j.out
-#SBATCH --error=bash_scripts/logs/dpo_spearman_probe_%j.err
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Slurm executes batch scripts from a spool path; anchor to submit directory.
+ROOT_DIR="${SLURM_SUBMIT_DIR:-}"
+if [[ -z "${ROOT_DIR}" ]]; then
+  ROOT_DIR="$(pwd)"
+fi
 cd "${ROOT_DIR}"
 
-if [[ -f "bash_scripts/common_setup.sh" ]]; then
+if [[ -f "${ROOT_DIR}/bash_scripts/common_setup.sh" ]]; then
   # shellcheck disable=SC1091
-  source "bash_scripts/common_setup.sh"
+  source "${ROOT_DIR}/bash_scripts/common_setup.sh"
 fi
+cd "${ROOT_DIR}"
 
 # ---------------------------------------------------------------------------
 # Configure your run here (no command-line args needed).

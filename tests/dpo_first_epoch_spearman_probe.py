@@ -125,11 +125,9 @@ def _run_probe(cfg: Any) -> Path:
     def log_spearman(stage: str, train_step: int) -> None:
         nonlocal history
         metrics = run_scoring_evaluation(
-            model=policy.model,
-            tokenizer=policy.tokenizer,
+            scorer=policy,
             df=val_spearman_df,
             enrichment_col="M22_binding_enrichment_adj",
-            device=policy.device,
             batch_size=spearman_batch_size,
             seed=int(cfg.seed),
         )

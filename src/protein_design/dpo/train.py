@@ -757,6 +757,44 @@ def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[
     }
 
 
+def _load_test_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[pd.DataFrame]:
+    """Load test scoring rows used for test Spearman tracking."""
+    d5_path = _ensure_test_eval_csv(cfg, logger)
+    if d5_path is None:
+        return None
+
+    try:
+        d5_df = pd.read_csv(d5_path)
+    except pd.errors.ParserError as exc:
+        logger.warning("Could not parse %s (%s). Skipping test Spearman logging.", d5_path, exc)
+        return None
+
+    required_cols = {"mut", "M22_binding_enrichment_adj"}
+    missing_cols = required_cols.difference(d5_df.columns)
+    if missing_cols:
+        logger.warning(
+            "%s missing required columns (%s). Skipping test Spearman logging.",
+            d5_path,
+            ", ".join(sorted(missing_cols)),
+        )
+        return None
+
+    if "num_mut" in d5_df.columns:
+        d5_df = d5_df[d5_df["num_mut"] == 2].copy()
+
+    enrichment = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
+    d5_df = d5_df.loc[enrichment.notna()].copy()
+    d5_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
+    d5_df["mut"] = d5_df["mut"].astype(str).str.strip()
+    d5_df = d5_df[d5_df["mut"] != ""].copy()
+
+    if len(d5_df) < 3:
+        logger.warning("Test Spearman set too small (%d rows). Skipping test Spearman logging.", len(d5_df))
+        return None
+
+    return d5_df.reset_index(drop=True)
+
+
 def _corpus_perplexity_for_sequences(
     scorer: ESM2Model,
     sequences: Sequence[str],
@@ -928,6 +966,7 @@ def run_dpo(cfg: Any) -> Path:
     global_step = 0
     _ensure_validation_eval_csvs(cfg, logger)
     val_spearman_df = _load_validation_spearman_df(cfg, logger)
+    test_spearman_df = _load_test_spearman_df(cfg, logger)
     val_spearman_batch_size = int(getattr(cfg.model, "pll_mask_chunk_size", 64))
 
     for epoch in range(start_epoch, int(cfg.training.num_epochs) + 1):
@@ -994,11 +1033,9 @@ def run_dpo(cfg: Any) -> Path:
         if val_spearman_df is not None:
             try:
                 val_spearman = run_scoring_evaluation(
-                    model=policy.model,
-                    tokenizer=policy.tokenizer,
+                    scorer=policy,
                     df=val_spearman_df,
                     enrichment_col="M22_binding_enrichment_adj",
-                    device=policy.device,
                     batch_size=val_spearman_batch_size,
                     seed=int(cfg.seed),
                 )
@@ -1129,6 +1166,7 @@ def run_dpo(cfg: Any) -> Path:
     logger.info("Test Chosen Perplexity: %.4f", avg_test_perplexity)
 
     test_ppl_metrics: Dict[str, float] = {}
+    test_spearman_metrics: Dict[str, float] = {}
     test_eval_sets = _load_test_pll_eval_sets(cfg, logger)
     if test_eval_sets is not None:
         test_ppl_metrics = evaluate_perplexity(
@@ -1142,6 +1180,34 @@ def run_dpo(cfg: Any) -> Path:
             float(test_ppl_metrics["ppl/test_neg"]),
             float(test_ppl_metrics["ppl/test_wt"]),
         )
+
+    if test_spearman_df is not None:
+        try:
+            test_spearman = run_scoring_evaluation(
+                scorer=policy,
+                df=test_spearman_df,
+                enrichment_col="M22_binding_enrichment_adj",
+                batch_size=val_spearman_batch_size,
+                seed=int(cfg.seed),
+            )
+            test_spearman_metrics = {
+                "test_spearman_avg": float(test_spearman["spearman_avg"]),
+                "test_spearman_avg_pval": float(test_spearman["spearman_avg_pval"]),
+                "test_spearman_random": float(test_spearman["spearman_random"]),
+                "test_spearman_random_pval": float(test_spearman["spearman_random_pval"]),
+            }
+            logger.info(
+                "Test Spearman | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                float(test_spearman["spearman_avg"]),
+                float(test_spearman["spearman_avg_pval"]),
+                float(test_spearman["spearman_random"]),
+                float(test_spearman["spearman_random_pval"]),
+            )
+        except Exception as exc:
+            logger.warning("Test Spearman evaluation failed (%s). Skipping this metric.", exc)
+
+    if history:
+        history[-1].update(test_spearman_metrics)
 
     history_df = pd.DataFrame(history)
     history_csv_path = output_dir / str(cfg.logging.history_csv)
@@ -1158,10 +1224,16 @@ def run_dpo(cfg: Any) -> Path:
         "test_batches": int(test_metrics["num_batches"]),
         "test_pairs": int(test_metrics["num_pairs"]),
         "test_skipped_batches": int(test_metrics["skipped_batches"]),
+        "test_spearman_avg": None,
+        "test_spearman_avg_pval": None,
+        "test_spearman_random": None,
+        "test_spearman_random_pval": None,
         "num_train_pairs": int(len(train_df)),
         "num_val_pairs": int(len(val_df)),
         "num_test_pairs": int(len(test_df)),
     }
+    for metric_name, metric_value in test_spearman_metrics.items():
+        summary[metric_name] = None if math.isnan(metric_value) else metric_value
 
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -1179,10 +1251,16 @@ def run_dpo(cfg: Any) -> Path:
         "model": str(cfg.model.esm_model_path),
         "val_ppl": val_ppl,
         "spearman_M22": val_spearman_m22,
+        "test_spearman_avg": None,
+        "test_spearman_avg_pval": None,
+        "test_spearman_random": None,
+        "test_spearman_random_pval": None,
         "spearman_SI06": None,
         "spearman_exp": None,
         "notes": None if cfg.wandb.notes is None else str(cfg.wandb.notes),
     }
+    for metric_name, metric_value in test_spearman_metrics.items():
+        metrics_payload[metric_name] = None if math.isnan(metric_value) else metric_value
     metrics_path = output_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
 
@@ -1206,6 +1284,8 @@ def run_dpo(cfg: Any) -> Path:
     if wandb_run is not None:
         if test_ppl_metrics:
             wandb_mod.log(test_ppl_metrics, step=global_step)
+        if test_spearman_metrics:
+            wandb_mod.log(test_spearman_metrics, step=global_step)
         wandb_mod.log({f"test/{k}": v for k, v in summary.items()})
         wandb_mod.log({f"metrics/{k}": v for k, v in metrics_payload.items() if k != "run_name"})
         wandb_run.summary.update(summary)

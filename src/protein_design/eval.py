@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -173,21 +173,51 @@ def parse_mutations(mut_str: str, wt: str) -> list[tuple[int, str, str]]:
 
 
 def compute_masked_log_probs_batch(
-    model: torch.nn.Module,
-    tokenizer: AutoTokenizer,
+    model: Optional[torch.nn.Module],
+    tokenizer: Optional[AutoTokenizer],
     sequences: list[str],
     mask_positions: list[int],
     target_aas: list[str],
-    device: torch.device,
+    device: Optional[torch.device],
     batch_size: int = 512,
+    scorer: Optional[ESM2Model] = None,
 ) -> np.ndarray:
     """Compute log P(target_aa | sequence with mask_pos masked) for each sequence."""
     n = len(sequences)
     log_probs = np.empty(n, dtype=np.float32)
 
+    if scorer is not None:
+        target_ids = [scorer.tokenizer.convert_tokens_to_ids(aa) for aa in target_aas]
+        mask_token_id = scorer.mask_token_idx
+        scorer_device = scorer.device
+        scorer.model.eval()
+        with torch.no_grad():
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                batch_seqs = sequences[start:end]
+                batch_positions = mask_positions[start:end]
+                token_positions = scorer.cdr_to_token_positions(batch_positions)
+
+                input_ids = scorer.tokenize_sequences(batch_seqs).clone()
+                for i, token_pos in enumerate(token_positions):
+                    input_ids[i, token_pos] = mask_token_id
+
+                with torch.amp.autocast("cuda", enabled=scorer_device.type == "cuda"):
+                    logits = scorer.forward_logits(input_ids)
+
+                log_softmax = F.log_softmax(logits.float(), dim=-1)
+                for i, token_pos in enumerate(token_positions):
+                    tid = target_ids[start + i]
+                    log_probs[start + i] = log_softmax[i, token_pos, tid].item()
+        return log_probs
+
+    if model is None or tokenizer is None or device is None:
+        raise ValueError(
+            "model, tokenizer, and device are required when scorer is not provided."
+        )
+
     target_ids = [tokenizer.convert_tokens_to_ids(aa) for aa in target_aas]
     mask_token_id = tokenizer.mask_token_id
-
     model.eval()
     with torch.no_grad():
         for start in range(0, n, batch_size):
@@ -222,14 +252,15 @@ def compute_masked_log_probs_batch(
 
 
 def score_double_mutants(
-    model: torch.nn.Module,
-    tokenizer: AutoTokenizer,
+    model: Optional[torch.nn.Module],
+    tokenizer: Optional[AutoTokenizer],
     wt: str,
     df: pd.DataFrame,
-    device: torch.device,
+    device: Optional[torch.device],
     strategy: str = "average",
     batch_size: int = 512,
     seed: int = 42,
+    scorer: Optional[ESM2Model] = None,
 ) -> np.ndarray:
     """Score double-mutant sequences using mutational path scoring."""
     n = len(df)
@@ -269,10 +300,18 @@ def score_double_mutants(
 
     logger.info("Scoring %d sequences (4 × %d forward-pass batches)", n, -(-n // batch_size))
 
-    logp_a1 = compute_masked_log_probs_batch(model, tokenizer, seqs_a1, pos_a1, tgt_a1, device, batch_size)
-    logp_a2 = compute_masked_log_probs_batch(model, tokenizer, seqs_a2, pos_a2, tgt_a2, device, batch_size)
-    logp_b1 = compute_masked_log_probs_batch(model, tokenizer, seqs_b1, pos_b1, tgt_b1, device, batch_size)
-    logp_b2 = compute_masked_log_probs_batch(model, tokenizer, seqs_b2, pos_b2, tgt_b2, device, batch_size)
+    logp_a1 = compute_masked_log_probs_batch(
+        model, tokenizer, seqs_a1, pos_a1, tgt_a1, device, batch_size, scorer=scorer
+    )
+    logp_a2 = compute_masked_log_probs_batch(
+        model, tokenizer, seqs_a2, pos_a2, tgt_a2, device, batch_size, scorer=scorer
+    )
+    logp_b1 = compute_masked_log_probs_batch(
+        model, tokenizer, seqs_b1, pos_b1, tgt_b1, device, batch_size, scorer=scorer
+    )
+    logp_b2 = compute_masked_log_probs_batch(
+        model, tokenizer, seqs_b2, pos_b2, tgt_b2, device, batch_size, scorer=scorer
+    )
 
     score_a = logp_a1 + logp_a2
     score_b = logp_b1 + logp_b2
@@ -368,14 +407,15 @@ def _mutation_positions_per_row(df: pd.DataFrame, wt: str) -> list[set[int]]:
 
 
 def run_scoring_evaluation(
-    model: torch.nn.Module,
-    tokenizer: AutoTokenizer,
-    df: pd.DataFrame,
-    enrichment_col: str,
-    device: torch.device,
+    model: Optional[torch.nn.Module] = None,
+    tokenizer: Optional[AutoTokenizer] = None,
+    df: Optional[pd.DataFrame] = None,
+    enrichment_col: Optional[str] = None,
+    device: Optional[torch.device] = None,
     batch_size: int = 512,
     seed: int = 42,
     flank_ks: Sequence[int] = (),
+    scorer: Optional[ESM2Model] = None,
 ) -> dict:
     """Run full scoring evaluation with both ordering strategies.
 
@@ -383,11 +423,17 @@ def run_scoring_evaluation(
     where at least one mutation lies in the LEFT or RIGHT k-wide flank of
     CDRH3, for each k.
     """
+    if df is None:
+        raise ValueError("df must be provided.")
+    if enrichment_col is None:
+        raise ValueError("enrichment_col must be provided.")
+
     enrichment = np.asarray(df[enrichment_col].values)
 
     scores_avg = score_double_mutants(
         model, tokenizer, C05_CDRH3, df, device,
         strategy="average", batch_size=batch_size, seed=seed,
+        scorer=scorer,
     )
     rho_avg, pval_avg = evaluate_spearman(scores_avg, enrichment)
     logger.info("Spearman (average ordering): rho=%.4f, p=%.2e", rho_avg, pval_avg)
@@ -395,6 +441,7 @@ def run_scoring_evaluation(
     scores_rnd = score_double_mutants(
         model, tokenizer, C05_CDRH3, df, device,
         strategy="random", batch_size=batch_size, seed=seed,
+        scorer=scorer,
     )
     rho_rnd, pval_rnd = evaluate_spearman(scores_rnd, enrichment)
     logger.info("Spearman (random ordering):  rho=%.4f, p=%.2e", rho_rnd, pval_rnd)
@@ -449,14 +496,15 @@ def load_scoring_datasets(
 
 
 def run_multi_scoring_evaluation(
-    model: torch.nn.Module,
-    tokenizer: AutoTokenizer,
+    model: Optional[torch.nn.Module],
+    tokenizer: Optional[AutoTokenizer],
     datasets: list[tuple[str, pd.DataFrame, str]],
-    device: torch.device,
+    device: Optional[torch.device],
     batch_size: int = 512,
     seed: int = 42,
     scores_csv_dir: str | None = None,
     flank_ks: Sequence[int] = (),
+    scorer: Optional[ESM2Model] = None,
 ) -> dict:
     """Run scoring evaluation across multiple datasets.
 
@@ -473,6 +521,7 @@ def run_multi_scoring_evaluation(
         ds_results = run_scoring_evaluation(
             model, tokenizer, df, enrichment_col, device, batch_size, seed,
             flank_ks=flank_ks,
+            scorer=scorer,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
         results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]

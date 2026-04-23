@@ -2,7 +2,7 @@
 # Usage: add  `source bash_scripts/common_setup.sh`  after #SBATCH directives.
 
 set -euo pipefail
-cd /cluster/home/mdenegri/protein-design
+cd /cluster/home/${USER}/protein-design
 
 # Networking — eth_proxy provides outbound access on compute nodes.
 module load eth_proxy
