@@ -1,9 +1,10 @@
 ﻿"""Dataset loading helpers for DPO workflow.
 
 This module integrates preprocessing so callers can rely on raw data only.
-If processed D2 files are missing or stale, they are rebuilt automatically.
+If processed ED2 views are missing or stale, they are rebuilt automatically.
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
@@ -14,9 +15,15 @@ import numpy as np
 from protein_design.constants import WILD_TYPE
 
 from .data_processing import build_processed_views
+from .splitting import (
+	build_or_load_cluster_split_membership,
+	split_membership_keys,
+	summarize_split_membership,
+)
 from .utils import _gap_pairs
 
 RANDOM_SEED = 42
+LOG = logging.getLogger(__name__)
 
 
 PairingStrategy = Literal["positive_vs_tail", "positive_only_extremes", "both_structured", "delta_based"]
@@ -83,7 +90,7 @@ def _ensure_processed_data(
 	force_rebuild: bool = False,
 	verbose: bool = False,
 ) -> Dict[str, Path]:
-	"""Ensure D2 processed views exist and return their paths."""
+	"""Ensure processed ED2 views exist and return their paths."""
 	defaults = default_data_paths()
 	raw_csv_path = defaults["raw_m22"] if raw_csv_path is None else Path(raw_csv_path)
 	processed_dir = (
@@ -104,7 +111,7 @@ def load_distance2_dataframe(
 	processed_dir: Path = None,
 	force_rebuild: bool = False,
 ) -> pd.DataFrame:
-	"""Load one distance-2 dataframe view (base, mut1, or mut2)."""
+	"""Load one processed dataframe view (base, mut1, or mut2)."""
 	paths = _ensure_processed_data(
 		raw_csv_path=raw_csv_path,
 		processed_dir=processed_dir,
@@ -113,7 +120,7 @@ def load_distance2_dataframe(
 	)
 
 	view_to_key = {
-		"base": "d2",
+		"base": "ed2_all",
 		"mut1": "d2_clustered_mut1",
 		"mut2": "d2_clustered_mut2",
 	}
@@ -687,22 +694,6 @@ def load_dpo_sequence_pairs(
 	]
 
 
-def _split_membership_keys(df: pd.DataFrame) -> pd.Series:
-	"""Return stable row keys used to map base split membership into clustered views."""
-	if "Unnamed: 0" in df.columns:
-		return df["Unnamed: 0"].astype(str)
-
-	if {"aa", "mut"}.issubset(df.columns):
-		return df["aa"].astype(str) + "||" + df["mut"].astype(str)
-
-	if "aa" in df.columns:
-		return df["aa"].astype(str)
-
-	raise ValueError(
-		"Cannot infer split membership keys. Expected one of: 'Unnamed: 0', ('aa' and 'mut'), or 'aa'."
-	)
-
-
 def _build_pairs_for_split_views(
 	clustered_views: Dict[str, pd.DataFrame],
 	pairing_strategy: PairingStrategy,
@@ -780,35 +771,114 @@ def build_split_pair_dataframes_from_raw(
 	train_frac: float = 0.8,
 	val_frac: float = 0.1,
 	test_frac: float = 0.1,
+	split_hamming_distance: int = 1,
+	split_stratify_bins: int = 10,
 	seed: int = RANDOM_SEED,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-	"""Split base D2 rows first, then build DPO pairs inside each split independently."""
-	valid_views = {"mut1", "mut2"}
-	if not include_views:
-		raise ValueError("include_views must contain at least one of: mut1, mut2")
-	for view in include_views:
-		if view not in valid_views:
-			raise ValueError("include_views must contain only: mut1, mut2")
+	"""Split base ED2 rows by cluster first, then build DPO pairs within each split."""
 	if pairing_strategy == "delta_based":
 		validate_delta_based_components(delta_components)
 
+	defaults = default_data_paths()
+	raw_csv_path = defaults["raw_m22"] if raw_csv_path is None else Path(raw_csv_path)
+	processed_dir = defaults["processed_dir"] if processed_dir is None else Path(processed_dir)
+	paths = _ensure_processed_data(
+		raw_csv_path=raw_csv_path,
+		processed_dir=processed_dir,
+		force_rebuild=force_rebuild,
+		verbose=False,
+	)
 	base_df = load_distance2_dataframe(
 		view="base",
 		raw_csv_path=raw_csv_path,
 		processed_dir=processed_dir,
 		force_rebuild=force_rebuild,
 	)
-	train_base, val_base, test_base = create_train_val_test_split(
-		base_df,
+	split_membership = build_or_load_cluster_split_membership(
+		base_df=base_df,
+		base_csv_path=Path(paths["ed2_all"]),
+		processed_dir=processed_dir,
 		train_frac=train_frac,
 		val_frac=val_frac,
 		test_frac=test_frac,
-		seed=seed,
+		seed=int(seed),
+		force_rebuild=force_rebuild,
+		positive_threshold=0.0,
+		hamming_distance=int(split_hamming_distance),
+		stratify_bins=int(split_stratify_bins),
+	)
+	summary = summarize_split_membership(split_membership)
+	LOG.info(
+		"Cluster split summary | clusters=%d | cluster_size(min/median/max)=%.0f/%.0f/%.0f | "
+		"seq(train/val/test)=%.0f/%.0f/%.0f | pos(train/val/test)=%.0f/%.0f/%.0f",
+		int(summary["num_clusters"]),
+		summary["cluster_size_min"],
+		summary["cluster_size_median"],
+		summary["cluster_size_max"],
+		summary["num_sequences_train"],
+		summary["num_sequences_val"],
+		summary["num_sequences_test"],
+		summary["num_positives_train"],
+		summary["num_positives_val"],
+		summary["num_positives_test"],
 	)
 
-	train_keys = set(_split_membership_keys(train_base).tolist())
-	val_keys = set(_split_membership_keys(val_base).tolist())
-	test_keys = set(_split_membership_keys(test_base).tolist())
+	train_keys = set(split_membership.loc[split_membership["split"] == "train", "split_key"].astype(str))
+	val_keys = set(split_membership.loc[split_membership["split"] == "val", "split_key"].astype(str))
+	test_keys = set(split_membership.loc[split_membership["split"] == "test", "split_key"].astype(str))
+
+	if pairing_strategy == "delta_based":
+		base_keys = split_membership_keys(base_df).astype(str)
+		train_pairs = build_dpo_pairs_from_clustered_dataframe(
+			clustered_df=base_df.loc[base_keys.isin(train_keys)].copy(),
+			pairing_strategy=pairing_strategy,
+			delta_components=delta_components,
+			gap=gap,
+			wt_pairs_frac=wt_pairs_frac,
+			cross_pairs_frac=cross_pairs_frac,
+			strong_pos_threshold=strong_pos_threshold,
+			strong_neg_threshold=strong_neg_threshold,
+			min_score_margin=min_score_margin,
+			rng=np.random.default_rng(int(seed)),
+			random_seed=int(seed),
+			source_view="base",
+		)
+		val_pairs = build_dpo_pairs_from_clustered_dataframe(
+			clustered_df=base_df.loc[base_keys.isin(val_keys)].copy(),
+			pairing_strategy=pairing_strategy,
+			delta_components=delta_components,
+			gap=gap,
+			wt_pairs_frac=wt_pairs_frac,
+			cross_pairs_frac=cross_pairs_frac,
+			strong_pos_threshold=strong_pos_threshold,
+			strong_neg_threshold=strong_neg_threshold,
+			min_score_margin=min_score_margin,
+			rng=np.random.default_rng(int(seed) + 1),
+			random_seed=int(seed) + 1,
+			source_view="base",
+		)
+		test_pairs = build_dpo_pairs_from_clustered_dataframe(
+			clustered_df=base_df.loc[base_keys.isin(test_keys)].copy(),
+			pairing_strategy=pairing_strategy,
+			delta_components=delta_components,
+			gap=gap,
+			wt_pairs_frac=wt_pairs_frac,
+			cross_pairs_frac=cross_pairs_frac,
+			strong_pos_threshold=strong_pos_threshold,
+			strong_neg_threshold=strong_neg_threshold,
+			min_score_margin=min_score_margin,
+			rng=np.random.default_rng(int(seed) + 2),
+			random_seed=int(seed) + 2,
+			source_view="base",
+		)
+		return train_pairs, val_pairs, test_pairs
+
+	valid_views = {"mut1", "mut2"}
+	if not include_views:
+		raise ValueError("include_views must contain at least one of: mut1, mut2")
+	for view in include_views:
+		if view not in valid_views:
+			raise ValueError("include_views must contain only: mut1, mut2")
 
 	clustered_sources = {
 		view: load_distance2_dataframe(
@@ -823,7 +893,7 @@ def build_split_pair_dataframes_from_raw(
 	def filtered_views(keys: set) -> Dict[str, pd.DataFrame]:
 		out: Dict[str, pd.DataFrame] = {}
 		for view, df in clustered_sources.items():
-			row_keys = _split_membership_keys(df)
+			row_keys = split_membership_keys(df)
 			out[view] = df[row_keys.isin(keys)].copy()
 		return out
 
@@ -877,39 +947,4 @@ def build_split_pair_dataframes_from_raw(
 	)
 
 	return train_pairs, val_pairs, test_pairs
-
-
-def create_train_val_test_split(
-    df: pd.DataFrame,
-    train_frac: float = 0.8,
-    val_frac: float = 0.1,
-    test_frac: float = 0.1,
-    seed: int = RANDOM_SEED,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Split dataframe into train/val/test sets with fixed seed.
-
-    Args:
-        df: Input dataframe
-        train_frac: Fraction for training set
-        val_frac: Fraction for validation set
-        test_frac: Fraction for test set
-        seed: Random seed for reproducibility
-
-    Returns:
-        Tuple of (train_df, val_df, test_df)
-    """
-    assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6
-
-    df_shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
-
-    n = len(df_shuffled)
-    train_end = int(n * train_frac)
-    val_end = train_end + int(n * val_frac)
-
-    train_df = df_shuffled.iloc[:train_end].reset_index(drop=True)
-    val_df = df_shuffled.iloc[train_end:val_end].reset_index(drop=True)
-    test_df = df_shuffled.iloc[val_end:].reset_index(drop=True)
-
-    return train_df, val_df, test_df
 

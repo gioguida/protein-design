@@ -5,6 +5,11 @@ from typing import Any, Dict, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from .splitting import (
+    SPLIT_MEMBERSHIP_FILENAME,
+    build_or_load_cluster_split_membership,
+    split_membership_keys,
+)
 
 WT_M22_BINDING_ENRICHMENT = 5.190013461
 DELTA_M22_BINDING_ENRICHMENT_COL = "delta_M22_binding_enrichment_adj"
@@ -29,6 +34,8 @@ REQUIRED_ED5_COLUMNS = {
     "mut",
     "M22_binding_enrichment_adj",
 }
+
+ALLOWED_ED2_NUM_MUT = {2, 3, 4, 5}
 
 
 def _project_root() -> Path:
@@ -89,8 +96,8 @@ def _read_raw_data(raw_csv_path: Union[str, Path]) -> pd.DataFrame:
     return ensure_delta_m22_binding_enrichment(df)
 
 
-def get_distance2_data(raw_input: Union[pd.DataFrame, str, Path]) -> Tuple[pd.DataFrame, float, float]:
-    """Extract distance-2 rows and global binding/non-binding totals.
+def get_ed2_all_data(raw_input: Union[pd.DataFrame, str, Path]) -> Tuple[pd.DataFrame, float, float]:
+    """Extract ED2 rows with num_mut in {2,3,4,5} and global binding/non-binding totals.
 
     The totals are computed on the full raw dataset (not only distance-2),
     matching your current enrichment normalization logic.
@@ -104,32 +111,15 @@ def get_distance2_data(raw_input: Union[pd.DataFrame, str, Path]) -> Tuple[pd.Da
     df["num_mut"] = pd.to_numeric(df["num_mut"], errors="coerce")
     df["M22_binding_count_adj"] = pd.to_numeric(df["M22_binding_count_adj"], errors="coerce")
     df["M22_non_binding_count_adj"] = pd.to_numeric(df["M22_non_binding_count_adj"], errors="coerce")
-    df_filtered = df[df["num_mut"] == 2].copy()
+    df_filtered = df[df["num_mut"].isin(ALLOWED_ED2_NUM_MUT)].copy()
     n_bind = float(df["M22_binding_count_adj"].sum())
     n_non_bind = float(df["M22_non_binding_count_adj"].sum())
     return df_filtered, n_bind, n_non_bind
 
 
-def _create_train_val_test_split(
-    df: pd.DataFrame,
-    train_frac: float,
-    val_frac: float,
-    test_frac: float,
-    seed: int,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split dataframe into train/val/test sets with fixed seed."""
-    if abs(float(train_frac) + float(val_frac) + float(test_frac) - 1.0) >= 1e-6:
-        raise ValueError("train_frac + val_frac + test_frac must sum to 1.0")
-
-    df_shuffled = df.sample(frac=1.0, random_state=int(seed)).reset_index(drop=True)
-    n = len(df_shuffled)
-    train_end = int(n * float(train_frac))
-    val_end = train_end + int(n * float(val_frac))
-
-    train_df = df_shuffled.iloc[:train_end].reset_index(drop=True)
-    val_df = df_shuffled.iloc[train_end:val_end].reset_index(drop=True)
-    test_df = df_shuffled.iloc[val_end:].reset_index(drop=True)
-    return train_df, val_df, test_df
+def get_distance2_data(raw_input: Union[pd.DataFrame, str, Path]) -> Tuple[pd.DataFrame, float, float]:
+    """Backward-compatible alias returning ED2 rows with num_mut in {2,3,4,5}."""
+    return get_ed2_all_data(raw_input)
 
 
 def build_perplexity_eval_sets(
@@ -240,7 +230,7 @@ def build_validation_perplexity_csvs(
     force: bool = False,
     verbose: bool = True,
 ) -> Dict[str, Path]:
-    """Build val_pos.csv and val_neg.csv from the validation split of D2."""
+    """Build val_pos.csv and val_neg.csv from the cluster-based validation split of ED2."""
     raw_csv_path = Path(raw_csv_path)
     processed_dir = Path(processed_dir)
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -250,27 +240,47 @@ def build_validation_perplexity_csvs(
         "val_neg": processed_dir / "val_neg.csv",
     }
 
+    processed_paths = build_processed_views(
+        raw_csv_path=raw_csv_path,
+        processed_dir=processed_dir,
+        force=bool(getattr(cfg.data, "force_rebuild", False)),
+        verbose=False,
+    )
+    base_df = pd.read_csv(processed_paths["ed2_all"])
+    split_cfg = getattr(cfg.data, "split", None)
+    split_membership = build_or_load_cluster_split_membership(
+        base_df=base_df,
+        base_csv_path=Path(processed_paths["ed2_all"]),
+        processed_dir=processed_dir,
+        train_frac=float(cfg.data.train_frac),
+        val_frac=float(cfg.data.val_frac),
+        test_frac=float(cfg.data.test_frac),
+        seed=int(seed),
+        force_rebuild=bool(force) or bool(getattr(cfg.data, "force_rebuild", False)),
+        positive_threshold=0.0,
+        stratify_bins=int(getattr(split_cfg, "stratify_bins", 10)),
+        hamming_distance=int(getattr(split_cfg, "hamming_distance", 1)),
+    )
     raw_mtime = raw_csv_path.stat().st_mtime
+    split_mtime = (processed_dir / SPLIT_MEMBERSHIP_FILENAME).stat().st_mtime
+    freshness_ref = max(raw_mtime, split_mtime)
     all_outputs_exist = all(path.exists() for path in output_paths.values())
     outputs_are_fresh = all(
-        path.stat().st_mtime >= raw_mtime for path in output_paths.values() if path.exists()
+        path.stat().st_mtime >= freshness_ref for path in output_paths.values() if path.exists()
     )
     should_rebuild = bool(force) or (not all_outputs_exist) or (not outputs_are_fresh)
-
     if not should_rebuild:
         if verbose:
             print("Validation perplexity CSVs are up to date. Reusing existing files.")
         return output_paths
 
-    raw_df = _read_raw_data(raw_csv_path)
-    df_d2, _, _ = get_distance2_data(raw_df)
-    _, df_val, _ = _create_train_val_test_split(
-        df=df_d2,
-        train_frac=float(cfg.data.train_frac),
-        val_frac=float(cfg.data.val_frac),
-        test_frac=float(cfg.data.test_frac),
-        seed=int(seed),
+    val_keys = set(
+        split_membership.loc[split_membership["split"] == "val", "split_key"]
+        .astype(str)
+        .tolist()
     )
+    base_keys = split_membership_keys(base_df).astype(str)
+    df_val = base_df.loc[base_keys.isin(val_keys)].reset_index(drop=True)
     val_pos, val_neg = build_perplexity_eval_sets(df_val=df_val, cfg=cfg, seed=int(seed))
 
     val_pos.to_csv(output_paths["val_pos"], index=False)
@@ -396,10 +406,10 @@ def build_processed_views(
     force: bool = False,
     verbose: bool = True,
 ) -> Dict[str, Path]:
-    """Build D2 and cluster views from raw data if missing or stale.
+    """Build ED2-all and distance-2 clustered views from raw data if missing or stale.
 
     Returns paths to:
-    - D2.csv
+    - ED2_all.csv
     - D2_clustered_mut1.csv
     - D2_clustered_mut2.csv
     """
@@ -408,13 +418,13 @@ def build_processed_views(
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     output_paths = {
-        "d2": processed_dir / "D2.csv",
+        "ed2_all": processed_dir / "ED2_all.csv",
         "d2_clustered_mut1": processed_dir / "D2_clustered_mut1.csv",
         "d2_clustered_mut2": processed_dir / "D2_clustered_mut2.csv",
     }
 
     required_output_columns = {
-        "d2": {"aa", "num_mut", "mut", DELTA_M22_BINDING_ENRICHMENT_COL},
+        "ed2_all": {"aa", "num_mut", "mut", DELTA_M22_BINDING_ENRICHMENT_COL, "M22_binding_enrichment_adj"},
         "d2_clustered_mut1": {
             "aa",
             "num_mut",
@@ -466,10 +476,11 @@ def build_processed_views(
         print("Building processed views from raw M22 data...")
 
     raw_df = _read_raw_data(raw_csv_path)
-    df_d2, n_bind, n_non_bind = get_distance2_data(raw_df)
+    df_ed2_all, n_bind, n_non_bind = get_ed2_all_data(raw_df)
+    df_d2 = df_ed2_all[df_ed2_all["num_mut"] == 2].copy()
 
-    output_paths["d2"].parent.mkdir(parents=True, exist_ok=True)
-    df_d2.to_csv(output_paths["d2"], index=False)
+    output_paths["ed2_all"].parent.mkdir(parents=True, exist_ok=True)
+    df_ed2_all.to_csv(output_paths["ed2_all"], index=False)
 
     d2_clustered_mut1 = organize_and_cluster(
         df_d2,
@@ -490,12 +501,13 @@ def build_processed_views(
     if verbose:
         stats = d2_stats(df_d2)
         print(
-            "D2 stats: "
-            f"entries={int(stats['total_entries'])}, "
+            "ED2 stats: "
+            f"entries_all_mut={len(df_ed2_all)}, "
+            f"entries_num_mut2={int(stats['total_entries'])}, "
             f"clusters(mut1)={int(stats['num_clusters_mut1'])}, "
             f"avg_cluster_size(mut1)={stats['avg_cluster_size_mut1']:.2f}"
         )
-        print(f"Wrote: {output_paths['d2']}")
+        print(f"Wrote: {output_paths['ed2_all']}")
         print(f"Wrote: {output_paths['d2_clustered_mut1']}")
         print(f"Wrote: {output_paths['d2_clustered_mut2']}")
 
@@ -510,7 +522,7 @@ def load_processed_views(
     """Ensure processed views exist, then load them into memory."""
     paths = build_processed_views(raw_csv_path, processed_dir, force=force, verbose=False)
     return {
-        "d2": pd.read_csv(paths["d2"]),
+        "ed2_all": pd.read_csv(paths["ed2_all"]),
         "d2_clustered_mut1": pd.read_csv(paths["d2_clustered_mut1"]),
         "d2_clustered_mut2": pd.read_csv(paths["d2_clustered_mut2"]),
     }
@@ -518,11 +530,11 @@ def load_processed_views(
 
 if __name__ == "__main__":
     root = _project_root()
-    parser = argparse.ArgumentParser(description="Build processed D2 views from raw M22 data.")
+    parser = argparse.ArgumentParser(description="Build processed ED2 views from raw M22 data.")
     parser.add_argument(
         "--raw",
         type=Path,
-        default=root / "data" / "raw" / "M22_binding_enrichment.csv",
+        default=root / "data" / "raw" / "ED2_M22_binding_enrichment.csv",
         help="Path to raw M22 CSV.",
     )
     parser.add_argument(

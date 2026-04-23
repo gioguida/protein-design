@@ -1,6 +1,7 @@
 """C05 antibody constants shared across evotuning and DPO pipelines."""
 
 C05_CDRH3 = "HMSMQQVVSAGWERADLVGDAFDV"
+WT_M22_BINDING_ENRICHMENT = 5.190013461
 WILD_TYPE = C05_CDRH3  # alias used by DPO code
 
 # VH framework flanking the CDR-H3

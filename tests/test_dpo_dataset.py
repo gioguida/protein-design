@@ -2,7 +2,6 @@ import pandas as pd
 
 from protein_design.dpo.dataset import (
     build_dpo_pairs_from_clustered_dataframe,
-    create_train_val_test_split,
 )
 
 
@@ -52,9 +51,4 @@ def test_delta_based_pairing_with_cross_component() -> None:
     assert set(pairs["delta_component"].tolist()) == {"cross"}
     assert (pairs["delta_margin"] >= 0.1).all()
 
-
-def test_train_val_test_split_sizes_sum_to_input() -> None:
-    df = pd.DataFrame({"aa": [f"A{i}" for i in range(20)]})
-    train_df, val_df, test_df = create_train_val_test_split(df, 0.6, 0.2, 0.2, seed=7)
-    assert len(train_df) + len(val_df) + len(test_df) == len(df)
 

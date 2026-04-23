@@ -19,6 +19,9 @@ data:
   train_frac: 0.8
   val_frac: 0.1
   test_frac: 0.1
+  split:
+    hamming_distance: 1
+    stratify_bins: 10
   val:
     n_val_pos: 200
     n_val_neg: 400

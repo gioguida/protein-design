@@ -9,6 +9,7 @@ ENV/
 __pycache__/
 *.py[cod]
 *.so
+.pytest_cache
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -52,3 +53,10 @@ outputs/
 *.log
 oas_ighg_urls.txt
 .tmp_test_runs
+
+# Plots 
+plots/
+
+# Agents
+.claude
+.codex

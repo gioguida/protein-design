@@ -99,6 +99,7 @@ def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, 
 
     pairing_strategy = str(cfg.data.pairing_strategy)
     delta_cfg = getattr(cfg.data, "delta_based", None)
+    split_cfg = getattr(cfg.data, "split", None)
 
     def _delta_value(name: str, default: float) -> float:
         if delta_cfg is not None and getattr(delta_cfg, name, None) is not None:
@@ -135,6 +136,8 @@ def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, 
         train_frac=float(cfg.data.train_frac),
         val_frac=float(cfg.data.val_frac),
         test_frac=float(cfg.data.test_frac),
+        split_hamming_distance=int(getattr(split_cfg, "hamming_distance", 1)),
+        split_stratify_bins=int(getattr(split_cfg, "stratify_bins", 10)),
         seed=int(cfg.seed),
     )
 
