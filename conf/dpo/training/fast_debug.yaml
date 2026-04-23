@@ -1,13 +1,24 @@
 # @package _global_
-defaults:
-  - /dpo/training: default
-  - _self_
 
 # Variant preset: lightweight debug run.
 training:
-  num_epochs: 2
   batch_size: 8
+  num_epochs: 2
+  lr: 1e-5
+  weight_decay: 0.0
+  loss: weighted_dpo
+  beta: 0.04
+  temperature: 1
+  grad_clip_norm: 1.0
+  patience: 10
+  device: cuda
   num_workers: 0
   pin_memory: false
   persistent_workers: false
   prefetch_factor: null
+  resume_checkpoint: null
+  evaluate_best_checkpoint: true
+  scheduler:
+    enabled: false
+    step_size: 100
+    gamma: 0.95

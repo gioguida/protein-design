@@ -36,3 +36,4 @@ python tests/dpo_first_epoch_spearman_probe.py \
   "+probe.spearman_interval_steps=${SPEARMAN_INTERVAL_STEPS}" \
   "dpo/training=${TRAINING_PRESET}" \
   "training.device=${DEVICE}"
+
