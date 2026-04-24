@@ -39,13 +39,14 @@ from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer
 
 from protein_design.eval import (
-    compute_cdr_pseudo_perplexity,
     compute_perplexity,
+    corpus_perplexity,
     load_scoring_datasets,
     run_multi_scoring_evaluation,
 )
 from protein_design.model import ESM2Model
 from protein_design.config import build_model_config
+from protein_design.constants import C05_CDRH3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -126,6 +127,19 @@ def _score_model(model, tokenizer, datasets, device, batch_size, seed) -> dict:
     )
 
 
+def _compute_cdr_perplexity(model: ESM2Model) -> float:
+    """Compute CDR perplexity using shared PLL corpus perplexity logic.
+
+    We force context-aware PLL here to match CDR scoring semantics.
+    """
+    use_context_before = bool(model.config.use_context)
+    model.config.use_context = True
+    try:
+        return corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
+    finally:
+        model.config.use_context = use_context_before
+
+
 def _extract_final_ppl(metrics: dict) -> float | None:
     history = metrics.get("training_history", [])
     ppls = [e["val_perplexity"] for e in history if "val_perplexity" in e]
@@ -179,7 +193,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
         else:
             logger.warning("  fasta path missing, skipping perplexity")
 
-    cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
+    cdr_ppl = _compute_cdr_perplexity(model)
 
     del model
     torch.cuda.empty_cache()
@@ -201,7 +215,7 @@ def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed):
         val_loader = _make_val_loader_lightweight(fasta, scoring_cfg)
         ppl, _ = compute_perplexity(model, val_loader, device)
 
-    cdr_ppl = compute_cdr_pseudo_perplexity(model, tokenizer, device)
+    cdr_ppl = _compute_cdr_perplexity(model)
 
     del model
     torch.cuda.empty_cache()
@@ -354,14 +368,14 @@ def main(cfg: DictConfig) -> None:
     plot_perplexity_bar(ppl_series, out_dir / "perplexity_comparison.png")
     plot_perplexity_bar(
         cdr_ppl_series, out_dir / "cdr_perplexity_comparison.png",
-        ylabel="CDR-H3 pseudo-perplexity  (↓ better)",
-        title="CDR-H3 pseudo-perplexity (full VH context, single-position masking)",
+        ylabel="CDR-H3 perplexity (PLL)  (↓ better)",
+        title="CDR-H3 PLL perplexity (context-aware)",
     )
 
     csv_path = out_dir / "metrics_summary.csv"
     df_out = df.copy()
     df_out["final_val_perplexity"] = df_out["model"].map(ppl_series)
-    df_out["cdr_pseudo_perplexity"] = df_out["model"].map(cdr_ppl_series)
+    df_out["cdr_perplexity"] = df_out["model"].map(cdr_ppl_series)
     df_out.to_csv(csv_path, index=False)
     logger.info("Saved %s", csv_path)
 

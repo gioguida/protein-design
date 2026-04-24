@@ -1,4 +1,4 @@
-"""Shared evaluation: MLM + PLL perplexity, CDR pseudo-perplexity, Spearman scoring."""
+"""Shared evaluation: MLM + PLL perplexity and Spearman scoring."""
 
 import logging
 import math
@@ -18,9 +18,6 @@ from transformers import AutoTokenizer
 from protein_design.model import ESM2Model
 from protein_design.constants import (
     C05_CDRH3,
-    C05_CDRH3_END,
-    C05_CDRH3_START,
-    C05_VH,
 )
 
 logger = logging.getLogger(__name__)
@@ -357,38 +354,6 @@ def score_sequences_cdr_pll(
                 scores[batch_idxs] = pll_scores.detach().float().cpu().numpy()
 
     return scores
-
-
-# ---------------------------------------------------------------------------
-# CDR pseudo-perplexity (evotuning)
-# ---------------------------------------------------------------------------
-
-
-def compute_cdr_pseudo_perplexity(
-    model: torch.nn.Module,
-    tokenizer: AutoTokenizer,
-    device: torch.device,
-    full_sequence: str = C05_VH,
-    cdr_start: int = C05_CDRH3_START,
-    cdr_end: int = C05_CDRH3_END,
-) -> float:
-    """Compute pseudo-perplexity over CDR-H3 positions using full-sequence context.
-
-    Masks one CDR position at a time, feeds the full VH sequence as context,
-    and averages the log-probabilities of the correct amino acid.
-    """
-    cdr_len = cdr_end - cdr_start
-    sequences = [full_sequence] * cdr_len
-    mask_positions = list(range(cdr_start, cdr_end))
-    target_aas = list(full_sequence[cdr_start:cdr_end])
-
-    log_probs = compute_masked_log_probs_batch(
-        model, tokenizer, sequences, mask_positions, target_aas, device,
-        batch_size=cdr_len,
-    )
-    ppl = math.exp(-float(np.mean(log_probs)))
-    logger.info("CDR-H3 pseudo-perplexity: %.2f (mean log P: %.4f)", ppl, np.mean(log_probs))
-    return ppl
 
 
 # ---------------------------------------------------------------------------
