@@ -106,7 +106,7 @@ def _run_probe(cfg: Any) -> Path:
     if val_spearman_df is None:
         raise ValueError(
             "Validation Spearman set could not be loaded. "
-            "This probe requires val_pos/val_neg CSVs with enrichment labels."
+            "This probe requires a valid validation Spearman CSV with enrichment labels."
         )
 
     probe_cfg = _get_probe_cfg(cfg)

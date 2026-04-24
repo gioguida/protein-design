@@ -556,17 +556,40 @@ def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
     val_pos_path = processed_dir / "val_pos.csv"
     val_neg_path = processed_dir / "val_neg.csv"
     val_spearman_path = processed_dir / "val_spearman.csv"
-    if val_pos_path.exists() and val_neg_path.exists() and val_spearman_path.exists():
+
+    def _spearman_csv_has_enough_rows(path: Path) -> bool:
+        if not path.exists():
+            return False
+        try:
+            df = pd.read_csv(path, usecols=lambda c: c in {"num_mut", "mut", "M22_binding_enrichment_adj"})
+        except Exception:
+            return False
+        required_cols = {"mut", "M22_binding_enrichment_adj"}
+        if not required_cols.issubset(df.columns):
+            return False
+        if "num_mut" in df.columns:
+            num_mut = pd.to_numeric(df["num_mut"], errors="coerce")
+            df = df.loc[num_mut == 2].copy()
+        enrichment = pd.to_numeric(df["M22_binding_enrichment_adj"], errors="coerce")
+        df = df.loc[enrichment.notna()].copy()
+        if "mut" in df.columns:
+            df["mut"] = df["mut"].astype(str).str.strip()
+            df = df[df["mut"] != ""].copy()
+        return len(df) >= 3
+
+    has_base_files = val_pos_path.exists() and val_neg_path.exists() and val_spearman_path.exists()
+    if has_base_files and _spearman_csv_has_enough_rows(val_spearman_path):
         return True
 
     raw_csv_path = _resolve_raw_csv_path(cfg)
     try:
+        force_rebuild = bool(has_base_files and not _spearman_csv_has_enough_rows(val_spearman_path))
         outputs = build_validation_perplexity_csvs(
             raw_csv_path=raw_csv_path,
             processed_dir=processed_dir,
             cfg=cfg,
             seed=int(cfg.seed),
-            force=False,
+            force=force_rebuild,
             verbose=False,
         )
     except Exception as exc:
