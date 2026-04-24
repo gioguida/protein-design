@@ -1,8 +1,0 @@
-# @package _global_
-# Single-stage: test-time training on one C05 CDRH3. Pass `pipeline.init_from=...`.
-pipeline:
-  init_from: null
-  stages:
-    - name: ttt
-      task: ttt
-      data: c05_single

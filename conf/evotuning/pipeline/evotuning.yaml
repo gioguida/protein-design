@@ -1,8 +1,0 @@
-# @package _global_
-# Single-stage: continued MLM pretraining on OAS.
-pipeline:
-  init_from: null
-  stages:
-    - name: evotuning
-      task: evotuning
-      data: oas_full

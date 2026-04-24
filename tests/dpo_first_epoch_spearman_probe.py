@@ -310,11 +310,25 @@ def _run_probe(cfg: Any) -> Path:
     return first_epoch_ckpt
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="dpo")
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: Any) -> None:
     HydraConfig.get().runtime.output_dir
     _run_probe(cfg)
 
 
 if __name__ == "__main__":
+    if all(not arg.startswith("task=") for arg in sys.argv[1:]):
+        sys.argv.insert(1, "task=dpo")
+    if all(not arg.startswith("training.batch_size=") for arg in sys.argv[1:]):
+        sys.argv.insert(2, "training.batch_size=8")
+    if all(not arg.startswith("training.num_epochs=") for arg in sys.argv[1:]):
+        sys.argv.insert(3, "training.num_epochs=2")
+    if all(not arg.startswith("training.num_workers=") for arg in sys.argv[1:]):
+        sys.argv.insert(4, "training.num_workers=0")
+    if all(not arg.startswith("training.pin_memory=") for arg in sys.argv[1:]):
+        sys.argv.insert(5, "training.pin_memory=false")
+    if all(not arg.startswith("training.persistent_workers=") for arg in sys.argv[1:]):
+        sys.argv.insert(6, "training.persistent_workers=false")
+    if all(not arg.startswith("training.prefetch_factor=") for arg in sys.argv[1:]):
+        sys.argv.insert(7, "training.prefetch_factor=null")
     main()

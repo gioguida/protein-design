@@ -13,4 +13,6 @@ from protein_design.dpo.train import main
 
 
 if __name__ == "__main__":
+    if all(not arg.startswith("task=") for arg in sys.argv[1:]):
+        sys.argv.insert(1, "task=dpo")
     main()

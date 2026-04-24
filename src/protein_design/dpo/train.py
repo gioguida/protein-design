@@ -179,13 +179,13 @@ def _resolve_model_init_checkpoint(cfg: Any) -> Optional[Path]:
     if init_cfg is None:
         return None
 
-    source = str(getattr(init_cfg, "source", "base")).strip().lower()
+    source = str(getattr(init_cfg, "source", "huggingface")).strip().lower()
     checkpoint = getattr(init_cfg, "checkpoint", None)
-    if source == "base":
+    if source in {"base", "huggingface"}:
         return None
     if source != "checkpoint":
         raise ValueError(
-            f"Unsupported model.init.source={source!r}. Expected 'base' or 'checkpoint'."
+            f"Unsupported model.init.source={source!r}. Expected 'huggingface' or 'checkpoint'."
         )
     if checkpoint is None:
         raise ValueError(
@@ -1313,14 +1313,25 @@ def run_dpo(cfg: Any) -> Path:
     return final_ckpt
 
 
-@hydra.main(version_base=None, config_path="../../../conf", config_name="dpo")
+@hydra.main(version_base=None, config_path="../../../conf", config_name="config")
 def main(cfg: Any) -> None:
     # Ensure Hydra runtime is initialized (used by Hydra internals/logging).
     HydraConfig.get().runtime.output_dir
+    task_cfg = getattr(cfg, "task", None)
+    runner = None if task_cfg is None else str(getattr(task_cfg, "runner", "")).strip().lower()
+    if runner != "dpo":
+        raise ValueError(
+            "DPO entrypoint requires a DPO task preset. "
+            "Run with `task=dpo`."
+        )
     run_dpo(cfg)
 
 
 if __name__ == "__main__":
+    import sys
+
+    if all(not arg.startswith("task=") for arg in sys.argv[1:]):
+        sys.argv.insert(1, "task=dpo")
     main()
 
 

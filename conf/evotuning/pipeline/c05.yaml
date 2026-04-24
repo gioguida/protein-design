@@ -1,8 +1,0 @@
-# @package _global_
-# Single-stage: C05-5k finetune. Pass `pipeline.init_from=/path/to/evotuned/best.pt`.
-pipeline:
-  init_from: null
-  stages:
-    - name: c05_finetune
-      task: evotuning_c05
-      data: c05_5k

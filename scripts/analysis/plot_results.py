@@ -18,10 +18,10 @@ For each run dir passed in, the script:
      fasta_path.
 
 Usage (repeat run/label pairs via Hydra list overrides):
-    python scripts/plot_results.py evotuning/scoring=d2 evotuning/data=oas_full \\
+    python scripts/plot_results.py scoring=d2 data=evo/oas_full \\
         '+runs=[/path/to/run1,/path/to/run2]' \\
         '+labels=[evotuned,+C05]' \\
-        +out_dir=\${HOME}/protein-design/plots/meeting
+        +out_dir=${HOME}/protein-design/plots/meeting
 """
 
 import json

@@ -24,6 +24,8 @@ data/processed/*
 
 # Keep data structure but ignore large files if desired
 data/**/*.csv
+!conf/data/
+!conf/data/**
 
 # uv
 uv.lock

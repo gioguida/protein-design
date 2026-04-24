@@ -31,9 +31,22 @@ SPEARMAN_INTERVAL_STEPS=50
 TRAINING_PRESET="fast_debug"   # e.g. default | fast_debug
 DEVICE="cuda"                  # e.g. cuda | cpu
 
+TRAINING_OVERRIDES=()
+if [[ "${TRAINING_PRESET}" == "fast_debug" ]]; then
+  TRAINING_OVERRIDES=(
+    "training.batch_size=8"
+    "training.num_epochs=2"
+    "training.num_workers=0"
+    "training.pin_memory=false"
+    "training.persistent_workers=false"
+    "training.prefetch_factor=null"
+  )
+fi
+
 python tests/dpo_first_epoch_spearman_probe.py \
   "run.base_name=${RUN_NAME}" \
   "+probe.spearman_interval_steps=${SPEARMAN_INTERVAL_STEPS}" \
-  "dpo/training=${TRAINING_PRESET}" \
-  "training.device=${DEVICE}"
+  "task=dpo" \
+  "training.device=${DEVICE}" \
+  "${TRAINING_OVERRIDES[@]}"
 

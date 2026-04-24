@@ -1,5 +1,0 @@
-# @package _global_
-data:
-  fasta_path: ${paths.project_dir}/datasets/oas_dedup_rep_seq.fasta
-  max_seq_len: 256
-  mlm_probability: 0.15

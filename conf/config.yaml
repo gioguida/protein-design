@@ -1,3 +1,39 @@
 defaults:
-  - evotuning/config
+  - task: evotuning
+  - model: esm2_35m
+  - data: evo/oas_full
+  - scoring: d2
   - _self_
+
+seed: 42
+run_name: null
+
+run:
+  # Optional base name used by DPO naming (<base_name>_<YYYYMMDD_HHMMSS>).
+  base_name: null
+
+paths:
+  project_dir: ${oc.env:PROJECT_DIR}
+  train_dir: ${oc.env:TRAIN_DIR}
+
+wandb:
+  enabled: true
+  project: ${oc.env:WANDB_PROJECT,protein-design}
+  entity: null
+  init_timeout: 180
+  fallback_mode: offline  # offline | disable
+  tags: []
+  notes: null
+
+logging:
+  level: INFO
+  # Default for evotuning/TTT; DPO presets override this value.
+  log_every_n_steps: 50
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  sweep:
+    dir: .

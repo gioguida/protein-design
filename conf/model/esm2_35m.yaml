@@ -3,6 +3,9 @@ model:
   # Shared model preset used by both evotuning and DPO.
   name: facebook/esm2_t12_35M_UR50D
   esm_model_path: ${model.name}
+  init:
+    source: huggingface  # huggingface | checkpoint
+    checkpoint: null
   use_context: true
   pll_mask_chunk_size: 32
   freeze_embeddings: true

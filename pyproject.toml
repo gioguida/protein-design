@@ -1,7 +1,7 @@
 [project]
 name = "protein-design"
 version = "0.1.0"
-description = "ESM2 evotuning pipeline for antibody design"
+description = "ESM2 task-based training for antibody design"
 requires-python = ">=3.11"
 dependencies = [
     "torch",

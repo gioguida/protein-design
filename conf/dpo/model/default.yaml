@@ -1,9 +1,0 @@
-# @package _global_
-defaults:
-  - /model: esm2_35m
-  - _self_
-
-model:
-  init:
-    source: base   # base | checkpoint
-    checkpoint: null

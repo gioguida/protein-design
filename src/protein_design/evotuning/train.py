@@ -35,7 +35,7 @@ from protein_design.evotuning.data import make_dataloaders
 from protein_design.model import ESM2Model
 from protein_design.utils import ensure_dir, init_wandb, setup_train_logger
 
-# Module-level logger for pipeline/orchestration messages (before run_dir exists).
+# Module-level logger for orchestration messages (before run_dir exists).
 logger = logging.getLogger(__name__)
 
 

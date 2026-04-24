@@ -1,0 +1,15 @@
+# @package _global_
+scoring:
+  n_samples: 10000
+  batch_size: 512
+  flank_ks: [1, 3, 5]
+  datasets:
+    - name: M22
+      path: ${paths.project_dir}/datasets/scoring/D2_M22.csv
+      enrichment_col: M22_binding_enrichment_adj
+    - name: SI06
+      path: ${paths.project_dir}/datasets/scoring/D2_SI06.csv
+      enrichment_col: SI06_binding_enrichment_adj
+    - name: exp
+      path: ${paths.project_dir}/datasets/scoring/D2_exp.csv
+      enrichment_col: exp_enrichment_adj

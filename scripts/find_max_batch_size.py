@@ -3,7 +3,7 @@
 
 Run interactively on the target GPU:
     srun --gpus=1 --gres=gpumem:24g --mem=32G --pty \
-        python scripts/find_max_batch_size.py model=esm2_35m evotuning/data=oas_full evotuning/task=evotuning
+        python scripts/find_max_batch_size.py model=esm2_35m task=evotuning data=evo/oas_full
 
 Override sweep params:
     python scripts/find_max_batch_size.py +start_size=64 +target_util=0.9

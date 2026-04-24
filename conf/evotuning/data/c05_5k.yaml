@@ -1,5 +1,0 @@
-# @package _global_
-data:
-  fasta_path: ${paths.project_dir}/datasets/c05_5k.fasta
-  max_seq_len: 256
-  mlm_probability: 0.15

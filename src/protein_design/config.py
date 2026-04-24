@@ -92,11 +92,30 @@ def build_scoring_config(cfg: DictConfig) -> ScoringConfig:
 
 
 def build_run_config(cfg: DictConfig) -> RunConfig:
+    finetune = cfg.get("finetune")
+    model_init = cfg.get("model", {}).get("init") if "model" in cfg else None
+    if model_init is not None:
+        source = str(model_init.get("source", "huggingface")).strip().lower()
+        checkpoint = model_init.get("checkpoint")
+        if source == "checkpoint":
+            if checkpoint is None:
+                raise ValueError(
+                    "model.init.checkpoint is required when model.init.source='checkpoint'."
+                )
+            finetune = str(checkpoint)
+        elif source in {"huggingface", "base"}:
+            finetune = None
+        else:
+            raise ValueError(
+                f"Unsupported model.init.source={source!r}. "
+                "Expected 'huggingface' or 'checkpoint'."
+            )
+
     return RunConfig(
         train_dir=cfg.paths.train_dir,
         project_dir=cfg.paths.get("project_dir"),
         seed=int(cfg.seed),
-        finetune=cfg.get("finetune"),
+        finetune=finetune,
     )
 
 

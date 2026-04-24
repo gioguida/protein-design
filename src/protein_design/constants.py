@@ -1,4 +1,4 @@
-"""C05 antibody constants shared across evotuning and DPO pipelines."""
+"""C05 antibody constants shared across evotuning and DPO training."""
 
 C05_CDRH3 = "HMSMQQVVSAGWERADLVGDAFDV"
 WT_M22_BINDING_ENRICHMENT = 5.190013461
