@@ -286,6 +286,8 @@ def build_validation_perplexity_csvs(
     # Spearman validation should cover the full validation split distribution
     # (no delta-score filtering, no num_mut restriction).
     val_spearman = df_val.copy()
+    # keep only rows with num_mut = 2
+    val_spearman = val_spearman[val_spearman["num_mut"] == 2].reset_index(drop=True)
 
     val_pos.to_csv(output_paths["val_pos"], index=False)
     val_neg.to_csv(output_paths["val_neg"], index=False)
