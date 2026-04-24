@@ -2,19 +2,26 @@
 """Generate comparison plots across evotuning / C05 / TTT runs.
 
 Produces:
-    spearman_bar.png              Grouped bar chart of Spearman rho per
-                                  {model} x {dataset}, with p-value significance.
-    test_perplexity_comparison.png   Headline: final test-set MLM perplexity per model.
-    val_perplexity_comparison.png    Diagnostic: final val-set MLM perplexity per model.
+    spearman_bar.png                 Grouped bar chart of Spearman rho per
+                                     {model} x {dataset}, with p-value significance.
+    test_perplexity_comparison.png   Final test-set MLM perplexity per model,
+                                     measured on the top-level cfg.data fasta+split.
+    val_perplexity_comparison.png    Final val-set MLM perplexity per model,
+                                     measured on the top-level cfg.data fasta+split.
     cdr_perplexity_comparison.png    CDR-H3 pseudo-perplexity on the C05 reference VH.
-    train_val_loss_curves.png     One subplot per run: train loss vs. val loss over steps.
-    metrics_summary.csv           One row per (model, dataset, strategy): rho, pval, ppls.
+    m22_cdr_perplexity_comparison.png  Corpus-level CDR-H3 pseudo-perplexity over the
+                                     M22 D2 variant library.
+    train_val_loss_curves.png        One subplot per run: train loss vs. val loss.
+    metrics_summary.csv              One row per (model, dataset, strategy): rho, pval, ppls.
 
 For each run dir passed in, the script:
-  1. Reads metrics.json if present (contains final_val_perplexity, final_test_perplexity).
-  2. If the run lacks scoring or final perplexities (or --force-rescore/--force-reppl),
-     re-scores best.pt (or final.pt) on the D2 datasets and recomputes val/test ppl
-     using the run's hash-based split config.
+  1. Reads metrics.json if present (for cached scoring/CDR-H3 metrics).
+  2. Re-scores best.pt (or final.pt) on the D2 datasets if scoring is missing
+     or --force-rescore is set.
+  3. ALWAYS recomputes val/test MLM perplexity on the shared loaders built from
+     the top-level cfg.data.fasta_path + SplitConfig (so numbers are comparable
+     across runs trained on different corpora). Any cached
+     final_val/test_perplexity in metrics.json is ignored.
 
 Usage (repeat run/label pairs via Hydra list overrides):
     python scripts/analysis/plot_results.py scoring=d2 data=oas_full \\
@@ -41,6 +48,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer
 
 from protein_design.eval import (
+    compute_m22_cdr_pseudo_perplexity,
     compute_perplexity,
     corpus_perplexity,
     load_scoring_datasets,
@@ -191,13 +199,29 @@ def _scoring_has_flank_keys(
     return True
 
 
+def _find_m22_df(datasets):
+    """Return the M22 dataframe from a loaded scoring datasets list, or None."""
+    for name, df, _col in datasets:
+        if name == "M22":
+            return df
+    return None
+
+
 def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
-                 seed, force_rescore: bool, force_reppl: bool, force_cdr: bool,
+                 seed, force_rescore: bool, force_cdr: bool, force_m22_cdr: bool,
                  dataset_names: Sequence[str],
+                 shared_val_loader, shared_test_loader,
+                 shared_ppl_fasta: str,
                  fallback_config: DictConfig | None = None,
                  flank_ks: Sequence[int] = (),
                  max_ppl_batches: int = 500):
-    """Return (scoring, val_ppl, test_ppl, cdr_ppl, training_history, ckpt_path) for this run."""
+    """Return (scoring, val_ppl, test_ppl, cdr_ppl, m22_cdr_ppl, training_history, ckpt_path).
+
+    Whole-sequence val/test perplexity is always recomputed on the *shared* OAS
+    val/test loaders (built from the top-level cfg), ignoring any cached
+    `final_val_perplexity` / `final_test_perplexity` in metrics.json — those were
+    measured on the run's own corpus and are not comparable across runs.
+    """
     run_dir = Path(run_dir)
     metrics_path = run_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
@@ -226,15 +250,18 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
         )
         scoring = None
 
-    val_ppl = None if (force_reppl or stale_final_metrics) else metrics.get("final_val_perplexity")
-    test_ppl = None if (force_reppl or stale_final_metrics) else metrics.get("final_test_perplexity")
+    if metrics.get("final_val_perplexity") is not None or metrics.get("final_test_perplexity") is not None:
+        logger.info(
+            "  ignoring cached final_val/test_perplexity (they were computed on the run's own corpus)"
+        )
+    val_ppl = None
+    test_ppl = None
     cdr_ppl = None if (force_cdr or stale_final_metrics) else metrics.get("final_cdr_pseudo_perplexity")
+    m22_cdr_ppl = (
+        None if (force_m22_cdr or stale_final_metrics)
+        else metrics.get("final_m22_cdr_pseudo_perplexity")
+    )
     training_history = metrics.get("training_history", [])
-
-    need_model = any(x is None for x in (scoring, val_ppl, test_ppl, cdr_ppl))
-    if not need_model:
-        logger.info("  all metrics cache-hit — skipping checkpoint load")
-        return scoring, val_ppl, test_ppl, cdr_ppl, training_history, ckpt_path
 
     model = ESM2Model(build_model_config(cfg, device=str(device)))
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
@@ -248,34 +275,41 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
             batch_size=scoring_batch_size, seed=seed, flank_ks=flank_ks,
         )
 
-    if val_ppl is None or test_ppl is None:
-        fasta = cfg.data.fasta_path if "data" in cfg else None
-        if fasta and Path(fasta).exists():
-            logger.info("  recomputing val/test perplexity on %s (max %d batches)", fasta, max_ppl_batches)
-            val_loader, test_loader = _make_eval_loaders(fasta, cfg)
-            if val_ppl is None and len(val_loader.dataset) > 0:
-                val_ppl, _ = compute_perplexity(
-                    model, val_loader, device, max_batches=max_ppl_batches,
-                )
-            if test_ppl is None and len(test_loader.dataset) > 0:
-                test_ppl, _ = compute_perplexity(
-                    model, test_loader, device, max_batches=max_ppl_batches,
-                )
-        else:
-            logger.warning("  fasta path missing, skipping perplexity recomputation")
+    logger.info(
+        "  recomputing val/test perplexity on %s (max %d batches)",
+        shared_ppl_fasta, max_ppl_batches,
+    )
+    if len(shared_val_loader.dataset) > 0:
+        val_ppl, _ = compute_perplexity(
+            model, shared_val_loader, device, max_batches=max_ppl_batches,
+        )
+    if len(shared_test_loader.dataset) > 0:
+        test_ppl, _ = compute_perplexity(
+            model, shared_test_loader, device, max_batches=max_ppl_batches,
+        )
 
     if cdr_ppl is None:
         cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
 
+    if m22_cdr_ppl is None:
+        m22_df = _find_m22_df(datasets)
+        if m22_df is None:
+            logger.warning("  no M22 dataset loaded — skipping M22 CDR pseudo-perplexity")
+        else:
+            m22_cdr_ppl = compute_m22_cdr_pseudo_perplexity(
+                model, tokenizer, device, m22_df, batch_size=scoring_batch_size,
+            )
+
     del model
     torch.cuda.empty_cache()
 
-    return scoring, val_ppl, test_ppl, cdr_ppl, training_history, ckpt_path
+    return scoring, val_ppl, test_ppl, cdr_ppl, m22_cdr_ppl, training_history, ckpt_path
 
 
 def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed,
+                  shared_val_loader, shared_test_loader, shared_ppl_fasta: str,
                   flank_ks: Sequence[int] = (), max_ppl_batches: int = 500):
-    """Score base ESM2 and compute val/test perplexity on the OAS split."""
+    """Score base ESM2 and compute val/test perplexity on the shared OAS split."""
     logger.info("Evaluating base ESM2")
     model = ESM2Model(build_model_config(scoring_cfg, device=str(device)))
     model.to(device).eval()
@@ -284,24 +318,33 @@ def evaluate_base(scoring_cfg: DictConfig, datasets, tokenizer, device, seed,
                            flank_ks=flank_ks)
 
     val_ppl, test_ppl = None, None
-    fasta = scoring_cfg.data.fasta_path if "data" in scoring_cfg else None
-    if fasta and Path(fasta).exists():
-        logger.info("  computing val/test perplexity on %s (max %d batches)", fasta, max_ppl_batches)
-        val_loader, test_loader = _make_eval_loaders(fasta, scoring_cfg)
-        if len(val_loader.dataset) > 0:
-            val_ppl, _ = compute_perplexity(
-                model, val_loader, device, max_batches=max_ppl_batches,
-            )
-        if len(test_loader.dataset) > 0:
-            test_ppl, _ = compute_perplexity(
-                model, test_loader, device, max_batches=max_ppl_batches,
-            )
+    logger.info(
+        "  computing val/test perplexity on %s (max %d batches)",
+        shared_ppl_fasta, max_ppl_batches,
+    )
+    if len(shared_val_loader.dataset) > 0:
+        val_ppl, _ = compute_perplexity(
+            model, shared_val_loader, device, max_batches=max_ppl_batches,
+        )
+    if len(shared_test_loader.dataset) > 0:
+        test_ppl, _ = compute_perplexity(
+            model, shared_test_loader, device, max_batches=max_ppl_batches,
+        )
 
     cdr_ppl = _compute_cdr_perplexity(model)
 
+    m22_cdr_ppl = None
+    m22_df = _find_m22_df(datasets)
+    if m22_df is None:
+        logger.warning("  no M22 dataset loaded — skipping M22 CDR pseudo-perplexity")
+    else:
+        m22_cdr_ppl = compute_m22_cdr_pseudo_perplexity(
+            model, tokenizer, device, m22_df, batch_size=batch_size,
+        )
+
     del model
     torch.cuda.empty_cache()
-    return scoring, val_ppl, test_ppl, cdr_ppl
+    return scoring, val_ppl, test_ppl, cdr_ppl, m22_cdr_ppl
 
 
 def plot_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
@@ -338,56 +381,6 @@ def plot_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     logger.info("Saved %s", out_path)
-
-
-def _group_series_by_fasta(
-    series: dict[str, float | None],
-    fasta_by_label: dict[str, str | None],
-) -> dict[str, dict[str, float | None]]:
-    """Split a label→value series by each label's training fasta.
-
-    Returns a single 'all' group when every label shares one fasta (the happy path);
-    otherwise returns one group per unique fasta path. Labels with unknown fasta are
-    collected under '<unknown>'. Val/test perplexity must never be plotted across
-    groups — the numbers are measured on different corpora and are not comparable.
-    """
-    unique_fastas = {fasta_by_label.get(label) for label in series}
-    if len(unique_fastas) <= 1:
-        return {"all": dict(series)}
-    groups: dict[str, dict[str, float | None]] = {}
-    for label, value in series.items():
-        key = fasta_by_label.get(label) or "<unknown>"
-        groups.setdefault(key, {})[label] = value
-    return groups
-
-
-def _emit_perplexity_plots(
-    series: dict[str, float | None],
-    fasta_by_label: dict[str, str | None],
-    out_dir: Path,
-    base_filename: str,
-    ylabel: str,
-    title: str,
-) -> None:
-    """Emit one perplexity plot per unique training fasta (single plot if all share one)."""
-    groups = _group_series_by_fasta(series, fasta_by_label)
-    if len(groups) == 1:
-        plot_perplexity_bar(next(iter(groups.values())),
-                            out_dir / f"{base_filename}.png",
-                            ylabel=ylabel, title=title)
-        return
-    logger.warning(
-        "%s: runs use %d distinct fastas; emitting per-corpus plots (cross-corpus comparison is not meaningful)",
-        base_filename, len(groups),
-    )
-    for fasta_path, sub in groups.items():
-        stem = Path(fasta_path).stem if fasta_path != "<unknown>" else "unknown_fasta"
-        plot_perplexity_bar(
-            sub,
-            out_dir / f"{base_filename}__{stem}.png",
-            ylabel=ylabel,
-            title=f"{title}\ncorpus: {stem}",
-        )
 
 
 def plot_perplexity_bar(
@@ -562,8 +555,8 @@ def main(cfg: DictConfig) -> None:
     labels = list(labels_raw)
     out_dir_str = cfg.out_dir
     force_rescore = cfg.get("force_rescore", False)
-    force_reppl = cfg.get("force_reppl", False)
     force_cdr = cfg.get("force_cdr", False)
+    force_m22_cdr = cfg.get("force_m22_cdr", False)
     skip_base = cfg.get("skip_base", False)
 
     if len(runs) != len(labels):
@@ -584,30 +577,52 @@ def main(cfg: DictConfig) -> None:
     datasets = load_scoring_datasets(datasets_cfg, n_samples, seed)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
 
+    # Build the shared val/test loaders ONCE from the top-level cfg. Every run
+    # (base and finetunes) is evaluated on this same split so whole-sequence
+    # MLM perplexities are comparable across checkpoints trained on different
+    # corpora (OAS vs. C05 FASTAs).
+    shared_ppl_fasta = cfg.data.get("fasta_path")
+    if not shared_ppl_fasta or not Path(shared_ppl_fasta).exists():
+        raise FileNotFoundError(
+            f"Top-level cfg.data.fasta_path is required for shared val/test perplexity: "
+            f"got {shared_ppl_fasta!r}"
+        )
+    logger.info(
+        "Shared val/test loaders: fasta=%s, split=%s",
+        shared_ppl_fasta, _split_cfg_from(cfg),
+    )
+    shared_val_loader, shared_test_loader = _make_eval_loaders(shared_ppl_fasta, cfg)
+
     rows: list[dict] = []
     val_ppl_series: dict[str, float | None] = {}
     test_ppl_series: dict[str, float | None] = {}
     cdr_ppl_series: dict[str, float | None] = {}
+    m22_cdr_ppl_series: dict[str, float | None] = {}
     history_by_label: dict[str, list] = {}
 
     if not skip_base:
-        base_scoring, base_val, base_test, base_cdr = evaluate_base(
-            cfg, datasets, tokenizer, device, seed, flank_ks=flank_ks,
-            max_ppl_batches=max_ppl_batches,
+        base_scoring, base_val, base_test, base_cdr, base_m22_cdr = evaluate_base(
+            cfg, datasets, tokenizer, device, seed,
+            shared_val_loader, shared_test_loader, shared_ppl_fasta,
+            flank_ks=flank_ks, max_ppl_batches=max_ppl_batches,
         )
         rows.extend(build_summary_rows(BASE_LABEL, base_scoring, dataset_names, flank_ks))
         val_ppl_series[BASE_LABEL] = base_val
         test_ppl_series[BASE_LABEL] = base_test
         cdr_ppl_series[BASE_LABEL] = base_cdr
+        m22_cdr_ppl_series[BASE_LABEL] = base_m22_cdr
 
     ckpt_by_label: dict[str, Path] = {}
     fasta_by_label: dict[str, str | None] = {BASE_LABEL: cfg.data.get("fasta_path")} if not skip_base else {}
     for run_dir, label in zip(runs, labels):
-        scoring, val_ppl, test_ppl, cdr_ppl, history, ckpt_path = evaluate_run(
+        scoring, val_ppl, test_ppl, cdr_ppl, m22_cdr_ppl, history, ckpt_path = evaluate_run(
             Path(run_dir), datasets, tokenizer, device,
             scoring_batch_size, seed,
-            force_rescore=force_rescore, force_reppl=force_reppl, force_cdr=force_cdr,
+            force_rescore=force_rescore, force_cdr=force_cdr, force_m22_cdr=force_m22_cdr,
             dataset_names=dataset_names,
+            shared_val_loader=shared_val_loader,
+            shared_test_loader=shared_test_loader,
+            shared_ppl_fasta=shared_ppl_fasta,
             fallback_config=cfg, flank_ks=flank_ks,
             max_ppl_batches=max_ppl_batches,
         )
@@ -615,6 +630,7 @@ def main(cfg: DictConfig) -> None:
         val_ppl_series[label] = val_ppl
         test_ppl_series[label] = test_ppl
         cdr_ppl_series[label] = cdr_ppl
+        m22_cdr_ppl_series[label] = m22_cdr_ppl
         history_by_label[label] = history
         ckpt_by_label[label] = ckpt_path
         run_cfg = _load_run_config(Path(run_dir)) if (Path(run_dir) / "config.yaml").exists() else cfg
@@ -627,34 +643,39 @@ def main(cfg: DictConfig) -> None:
 
     unique_fastas = {fasta_by_label.get(lbl) for lbl in fasta_by_label}
     if len(unique_fastas) > 1:
-        logger.warning(
-            "Runs use %d distinct training fastas: %s. Spearman / CDR-H3 plots are "
-            "fasta-independent so will be combined; val/test perplexity plots will be "
-            "split per corpus.",
-            len(unique_fastas), sorted(str(f) for f in unique_fastas),
+        logger.info(
+            "Runs trained on %d distinct fastas: %s. All val/test perplexities are "
+            "measured on the shared corpus %s — plots are directly comparable.",
+            len(unique_fastas), sorted(str(f) for f in unique_fastas), shared_ppl_fasta,
         )
 
+    corpus_stem = Path(shared_ppl_fasta).stem
     headline = df[(df["strategy"] == STRATEGY) & (df["slice"] == "all")].copy()
     plot_spearman_bar(headline, out_dir / "spearman_bar.png")
     if flank_ks:
         flank_df = df[(df["strategy"] == STRATEGY)].copy()
         plot_flank_spearman(flank_df, out_dir / "spearman_flank.png", flank_ks)
-    _emit_perplexity_plots(
-        test_ppl_series, fasta_by_label, out_dir, "test_perplexity_comparison",
+    plot_perplexity_bar(
+        test_ppl_series, out_dir / "test_perplexity_comparison.png",
         ylabel="Test perplexity  (↓ better)",
-        title="Masked-LM perplexity on held-out test split",
+        title=f"Masked-LM perplexity on shared test split\ncorpus: {corpus_stem}",
     )
-    _emit_perplexity_plots(
-        val_ppl_series, fasta_by_label, out_dir, "val_perplexity_comparison",
+    plot_perplexity_bar(
+        val_ppl_series, out_dir / "val_perplexity_comparison.png",
         ylabel="Val perplexity  (↓ better)",
-        title="Masked-LM perplexity on validation split (diagnostic)",
+        title=f"Masked-LM perplexity on shared validation split\ncorpus: {corpus_stem}",
     )
     # CDR-H3 pseudo-perplexity is measured on a fixed C05 VH reference (eval.py:C05_VH),
     # independent of the training fasta — do not split by corpus.
     plot_perplexity_bar(
         cdr_ppl_series, out_dir / "cdr_perplexity_comparison.png",
-        ylabel="CDR-H3 perplexity (PLL)  (↓ better)",
-        title="CDR-H3 PLL perplexity (context-aware)",
+        ylabel="CDR-H3 pseudo-perplexity  (↓ better)",
+        title="CDR-H3 pseudo-perplexity on C05 VH (single-position masking)",
+    )
+    plot_perplexity_bar(
+        m22_cdr_ppl_series, out_dir / "m22_cdr_perplexity_comparison.png",
+        ylabel="M22 CDR-H3 pseudo-perplexity  (↓ better)",
+        title="M22 CDR-H3 pseudo-perplexity (corpus-level over D2 variant library)",
     )
     plot_loss_curves(history_by_label, out_dir / "train_val_loss_curves.png")
 
@@ -663,6 +684,7 @@ def main(cfg: DictConfig) -> None:
     df_out["final_val_perplexity"] = df_out["model"].map(val_ppl_series)
     df_out["final_test_perplexity"] = df_out["model"].map(test_ppl_series)
     df_out["cdr_pseudo_perplexity"] = df_out["model"].map(cdr_ppl_series)
+    df_out["m22_cdr_pseudo_perplexity"] = df_out["model"].map(m22_cdr_ppl_series)
     df_out.to_csv(csv_path, index=False)
     logger.info("Saved %s", csv_path)
 

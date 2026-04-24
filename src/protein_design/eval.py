@@ -18,6 +18,11 @@ from transformers import AutoTokenizer
 from protein_design.model import ESM2Model
 from protein_design.constants import (
     C05_CDRH3,
+    C05_CDRH3_END,
+    C05_CDRH3_START,
+    C05_VH,
+    LEFT_CONTEXT,
+    RIGHT_CONTEXT,
 )
 
 logger = logging.getLogger(__name__)
@@ -354,6 +359,52 @@ def score_sequences_cdr_pll(
                 scores[batch_idxs] = pll_scores.detach().float().cpu().numpy()
 
     return scores
+
+
+def compute_m22_cdr_pseudo_perplexity(
+    model: torch.nn.Module,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    m22_df: pd.DataFrame,
+    batch_size: int = 512,
+) -> float:
+    """Corpus-level CDR-H3 pseudo-perplexity over M22 variant library.
+
+    For each row in `m22_df`, splice the 24-AA `aa` variant into the C05 VH
+    context, mask each CDR-H3 position in turn, and compute log P(target AA).
+    Aggregate as exp(-mean(log P)) across all (variant, position) pairs.
+    """
+    cdr_len = C05_CDRH3_END - C05_CDRH3_START
+    right_flank = RIGHT_CONTEXT[: len(C05_VH) - C05_CDRH3_END]
+
+    variants = m22_df["aa"].tolist()
+    for v in variants:
+        if len(v) != cdr_len:
+            raise ValueError(
+                f"M22 variant has length {len(v)}, expected {cdr_len}: {v!r}"
+            )
+
+    sequences: list[str] = []
+    mask_positions: list[int] = []
+    target_aas: list[str] = []
+    for variant in variants:
+        full_vh = LEFT_CONTEXT + variant + right_flank
+        for i, aa in enumerate(variant):
+            sequences.append(full_vh)
+            mask_positions.append(C05_CDRH3_START + i)
+            target_aas.append(aa)
+
+    log_probs = compute_masked_log_probs_batch(
+        model, tokenizer, sequences, mask_positions, target_aas, device,
+        batch_size=batch_size,
+    )
+    mean_logp = float(np.mean(log_probs))
+    ppl = math.exp(-mean_logp)
+    logger.info(
+        "M22 CDR-H3 pseudo-perplexity: %.2f (mean log P: %.4f, %d variants × %d positions)",
+        ppl, mean_logp, len(variants), cdr_len,
+    )
+    return ppl
 
 
 # ---------------------------------------------------------------------------
