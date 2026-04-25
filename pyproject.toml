@@ -17,6 +17,9 @@ dependencies = [
     "requests",
     "matplotlib",
     "scipy",
+    "scikit-learn",
+    "umap-learn",
+    "seaborn",
     "hydra-core>=1.3",
     "omegaconf>=2.3",
 ]

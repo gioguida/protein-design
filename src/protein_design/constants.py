@@ -23,4 +23,4 @@ C05_CDRH3_END = C05_CDRH3_START + len(C05_CDRH3)  # 127
 
 def add_context(cdr: str) -> str:
     """Add fixed heavy-chain context around a CDR sequence."""
-    return LEFT_CONTEXT + cdr + RIGHT_CONTEXT
+    return LEFT_CONTEXT + cdr + RIGHT_CONTEXT[:11]

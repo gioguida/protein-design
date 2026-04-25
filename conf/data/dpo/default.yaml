@@ -1,6 +1,6 @@
 # @package _global_
 data:
-  raw_csv: data/raw/ED2_M22_binding_enrichment.csv
+  raw_csv: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED2_M22_binding_enrichment.csv
   processed_dir: data/processed
   force_rebuild: false
   pairing_strategy: delta_based   # positive_vs_tail | positive_only_extremes | both_structured | delta_based
@@ -26,5 +26,5 @@ data:
     n_val_pos: 200
     n_val_neg: 400
   test:
-    ed5_csv: data/raw/ED5_M22_enrichment.csv
+    ed5_csv: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED5_M22_enrichment.csv
     pos_threshold: 0.0

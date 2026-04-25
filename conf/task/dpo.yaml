@@ -9,7 +9,7 @@ task:
   runner: dpo
 
 training:
-  batch_size: 32
+  batch_size: 8
   num_epochs: 15
   lr: 1e-5
   weight_decay: 0.0
