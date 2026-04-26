@@ -197,19 +197,17 @@ def _resolve_model_init_checkpoint(cfg: Any) -> Optional[Path]:
     return checkpoint_path
 
 
-def _load_model_init_state_dict(checkpoint_path: Path) -> Tuple[str, Dict[str, torch.Tensor]]:
+def _load_model_init_state_dict(checkpoint_path: Path) -> Dict[str, torch.Tensor]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(ckpt, dict):
         raise TypeError(
             f"Checkpoint at {checkpoint_path} must contain a dict payload, got {type(ckpt)}."
         )
-    if "model_state_dict" in ckpt:
-        return "model_state_dict", ckpt["model_state_dict"]
-    if "policy_state_dict" in ckpt:
-        return "policy_state_dict", ckpt["policy_state_dict"]
-    raise KeyError(
-        f"Checkpoint at {checkpoint_path} does not include 'model_state_dict' or 'policy_state_dict'."
-    )
+    if "model_state_dict" not in ckpt:
+        raise KeyError(
+            f"Checkpoint at {checkpoint_path} does not include 'model_state_dict'."
+        )
+    return ckpt["model_state_dict"]
 
 
 def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Model]:
@@ -225,13 +223,9 @@ def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Mod
 
     init_checkpoint = _resolve_model_init_checkpoint(cfg)
     if init_checkpoint is not None:
-        state_key, state_dict = _load_model_init_state_dict(init_checkpoint)
-        if state_key == "model_state_dict":
-            policy.load_state_dict(state_dict)
-            reference.load_state_dict(state_dict)
-        else:
-            policy.model.load_state_dict(state_dict)
-            reference.model.load_state_dict(state_dict)
+        state_dict = _load_model_init_state_dict(init_checkpoint)
+        policy.load_state_dict(state_dict)
+        reference.load_state_dict(state_dict)
         logger.info(
             "Initialized policy/reference from checkpoint: %s",
             init_checkpoint,
@@ -282,7 +276,7 @@ def _save_checkpoint(
 ) -> None:
     state = {
         "epoch": int(epoch),
-        "policy_state_dict": policy.model.state_dict(),
+        "model_state_dict": policy.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
         "best_val_loss": float(best_val_loss),
@@ -297,7 +291,7 @@ def _load_checkpoint(
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
 ) -> Tuple[int, float]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
-    policy.model.load_state_dict(ckpt["policy_state_dict"])
+    policy.load_state_dict(ckpt["model_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
