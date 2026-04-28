@@ -162,6 +162,13 @@ def main() -> int:
             continue
         variants, per_variant, dms_dataset = load(npz_path)
         for fkey, flabel, fshort in FITNESS:
+            all_nan = all(
+                np.isnan(per_variant[v][fkey]).all() for v in variants
+            )
+            if all_nan:
+                log.warning("Skipping %s/%s — no %s values for any variant in dataset %s",
+                            emb_type, fshort, fkey, dms_dataset)
+                continue
             make_pc1_pc2_grid(
                 per_variant, variants, fkey, flabel, dms_dataset,
                 args.output_dir / f"per_model_pc1_pc2_{emb_type}_{fshort}_{dms_dataset}.png",

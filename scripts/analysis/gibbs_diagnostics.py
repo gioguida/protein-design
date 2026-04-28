@@ -65,8 +65,11 @@ DMS_DATASETS: Dict[str, Dict[str, str]] = {
         "si06": f"{_DMS_BASE}/D2_SI06.csv",
     },
     "ed5": {
-        "m22": f"{_DMS_BASE}/ED5_M22_enrichment.csv",
-        "si06": f"{_DMS_BASE}/ED5_SI06_enrichment.csv",
+        "m22": f"{_DMS_BASE}/ED5_M22_binding_enrichment.csv",
+        "si06": f"{_DMS_BASE}/ED5_SI06_binding_enrichment.csv",
+    },
+    "ed811": {
+        "m22": f"{_DMS_BASE}/ED811_M22_enrichment_full.csv",
     },
 }
 DEFAULT_DMS_DATASET = "ed2"
@@ -174,12 +177,28 @@ def sequence_pll(per_pos_log_probs: np.ndarray) -> np.ndarray:
 
 
 def load_dms(
-    m22_path: Path, si06_path: Path, max_n: int
+    m22_path: "Path | None", si06_path: "Path | None", max_n: int
 ) -> Tuple[List[str], np.ndarray, np.ndarray]:
-    """Return aligned (cdrh3 list, M22 enrichment array, SI06 enrichment array)."""
-    m22 = pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]]
-    si06 = pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]]
-    merged = m22.merge(si06, on="aa", how="outer")
+    """Return aligned (cdrh3 list, M22 enrichment array, SI06 enrichment array).
+
+    Either path may be None (assay missing for this dataset). The corresponding
+    enrichment array is then returned all-NaN with the same length as the
+    surviving CDR-H3 list. If both are None, all three returns are empty.
+    """
+    frames: List[pd.DataFrame] = []
+    if m22_path is not None:
+        frames.append(pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]])
+    if si06_path is not None:
+        frames.append(pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]])
+    if not frames:
+        empty = np.zeros(0, dtype=np.float32)
+        return [], empty, empty
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.merge(f, on="aa", how="outer")
+    for col in ("M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"):
+        if col not in merged.columns:
+            merged[col] = np.nan
     if len(merged) > max_n:
         merged = merged.sample(n=max_n, random_state=SEED).reset_index(drop=True)
     return (
@@ -694,12 +713,18 @@ def main() -> int:
     log.info("Device: %s", device)
 
     dataset_paths = DMS_DATASETS[args.dms_dataset]
-    dms_m22_path = args.dms_m22 or dataset_paths["m22"]
-    dms_si06_path = args.dms_si06 or dataset_paths["si06"]
+    dms_m22_path = args.dms_m22 if args.dms_m22 is not None else dataset_paths.get("m22")
+    dms_si06_path = args.dms_si06 if args.dms_si06 is not None else dataset_paths.get("si06")
+    if dms_m22_path is None:
+        log.warning("DMS dataset %s has no M22 assay — M22 plots will be skipped", args.dms_dataset)
+    if dms_si06_path is None:
+        log.warning("DMS dataset %s has no SI06 assay — SI06 plots will be skipped", args.dms_dataset)
     log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22_path, dms_si06_path)
     log.info("Loading DMS reference (max %d) …", args.max_dms)
     dms_cdrh3, dms_m22, dms_si06 = load_dms(
-        Path(dms_m22_path), Path(dms_si06_path), args.max_dms,
+        Path(dms_m22_path) if dms_m22_path else None,
+        Path(dms_si06_path) if dms_si06_path else None,
+        args.max_dms,
     )
     log.info("DMS: %d sequences", len(dms_cdrh3))
 
@@ -815,6 +840,14 @@ def main() -> int:
 
         for fkey, flabel in FITNESS_ROWS:
             readout = "M22" if fkey == "dms_m22" else "SI06"
+            all_nan = all(
+                np.isnan(pv[k][fkey]).all() for k in pv
+                if fkey in pv[k] and pv[k][fkey].size
+            )
+            if all_nan:
+                log.info("Skipping %s violin (slice=%s) — no %s values in dataset",
+                         readout, slice_suffix or "full", fkey)
+                continue
             plot_pll_violin_grid(
                 pv, labels_local, configs_local, fkey, flabel,
                 args.output_dir / f"gibbs_pll_dist_{readout}{slice_suffix}.png",

@@ -61,8 +61,11 @@ DMS_DATASETS: dict[str, dict[str, str]] = {
         "si06": f"{_DMS_BASE}/D2_SI06.csv",
     },
     "ed5": {
-        "m22": f"{_DMS_BASE}/ED5_M22_enrichment.csv",
-        "si06": f"{_DMS_BASE}/ED5_SI06_enrichment.csv",
+        "m22": f"{_DMS_BASE}/ED5_M22_binding_enrichment.csv",
+        "si06": f"{_DMS_BASE}/ED5_SI06_binding_enrichment.csv",
+    },
+    "ed811": {
+        "m22": f"{_DMS_BASE}/ED811_M22_enrichment_full.csv",
     },
 }
 DEFAULT_DMS_DATASET = "ed2"
@@ -76,11 +79,29 @@ log = logging.getLogger("extract_embeddings")
 # --------------------------------------------------------------------------- I/O
 
 
-def load_dms(m22_path: Path, si06_path: Path, max_n: int) -> pd.DataFrame:
-    """Outer-merge M22 + SI06 on `aa` (24-aa CDRH3), sample up to max_n rows."""
-    m22 = pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]]
-    si06 = pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]]
-    merged = m22.merge(si06, on="aa", how="outer")
+def load_dms(
+    m22_path: Optional[Path], si06_path: Optional[Path], max_n: int
+) -> pd.DataFrame:
+    """Outer-merge M22 + SI06 on `aa` (24-aa CDRH3), sample up to max_n rows.
+
+    Either path may be ``None`` (assay missing for this dataset). The
+    corresponding ``*_binding_enrichment_adj`` column is then filled with NaN.
+    If both are ``None`` the result is an empty DataFrame.
+    """
+    frames: List[pd.DataFrame] = []
+    if m22_path is not None:
+        frames.append(pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]])
+    if si06_path is not None:
+        frames.append(pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]])
+    if not frames:
+        return pd.DataFrame(columns=["aa", "M22_binding_enrichment_adj",
+                                     "SI06_binding_enrichment_adj"])
+    merged = frames[0]
+    for f in frames[1:]:
+        merged = merged.merge(f, on="aa", how="outer")
+    for col in ("M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"):
+        if col not in merged.columns:
+            merged[col] = np.nan
     if len(merged) > max_n:
         merged = merged.sample(n=max_n, random_state=SEED).reset_index(drop=True)
     return merged
@@ -186,8 +207,8 @@ def fixed_vh_cdrh3_token_positions() -> List[int]:
 
 
 def build_reference_set(
-    dms_m22: Path,
-    dms_si06: Path,
+    dms_m22: Optional[Path],
+    dms_si06: Optional[Path],
     oas_fasta: Path,
     oas_meta: Path,
     gibbs_paths: List[Tuple[str, Path]],
@@ -474,13 +495,17 @@ def main() -> int:
         gibbs_paths.append((name, Path(path_str)))
 
     dataset_paths = DMS_DATASETS[args.dms_dataset]
-    dms_m22 = args.dms_m22 or dataset_paths["m22"]
-    dms_si06 = args.dms_si06 or dataset_paths["si06"]
+    dms_m22 = args.dms_m22 if args.dms_m22 is not None else dataset_paths.get("m22")
+    dms_si06 = args.dms_si06 if args.dms_si06 is not None else dataset_paths.get("si06")
+    if dms_m22 is None:
+        log.warning("DMS dataset %s has no M22 assay — M22 column will be NaN", args.dms_dataset)
+    if dms_si06 is None:
+        log.warning("DMS dataset %s has no SI06 assay — SI06 column will be NaN", args.dms_dataset)
     log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22, dms_si06)
 
     df = build_reference_set(
-        Path(dms_m22),
-        Path(dms_si06),
+        Path(dms_m22) if dms_m22 else None,
+        Path(dms_si06) if dms_si06 else None,
         Path(args.oas_fasta),
         Path(args.oas_meta),
         gibbs_paths,

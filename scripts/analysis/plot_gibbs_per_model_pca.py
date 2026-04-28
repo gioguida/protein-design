@@ -131,6 +131,10 @@ def plot_one_variant(
     step_cmap = plt.get_cmap("plasma")
 
     for fkey, flabel, fshort in FITNESS:
+        if np.isnan(dms_fitness[fkey]).all():
+            log.info("Skipping %s/%s/%s — no %s values in dataset %s",
+                     variant, emb_type, fshort, fkey, dms_dataset)
+            continue
         fig, ax = plt.subplots(figsize=(6.4, 5.4))
         sc = _scatter_dms(ax, dms_pca[:, :2], dms_fitness[fkey], flabel)
         if sc is not None:
