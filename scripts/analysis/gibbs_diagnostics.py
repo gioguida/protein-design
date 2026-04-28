@@ -24,7 +24,13 @@ Writes (in ``--output-dir``)
   per variant. One file per config when ≥ 2 configs.
 - ``gibbs_position_mutation_freq[_{config}].png`` — per-position mutation
   rate heatmap. One file per config when ≥ 2 configs.
-- ``gibbs_summary.csv`` — per (variant, config) row of summary stats.
+- ``gibbs_summary.csv`` — per (variant, config, slice) row of summary stats.
+
+Each plot above is also emitted with an ``_early`` suffix, restricted to
+Gibbs samples within ``--early-max-ed`` mutations of the C05 WT (default 10)
+and capped at ``--early-max-chains`` chains (default 10). Use ``--skip-early``
+to disable. The early slice is a separate row in ``gibbs_summary.csv``
+(``slice=early`` vs ``slice=full``).
 """
 
 from __future__ import annotations
@@ -52,8 +58,18 @@ from protein_design.constants import (
 
 ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
 SEED = 42
-DEFAULT_DMS_M22 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-DEFAULT_DMS_SI06 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+_DMS_BASE = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring"
+DMS_DATASETS: Dict[str, Dict[str, str]] = {
+    "ed2": {
+        "m22": f"{_DMS_BASE}/D2_M22.csv",
+        "si06": f"{_DMS_BASE}/D2_SI06.csv",
+    },
+    "ed5": {
+        "m22": f"{_DMS_BASE}/ED5_M22_enrichment.csv",
+        "si06": f"{_DMS_BASE}/ED5_SI06_enrichment.csv",
+    },
+}
+DEFAULT_DMS_DATASET = "ed2"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("gibbs_diagnostics")
@@ -535,6 +551,89 @@ def plot_position_mutation_freq(
     log.info("Wrote %s", out_path)
 
 
+# --------------------------------------------------------------------- subsetting
+
+
+def build_early_subset(
+    per_variant: Dict[Tuple[str, str], Dict[str, np.ndarray]],
+    max_ed: int,
+    max_chains: int,
+) -> Tuple[Dict[Tuple[str, str], Dict[str, np.ndarray]], List[dict]]:
+    """Filter every per (variant, config) cell to rows where n_mutations ≤ max_ed,
+    then keep the first ``max_chains`` chain IDs. Empty cells are dropped.
+
+    PLL inference is reused from the full pass; only row-level arrays
+    (``gibbs_pll``, ``n_mutations``, ``chain_id``, ``gibbs_step``,
+    ``cdrh3_chars``) are sliced. Aggregates (``pos_mut_freq``) are recomputed
+    on the subset. ``dms_pll`` / ``dms_*`` / ``wt_pll`` are unchanged.
+
+    Returns the filtered per_variant dict and a list of summary rows for the
+    early slice (parallel structure to the full-pass summary rows).
+    """
+    wt_arr = np.array(list(C05_CDRH3))
+    early: Dict[Tuple[str, str], Dict[str, np.ndarray]] = {}
+    rows: List[dict] = []
+
+    for key, d in per_variant.items():
+        label, config = key
+        nm = d["n_mutations"]
+        if not len(nm):
+            continue
+        ed_mask = nm <= max_ed
+        if not ed_mask.any():
+            log.warning("No Gibbs rows with edit_distance ≤ %d for %s/%s — dropping early cell",
+                        max_ed, label, config)
+            continue
+        chains_e = d["chain_id"][ed_mask]
+        keep_chains = sorted(set(int(c) for c in chains_e))[:max_chains]
+        keep_set = set(keep_chains)
+        full_mask = ed_mask & np.array([int(c) in keep_set for c in d["chain_id"]])
+        if not full_mask.any():
+            continue
+
+        gibbs_pll_e = d["gibbs_pll"][full_mask]
+        cdrh3_chars_e = d["cdrh3_chars"][full_mask]
+        n_mutations_e = d["n_mutations"][full_mask]
+        pos_mut_freq_e = (cdrh3_chars_e != wt_arr[None, :]).mean(axis=0).astype(np.float32)
+
+        early[key] = {
+            "gibbs_pll": gibbs_pll_e,
+            "dms_pll": d["dms_pll"],
+            "wt_pll": d["wt_pll"],
+            "n_mutations": n_mutations_e,
+            "pos_mut_freq": pos_mut_freq_e,
+            "chain_id": d["chain_id"][full_mask],
+            "gibbs_step": d["gibbs_step"][full_mask],
+            "cdrh3_chars": cdrh3_chars_e,
+            "dms_m22": d["dms_m22"],
+            "dms_si06": d["dms_si06"],
+        }
+
+        top_alts = []
+        for p_idx in range(len(C05_CDRH3)):
+            alt_counts = Counter(c for c in cdrh3_chars_e[:, p_idx] if c != C05_CDRH3[p_idx])
+            top = alt_counts.most_common(1)
+            top_alts.append(f"{top[0][0]}({top[0][1]})" if top else "-")
+
+        rows.append({
+            "variant": label,
+            "config": config,
+            "slice": "early",
+            "n_gibbs_samples": int(len(gibbs_pll_e)),
+            "edit_dist_median": float(np.median(n_mutations_e)),
+            "edit_dist_max": int(n_mutations_e.max()),
+            "gibbs_pll_median": float(np.median(gibbs_pll_e)),
+            "dms_pll_median": float(np.median(d["dms_pll"])),
+            "wt_pll": float(d["wt_pll"]),
+            "delta_pll_gibbs_minus_dms": float(np.median(gibbs_pll_e) - np.median(d["dms_pll"])),
+            "delta_pll_gibbs_minus_wt": float(np.median(gibbs_pll_e) - float(d["wt_pll"])),
+            "max_pos_mut_freq": float(pos_mut_freq_e.max()),
+            "top_alt_per_position": " ".join(top_alts),
+        })
+
+    return early, rows
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -565,10 +664,21 @@ def parse_args() -> argparse.Namespace:
         help="LABEL=CHECKPOINT=GIBBS_CSV[=CONFIG]; repeat once per variant×config. "
              "CONFIG defaults to 'default'.",
     )
-    p.add_argument("--dms-m22", default=DEFAULT_DMS_M22)
-    p.add_argument("--dms-si06", default=DEFAULT_DMS_SI06)
+    p.add_argument("--dms-dataset", default=DEFAULT_DMS_DATASET, choices=sorted(DMS_DATASETS),
+                   help="Named DMS dataset whose CSVs should be loaded "
+                        "(resolves --dms-m22/--dms-si06 unless those are passed explicitly).")
+    p.add_argument("--dms-m22", default=None,
+                   help="Override M22 CSV path (defaults to the --dms-dataset entry).")
+    p.add_argument("--dms-si06", default=None,
+                   help="Override SI06 CSV path (defaults to the --dms-dataset entry).")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--early-max-ed", type=int, default=10,
+                   help="Edit-distance-to-WT cap for the early-trajectory plots and summary slice.")
+    p.add_argument("--early-max-chains", type=int, default=10,
+                   help="Cap on number of chains shown in the early-trajectory plots.")
+    p.add_argument("--skip-early", action="store_true",
+                   help="Skip the early-trajectory diagnostic plots and summary slice.")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -583,9 +693,13 @@ def main() -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
+    dataset_paths = DMS_DATASETS[args.dms_dataset]
+    dms_m22_path = args.dms_m22 or dataset_paths["m22"]
+    dms_si06_path = args.dms_si06 or dataset_paths["si06"]
+    log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22_path, dms_si06_path)
     log.info("Loading DMS reference (max %d) …", args.max_dms)
     dms_cdrh3, dms_m22, dms_si06 = load_dms(
-        Path(args.dms_m22), Path(args.dms_si06), args.max_dms,
+        Path(dms_m22_path), Path(dms_si06_path), args.max_dms,
     )
     log.info("DMS: %d sequences", len(dms_cdrh3))
 
@@ -667,6 +781,7 @@ def main() -> int:
             summary_rows.append({
                 "variant": label,
                 "config": config,
+                "slice": "full",
                 "n_gibbs_samples": int(len(gibbs_cdrh3)),
                 "edit_dist_median": float(np.median(n_mutations)) if len(n_mutations) else 0.0,
                 "edit_dist_max": int(n_mutations.max()) if len(n_mutations) else 0,
@@ -690,30 +805,53 @@ def main() -> int:
     configs_present = sorted({cfg for _, cfg in per_variant.keys()})
     log.info("Configs present: %s", configs_present)
 
-    # Per-readout PLL violins (one figure per readout).
-    for fkey, flabel in FITNESS_ROWS:
-        suffix = "M22" if fkey == "dms_m22" else "SI06"
-        plot_pll_violin_grid(
-            per_variant, label_order, configs_present, fkey, flabel,
-            args.output_dir / f"gibbs_pll_dist_{suffix}.png",
-        )
+    def _emit_plots(pv, slice_suffix: str) -> None:
+        configs_local = sorted({cfg for _, cfg in pv.keys()})
+        labels_local = [lbl for lbl in label_order
+                        if any((lbl, cfg) in pv for cfg in configs_local)]
+        if not configs_local or not labels_local:
+            log.warning("No data for slice=%s — skipping plots", slice_suffix or "full")
+            return
 
-    plot_pll_trajectory(per_variant, label_order, configs_present,
-                        args.output_dir / "gibbs_pll_trajectory.png")
-    plot_pairwise_hamming(per_variant, label_order, configs_present,
-                          args.output_dir / "gibbs_pairwise_hamming.png")
-    plot_edit_distance(per_variant, label_order, configs_present,
-                       args.output_dir / "gibbs_edit_distance.png")
+        for fkey, flabel in FITNESS_ROWS:
+            readout = "M22" if fkey == "dms_m22" else "SI06"
+            plot_pll_violin_grid(
+                pv, labels_local, configs_local, fkey, flabel,
+                args.output_dir / f"gibbs_pll_dist_{readout}{slice_suffix}.png",
+            )
+        plot_pll_trajectory(pv, labels_local, configs_local,
+                            args.output_dir / f"gibbs_pll_trajectory{slice_suffix}.png")
+        plot_pairwise_hamming(pv, labels_local, configs_local,
+                              args.output_dir / f"gibbs_pairwise_hamming{slice_suffix}.png")
+        plot_edit_distance(pv, labels_local, configs_local,
+                           args.output_dir / f"gibbs_edit_distance{slice_suffix}.png")
 
-    # One-figure-per-config plots.
-    for cfg in configs_present:
-        cfg_subset = {label: per_variant[(label, cfg)]
-                      for label in label_order if (label, cfg) in per_variant}
-        suffix = f"_{cfg}" if len(configs_present) > 1 else ""
-        plot_sequence_logo(cfg_subset, args.output_dir / f"gibbs_sequence_logo{suffix}.png")
-        plot_position_mutation_freq(
-            cfg_subset, args.output_dir / f"gibbs_position_mutation_freq{suffix}.png"
+        for cfg in configs_local:
+            cfg_subset = {label: pv[(label, cfg)]
+                          for label in labels_local if (label, cfg) in pv}
+            cfg_part = f"_{cfg}" if len(configs_local) > 1 else ""
+            plot_sequence_logo(
+                cfg_subset,
+                args.output_dir / f"gibbs_sequence_logo{slice_suffix}{cfg_part}.png",
+            )
+            plot_position_mutation_freq(
+                cfg_subset,
+                args.output_dir / f"gibbs_position_mutation_freq{slice_suffix}{cfg_part}.png",
+            )
+
+    _emit_plots(per_variant, "")
+
+    if not args.skip_early:
+        early_pv, early_rows = build_early_subset(
+            per_variant, args.early_max_ed, args.early_max_chains,
         )
+        if early_pv:
+            log.info("Early slice: %d (variant, config) cells with ED ≤ %d (≤ %d chains)",
+                     len(early_pv), args.early_max_ed, args.early_max_chains)
+            _emit_plots(early_pv, "_early")
+            summary_rows.extend(early_rows)
+        else:
+            log.warning("Early slice empty across all cells — skipping early plots")
 
     summary_df = pd.DataFrame(summary_rows)
     summary_path = args.output_dir / "gibbs_summary.csv"

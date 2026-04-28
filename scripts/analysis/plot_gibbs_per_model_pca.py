@@ -17,10 +17,17 @@ Reads
 
 Writes (200 DPI, in ``{output_dir}/``)
 -------------------------------------
-- ``gibbs_per_model_pca_{variant}_{emb_type}_{fitness}.png`` —
+- ``gibbs_per_model_pca_{variant}_{emb_type}_{fitness}_{dms_dataset}[_{cfg}][_early].png``
   PC1 vs PC2 in this variant's own DMS-PCA. DMS background coloured by
   enrichment readout, gibbs trajectory overlaid (one line per chain, marker
   shaded by gibbs_step). WT shown as a red star.
+
+  The ``_early`` variant restricts Gibbs samples to those at edit-distance
+  ≤ ``--early-max-ed`` from C05 WT (default 10) and shows at most
+  ``--early-max-chains`` chains (default 10). It exists because most Gibbs
+  chains end up at edit distance ~20 from WT, which makes the full plot
+  dominated by the late, off-WT region; the early view shows how chains
+  *leave* the WT neighbourhood at the start of sampling.
 """
 
 from __future__ import annotations
@@ -35,11 +42,14 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
+from protein_design.constants import C05_CDRH3
+
 EMB_TYPES = ["cdrh3", "whole_seq"]
 FITNESS = [
     ("M22_enrich", "M22 binding enrichment", "M22"),
     ("SI06_enrich", "SI06 binding enrichment", "SI06"),
 ]
+CDRH3_LEN = len(C05_CDRH3)  # 24
 
 WT_STAR = dict(marker="*", s=240, c="red", edgecolors="black", linewidths=0.6, zorder=10)
 
@@ -49,7 +59,7 @@ log = logging.getLogger("plot_gibbs_per_model_pca")
 
 def load_per_model_npz(
     npz_path: Path,
-) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]]]:
+) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], str]:
     z = np.load(npz_path, allow_pickle=False)
     variants = [str(v) for v in z["model_variants"]]
     per_variant: Dict[str, Dict[str, np.ndarray]] = {}
@@ -60,7 +70,8 @@ def load_per_model_npz(
             "SI06_enrich": z[f"{v}__SI06_enrich"],
             "explained_variance": z[f"{v}__pca_explained_variance"],
         }
-    return variants, per_variant
+    dms_dataset = str(z["dms_dataset"][0]) if "dms_dataset" in z.files else "ed2"
+    return variants, per_variant, dms_dataset
 
 
 def load_gibbs_rows(emb_npz: Path, emb_key: str) -> Dict[str, np.ndarray]:
@@ -72,11 +83,14 @@ def load_gibbs_rows(emb_npz: Path, emb_key: str) -> Dict[str, np.ndarray]:
         gibbs_config = z["gibbs_config"][g]
     else:
         gibbs_config = np.array(["default"] * int(g.sum()))
+    identity = z["cdrh3_identity_to_wt"][g]
+    edit_distance = np.rint((1.0 - identity) * CDRH3_LEN).astype(np.int32)
     return {
         "gibbs_emb": z[emb_key][g],
         "gibbs_chain_id": z["chain_id"][g],
         "gibbs_step": z["gibbs_step"][g],
         "gibbs_config": gibbs_config,
+        "gibbs_edit_distance": edit_distance,
         "wt_emb": z[emb_key][wt][0] if wt.any() else None,
     }
 
@@ -107,8 +121,11 @@ def plot_one_variant(
     gibbs_step: np.ndarray | None,
     wt_pc: np.ndarray | None,
     explained_variance: np.ndarray,
+    dms_dataset: str,
     out_dir: Path,
     config_suffix: str = "",
+    view_suffix: str = "",
+    title_extra: str = "",
 ) -> None:
     chain_cmap = plt.get_cmap("tab10")
     step_cmap = plt.get_cmap("plasma")
@@ -139,14 +156,20 @@ def plot_one_variant(
         ev = explained_variance
         ax.set_xlabel(f"PC1 ({100 * ev[0]:.1f}% var)")
         ax.set_ylabel(f"PC2 ({100 * ev[1]:.1f}% var)" if len(ev) > 1 else "PC2")
-        title_extra = f"  [{config_suffix}]" if config_suffix else ""
+        cfg_extra = f"  [{config_suffix}]" if config_suffix else ""
+        view_extra = f"  [{title_extra}]" if title_extra else ""
         ax.set_title(
-            f"{variant} — Gibbs trajectory in own DMS-PCA  ({emb_type}){title_extra}\n"
+            f"{variant} — Gibbs trajectory in own DMS-PCA "
+            f"[{dms_dataset.upper()}]  ({emb_type}){cfg_extra}{view_extra}\n"
             f"DMS background coloured by {flabel}; WT marked with red star",
             fontsize=11,
         )
-        suffix = f"_{config_suffix}" if config_suffix else ""
-        out_path = out_dir / f"gibbs_per_model_pca_{variant}_{emb_type}_{fshort}{suffix}.png"
+        cfg_part = f"_{config_suffix}" if config_suffix else ""
+        view_part = f"_{view_suffix}" if view_suffix else ""
+        out_path = (
+            out_dir
+            / f"gibbs_per_model_pca_{variant}_{emb_type}_{fshort}_{dms_dataset}{cfg_part}{view_part}.png"
+        )
         fig.tight_layout()
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
@@ -163,6 +186,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--embeddings-dir", type=Path, required=True,
                    help="Directory with {variant}.npz from extract_embeddings.py")
     p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--early-max-ed", type=int, default=10,
+                   help="Edit-distance-to-WT cap for the early-trajectory plot.")
+    p.add_argument("--early-max-chains", type=int, default=10,
+                   help="Cap on number of chains shown in the early-trajectory plot.")
+    p.add_argument("--skip-full", action="store_true",
+                   help="Skip the full-trajectory plot; emit only the early view.")
+    p.add_argument("--skip-early", action="store_true",
+                   help="Skip the early-trajectory plot; emit only the full view.")
     return p.parse_args()
 
 
@@ -170,13 +201,17 @@ def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.skip_full and args.skip_early:
+        log.error("--skip-full and --skip-early both set; nothing to do.")
+        return 1
+
     for emb_type in EMB_TYPES:
         per_model_npz = args.per_model_pca_dir / f"per_model_pca_{emb_type}.npz"
         if not per_model_npz.exists():
             log.warning("Skipping %s — %s not found", emb_type, per_model_npz)
             continue
 
-        variants, per_variant = load_per_model_npz(per_model_npz)
+        variants, per_variant, dms_dataset = load_per_model_npz(per_model_npz)
         emb_key = f"{emb_type}_embs"
 
         for v in variants:
@@ -201,7 +236,7 @@ def main() -> int:
             configs = sorted(set(grows["gibbs_config"].tolist())) if len(grows["gibbs_config"]) else []
             multi_config = len(configs) >= 2
 
-            def _do_plot(emb, chains, steps, suffix):
+            def _do_plot(emb, chains, steps, cfg_suffix, view_suffix, view_title):
                 gibbs_pc_local = None
                 chain_ids_local = None
                 steps_local = None
@@ -224,21 +259,53 @@ def main() -> int:
                     gibbs_step=steps_local,
                     wt_pc=wt_pc,
                     explained_variance=per_variant[v]["explained_variance"],
+                    dms_dataset=dms_dataset,
                     out_dir=args.output_dir,
-                    config_suffix=suffix,
+                    config_suffix=cfg_suffix,
+                    view_suffix=view_suffix,
+                    title_extra=view_title,
                 )
 
+            def _early_subset(emb, chains, steps, ed):
+                ed_mask = ed <= args.early_max_ed
+                if not ed_mask.any():
+                    return None
+                emb_e = emb[ed_mask]
+                chains_e = chains[ed_mask]
+                steps_e = steps[ed_mask]
+                keep = sorted(set(int(c) for c in chains_e))[: args.early_max_chains]
+                if not keep:
+                    return None
+                keep_mask = np.isin(chains_e, keep)
+                return emb_e[keep_mask], chains_e[keep_mask], steps_e[keep_mask]
+
+            def _emit_for_subset(emb, chains, steps, ed, cfg_suffix):
+                if not args.skip_full:
+                    _do_plot(emb, chains, steps, cfg_suffix, "", "")
+                if not args.skip_early:
+                    sub = _early_subset(emb, chains, steps, ed)
+                    if sub is None:
+                        log.warning("No Gibbs rows with edit_distance ≤ %d for %s/%s/%s — skipping early plot",
+                                    args.early_max_ed, v, emb_type, cfg_suffix or "default")
+                    else:
+                        emb_e, chains_e, steps_e = sub
+                        _do_plot(
+                            emb_e, chains_e, steps_e, cfg_suffix, "early",
+                            f"early: ED≤{args.early_max_ed}, ≤{args.early_max_chains} chains",
+                        )
+
             if not configs:
-                _do_plot(grows["gibbs_emb"], grows["gibbs_chain_id"],
-                         grows["gibbs_step"], "")
+                _emit_for_subset(grows["gibbs_emb"], grows["gibbs_chain_id"],
+                                 grows["gibbs_step"], grows["gibbs_edit_distance"], "")
             else:
                 for cfg in configs:
                     mask = grows["gibbs_config"] == cfg
                     suffix = cfg if multi_config else ""
-                    _do_plot(grows["gibbs_emb"][mask],
-                             grows["gibbs_chain_id"][mask],
-                             grows["gibbs_step"][mask],
-                             suffix)
+                    _emit_for_subset(grows["gibbs_emb"][mask],
+                                     grows["gibbs_chain_id"][mask],
+                                     grows["gibbs_step"][mask],
+                                     grows["gibbs_edit_distance"][mask],
+                                     suffix)
 
     return 0
 

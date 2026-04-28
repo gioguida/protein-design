@@ -21,6 +21,7 @@ Writes one .npz file with the schema below — this is the integration contract 
     chain_id                 (N,)     int32    -1 for non-gibbs
     v_family                 (N,)     <U       IGHV{1..7} for OAS, "" otherwise
     model_variant            (1,)     <U
+    dms_dataset              (1,)     <U       which DMS source (ed2, ed5, …)
 """
 
 from __future__ import annotations
@@ -53,8 +54,18 @@ SEED = 42
 EMB_DIM = 480
 
 # Default input paths (CLAUDE.md). Overridable via CLI.
-DEFAULT_DMS_M22 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-DEFAULT_DMS_SI06 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+_DMS_BASE = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring"
+DMS_DATASETS: dict[str, dict[str, str]] = {
+    "ed2": {
+        "m22": f"{_DMS_BASE}/D2_M22.csv",
+        "si06": f"{_DMS_BASE}/D2_SI06.csv",
+    },
+    "ed5": {
+        "m22": f"{_DMS_BASE}/ED5_M22_enrichment.csv",
+        "si06": f"{_DMS_BASE}/ED5_SI06_enrichment.csv",
+    },
+}
+DEFAULT_DMS_DATASET = "ed2"
 DEFAULT_OAS_FASTA = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_dedup_rep_seq.fasta"
 DEFAULT_OAS_META = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_filtered.csv.gz"
 
@@ -421,8 +432,13 @@ def parse_args() -> argparse.Namespace:
                         "(e.g. 'distribution=outputs/gibbs/distribution/vanilla.csv'); "
                         "bare PATH is treated as NAME='default'.")
     p.add_argument("--output-path", required=True, help="Destination .npz path")
-    p.add_argument("--dms-m22", default=DEFAULT_DMS_M22)
-    p.add_argument("--dms-si06", default=DEFAULT_DMS_SI06)
+    p.add_argument("--dms-dataset", default=DEFAULT_DMS_DATASET, choices=sorted(DMS_DATASETS),
+                   help="Named DMS dataset whose CSVs should be loaded "
+                        "(resolves --dms-m22/--dms-si06 unless those are passed explicitly).")
+    p.add_argument("--dms-m22", default=None,
+                   help="Override M22 CSV path (defaults to the --dms-dataset entry).")
+    p.add_argument("--dms-si06", default=None,
+                   help="Override SI06 CSV path (defaults to the --dms-dataset entry).")
     p.add_argument("--oas-fasta", default=DEFAULT_OAS_FASTA)
     p.add_argument("--oas-meta", default=DEFAULT_OAS_META)
     p.add_argument("--max-dms", type=int, default=500)
@@ -457,9 +473,14 @@ def main() -> int:
             name, path_str = "default", spec
         gibbs_paths.append((name, Path(path_str)))
 
+    dataset_paths = DMS_DATASETS[args.dms_dataset]
+    dms_m22 = args.dms_m22 or dataset_paths["m22"]
+    dms_si06 = args.dms_si06 or dataset_paths["si06"]
+    log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22, dms_si06)
+
     df = build_reference_set(
-        Path(args.dms_m22),
-        Path(args.dms_si06),
+        Path(dms_m22),
+        Path(dms_si06),
         Path(args.oas_fasta),
         Path(args.oas_meta),
         gibbs_paths,
@@ -487,6 +508,7 @@ def main() -> int:
         gibbs_config=np.array(df["gibbs_config"].tolist()),
         v_family=np.array(df["v_family"].tolist()),
         model_variant=np.array([args.model_variant]),
+        dms_dataset=np.array([args.dms_dataset]),
     )
     log.info("Wrote %s  (%d rows, embedding dim %d)", out_path, len(df), EMB_DIM)
     return 0

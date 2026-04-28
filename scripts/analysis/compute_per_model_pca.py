@@ -45,16 +45,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("compute_per_model_pca")
 
 
-def load_variants(npz_paths: list[Path]) -> Dict[str, Dict[str, np.ndarray]]:
+def load_variants(npz_paths: list[Path]) -> Tuple[Dict[str, Dict[str, np.ndarray]], str]:
+    """Load all per-variant npz files. Returns (per_variant_dict, dms_dataset).
+
+    All inputs must share the same `dms_dataset`; otherwise the per-model PCA
+    would be fitted on inconsistent DMS rows across variants.
+    """
     out: Dict[str, Dict[str, np.ndarray]] = {}
+    datasets: set[str] = set()
     for path in npz_paths:
         z = np.load(path, allow_pickle=False)
         variant = str(z["model_variant"][0])
         if variant in out:
             raise ValueError(f"Duplicate model_variant '{variant}' in inputs")
         out[variant] = {k: z[k] for k in z.files}
-        log.info("Loaded %s (%d rows) from %s", variant, len(out[variant]["sequences"]), path)
-    return out
+        ds = str(z["dms_dataset"][0]) if "dms_dataset" in z.files else "ed2"
+        datasets.add(ds)
+        log.info("Loaded %s (%d rows, dms_dataset=%s) from %s",
+                 variant, len(out[variant]["sequences"]), ds, path)
+    if len(datasets) > 1:
+        raise ValueError(f"Input npz files mix DMS datasets {datasets}; "
+                         "re-extract embeddings with a single --dms-dataset.")
+    dms_dataset = datasets.pop() if datasets else "ed2"
+    return out, dms_dataset
 
 
 def fit_dms_pca(emb: np.ndarray, src: np.ndarray) -> Tuple[PCA, np.ndarray]:
@@ -86,6 +99,7 @@ def fit_dms_pca(emb: np.ndarray, src: np.ndarray) -> Tuple[PCA, np.ndarray]:
 def process_emb_type(
     emb_type: str,
     data: Dict[str, Dict[str, np.ndarray]],
+    dms_dataset: str,
     out_dir: Path,
 ) -> None:
     emb_key = f"{emb_type}_embs"
@@ -122,6 +136,7 @@ def process_emb_type(
             pickle.dump(pca, fh)
 
     out["model_variants"] = np.array(list(data.keys()))
+    out["dms_dataset"] = np.array([dms_dataset])
     out_path = out_dir / f"per_model_pca_{emb_type}.npz"
     np.savez(out_path, **out)
     log.info("Wrote %s", out_path)
@@ -146,9 +161,10 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     np.random.seed(SEED)
 
-    data = load_variants(args.npz_files)
+    data, dms_dataset = load_variants(args.npz_files)
+    log.info("All inputs share dms_dataset=%s", dms_dataset)
     for emb_type in EMB_TYPES:
-        process_emb_type(emb_type, data, args.output_dir)
+        process_emb_type(emb_type, data, dms_dataset, args.output_dir)
     return 0
 
 

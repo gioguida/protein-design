@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("plot_per_model_pca")
 
 
-def load(npz_path: Path) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]]]:
+def load(npz_path: Path) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], str]:
     z = np.load(npz_path, allow_pickle=False)
     variants = [str(v) for v in z["model_variants"]]
     per_variant: Dict[str, Dict[str, np.ndarray]] = {}
@@ -52,7 +52,8 @@ def load(npz_path: Path) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]]]:
             "sequences": z[f"{v}__sequences"],
             "explained_variance": z[f"{v}__pca_explained_variance"],
         }
-    return variants, per_variant
+    dms_dataset = str(z["dms_dataset"][0]) if "dms_dataset" in z.files else "ed2"
+    return variants, per_variant, dms_dataset
 
 
 def _scatter_continuous(ax, coords: np.ndarray, values: np.ndarray):
@@ -71,7 +72,7 @@ def _scatter_continuous(ax, coords: np.ndarray, values: np.ndarray):
     return None
 
 
-def make_pc1_pc2_grid(per_variant, variants, fitness_key, fitness_label, out_path):
+def make_pc1_pc2_grid(per_variant, variants, fitness_key, fitness_label, dms_dataset, out_path):
     n_cols = len(variants)
     fig, axes = plt.subplots(1, n_cols, figsize=(4.6 * n_cols, 4.4), squeeze=False)
     for col, v in enumerate(variants):
@@ -85,7 +86,7 @@ def make_pc1_pc2_grid(per_variant, variants, fitness_key, fitness_label, out_pat
         ax.set_xlabel(f"PC1 ({100 * ev[0]:.1f}% var)")
         ax.set_ylabel(f"PC2 ({100 * ev[1]:.1f}% var)" if len(ev) > 1 else "PC2")
     fig.suptitle(
-        f"Per-model DMS-only PCA — colored by {fitness_label}\n"
+        f"Per-model DMS-only PCA [{dms_dataset.upper()}] — colored by {fitness_label}\n"
         f"(each panel uses its own PCA; axes NOT comparable across panels)",
         fontsize=12,
     )
@@ -95,7 +96,7 @@ def make_pc1_pc2_grid(per_variant, variants, fitness_key, fitness_label, out_pat
     log.info("Wrote %s", out_path)
 
 
-def make_pc1_vs_fitness_grid(per_variant, variants, fitness_key, fitness_label, out_path):
+def make_pc1_vs_fitness_grid(per_variant, variants, fitness_key, fitness_label, dms_dataset, out_path):
     n_cols = len(variants)
     fig, axes = plt.subplots(1, n_cols, figsize=(4.6 * n_cols, 4.4), squeeze=False)
     for col, v in enumerate(variants):
@@ -127,7 +128,7 @@ def make_pc1_vs_fitness_grid(per_variant, variants, fitness_key, fitness_label, 
         ax.set_ylabel(fitness_label)
 
     fig.suptitle(
-        f"Per-model PC1 vs {fitness_label} — DMS only, per-model PCA",
+        f"Per-model PC1 vs {fitness_label} [{dms_dataset.upper()}] — DMS only, per-model PCA",
         fontsize=12,
     )
     fig.tight_layout()
@@ -159,15 +160,15 @@ def main() -> int:
         if not npz_path.exists():
             log.warning("Skipping %s — %s not found", emb_type, npz_path)
             continue
-        variants, per_variant = load(npz_path)
+        variants, per_variant, dms_dataset = load(npz_path)
         for fkey, flabel, fshort in FITNESS:
             make_pc1_pc2_grid(
-                per_variant, variants, fkey, flabel,
-                args.output_dir / f"per_model_pc1_pc2_{emb_type}_{fshort}.png",
+                per_variant, variants, fkey, flabel, dms_dataset,
+                args.output_dir / f"per_model_pc1_pc2_{emb_type}_{fshort}_{dms_dataset}.png",
             )
             make_pc1_vs_fitness_grid(
-                per_variant, variants, fkey, flabel,
-                args.output_dir / f"per_model_pc1_vs_{fshort}_{emb_type}.png",
+                per_variant, variants, fkey, flabel, dms_dataset,
+                args.output_dir / f"per_model_pc1_vs_{fshort}_{emb_type}_{dms_dataset}.png",
             )
     return 0
 

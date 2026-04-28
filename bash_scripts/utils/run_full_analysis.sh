@@ -39,16 +39,21 @@ cd "${ROOT_DIR}"
 SCRATCH_BASE="${SCRATCH_DIR:-/cluster/scratch/${USER}/protein-design}/embedding_analysis"
 PROJECT_BASE="${PROJECT_DIR:-/cluster/project/infk/krause/${USER}/protein-design}/reports/embedding_analysis"
 
-EMB_DIR="${EMB_DIR:-${SCRATCH_BASE}/embeddings}"
-PROJ_DIR="${PROJ_DIR:-${SCRATCH_BASE}/projections}"
-PER_MODEL_DIR="${PER_MODEL_DIR:-${SCRATCH_BASE}/per_model_pca}"
-DIFF_DIR="${DIFF_DIR:-${SCRATCH_BASE}/diff_pca}"
-CKA_DIR="${CKA_DIR:-${PROJECT_BASE}/plots/cka}"
-PROCRUSTES_DIR="${PROCRUSTES_DIR:-${SCRATCH_BASE}/procrustes}"
-PLL_DIR="${PLL_DIR:-${SCRATCH_BASE}/pll_pca}"
-GIBBS_DIAG_DIR="${GIBBS_DIAG_DIR:-${PROJECT_BASE}/plots/gibbs_diagnostics}"
+# Which DMS dataset feeds extract_embeddings/gibbs_diagnostics. All artifact
+# dirs are scoped by this so two datasets don't clobber each other.
+DMS_DATASET="${DMS_DATASET:-ed2}"
+echo "DMS_DATASET=${DMS_DATASET}"
 
-PLOTS_DIR="${PLOTS_DIR:-${PROJECT_BASE}/plots}"
+EMB_DIR="${EMB_DIR:-${SCRATCH_BASE}/embeddings/${DMS_DATASET}}"
+PROJ_DIR="${PROJ_DIR:-${SCRATCH_BASE}/projections/${DMS_DATASET}}"
+PER_MODEL_DIR="${PER_MODEL_DIR:-${SCRATCH_BASE}/per_model_pca/${DMS_DATASET}}"
+DIFF_DIR="${DIFF_DIR:-${SCRATCH_BASE}/diff_pca/${DMS_DATASET}}"
+CKA_DIR="${CKA_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}/cka}"
+PROCRUSTES_DIR="${PROCRUSTES_DIR:-${SCRATCH_BASE}/procrustes/${DMS_DATASET}}"
+PLL_DIR="${PLL_DIR:-${SCRATCH_BASE}/pll_pca/${DMS_DATASET}}"
+GIBBS_DIAG_DIR="${GIBBS_DIAG_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}/gibbs_diagnostics}"
+
+PLOTS_DIR="${PLOTS_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}}"
 
 CKA_THRESHOLD="${CKA_THRESHOLD:-0.5}"
 MAX_DMS="${MAX_DMS:-500}"
@@ -120,6 +125,7 @@ for entry in "${VARIANTS[@]}"; do
     extract_args=(
       --model-variant "${label}"
       --output-path "${npz_path}"
+      --dms-dataset "${DMS_DATASET}"
       --max-dms "${MAX_DMS}"
       --max-oas "${MAX_OAS}"
       --max-gibbs "${MAX_GIBBS}"
@@ -223,6 +229,7 @@ if (( ${#GIBBS_DIAG_ARGS[@]} )); then
   else
     uv run python scripts/analysis/gibbs_diagnostics.py \
       "${GIBBS_DIAG_ARGS[@]}" \
+      --dms-dataset "${DMS_DATASET}" \
       --max-dms "${MAX_DMS}" \
       --output-dir "${GIBBS_DIAG_DIR}"
   fi
