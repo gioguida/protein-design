@@ -6,6 +6,7 @@ live in their respective subpackages.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import re
 from typing import List, Optional, Tuple, TypedDict
 
 from omegaconf import DictConfig, OmegaConf
@@ -121,4 +122,59 @@ def generate_run_name(cfg: DictConfig) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if cfg.run_name:
         return f"{cfg.run_name}_{timestamp}"
+
+    task_name = (
+        str(cfg.task.get("name", "")).strip().lower()
+        if "task" in cfg and cfg.task is not None
+        else ""
+    )
+    if task_name == "unlikelihood":
+        training_cfg = cfg.get("training", {})
+        data_cfg = cfg.get("data", {})
+        model_cfg = cfg.get("model", {})
+
+        model_name = str(model_cfg.get("name", "model")).split("/")[-1]
+        lr = training_cfg.get("learning_rate", None)
+        batch_size = training_cfg.get("batch_size", None)
+        alpha = training_cfg.get("alpha", None)
+        max_epochs = training_cfg.get("max_epochs", None)
+        max_steps = training_cfg.get("max_steps", None)
+        enrichment_threshold = data_cfg.get("enrichment_threshold", None)
+
+        def _token(value: object, default: str = "na") -> str:
+            if value is None:
+                return default
+            text = str(value).strip()
+            if text == "":
+                return default
+            return re.sub(r"[^A-Za-z0-9._-]+", "-", text)
+
+        def _num_token(value: object, default: str = "na") -> str:
+            if value is None:
+                return default
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return _token(value, default=default)
+            if number.is_integer():
+                return str(int(number))
+            return f"{number:.3g}".replace("+", "")
+
+        steps_or_epochs = (
+            f"steps-{_num_token(max_steps)}"
+            if max_steps is not None
+            else f"ep-{_num_token(max_epochs)}"
+        )
+        base = "_".join(
+            [
+                "ul",
+                _token(model_name),
+                steps_or_epochs,
+                f"lr-{_num_token(lr)}",
+                f"bs-{_num_token(batch_size)}",
+                f"a-{_num_token(alpha)}",
+                f"thr-{_num_token(enrichment_threshold)}",
+            ]
+        )
+        return f"{base}_{timestamp}"
     return f"run_{timestamp}"

@@ -7,10 +7,10 @@ data:
   min_positive_delta: 3.0
   min_delta_margin: 5.0
   delta_based:
-    components: [cross] # [cross, wt_anchors, within_pos, within_neg]
+    components: [cross, wt_anchors] # [cross, wt_anchors, within_pos, within_neg]
     gap: 0.5            # expected in [0.0, 1.0]
     wt_pairs_frac: 0.1  # expected in [0.0, 1.0]
-    cross_pairs_frac: 0.1      # expected in [0.0, 1.0]
+    cross_pairs_frac: 0.03      # expected in [0.0, 1.0]
     strong_pos_threshold: 1.0  # for winner>WT anchors
     strong_neg_threshold: -5.0 # for WT>loser anchors
     min_score_margin: 0.1      # filter near-tie pairs

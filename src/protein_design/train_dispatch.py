@@ -3,6 +3,7 @@
 Routes the composed Hydra config to either:
 - evotuning/TTT runner (`run_stage`)
 - DPO runner (`run_dpo`)
+- unlikelihood runner (`run_unlikelihood`)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from protein_design.config import (
 from protein_design.dpo.train import run_dpo
 from protein_design.evotuning.config import build_data_config, build_training_config
 from protein_design.evotuning.train import run_stage
+from protein_design.unlikelihood.train import run_unlikelihood
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,12 @@ def run_selected_task(cfg: DictConfig) -> Path:
     if runner == "dpo":
         logger.info("Dispatching to DPO runner (task=%s)", _task_name(cfg) or "dpo")
         return run_dpo(cfg)
+    if runner == "unlikelihood":
+        logger.info(
+            "Dispatching to unlikelihood runner (task=%s)",
+            _task_name(cfg) or "unlikelihood",
+        )
+        return run_unlikelihood(cfg)
 
     stage_type = _stage_type(cfg)
     run_name = generate_run_name(cfg)

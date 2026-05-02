@@ -89,7 +89,7 @@ def _default_wandb_run_name(cfg: Any) -> str:
         temp_part = f"__loss-{float(cfg.training.temperature):g}"
 
     return (
-        f"{model_label}"
+        f"dpo__{model_label}"
         f"__{pairing}"
         f"__{loss_name}"
         f"{temp_part}"

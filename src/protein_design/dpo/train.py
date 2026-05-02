@@ -197,19 +197,17 @@ def _resolve_model_init_checkpoint(cfg: Any) -> Optional[Path]:
     return checkpoint_path
 
 
-def _load_model_init_state_dict(checkpoint_path: Path) -> Tuple[str, Dict[str, torch.Tensor]]:
+def _load_model_init_state_dict(checkpoint_path: Path) -> Dict[str, torch.Tensor]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(ckpt, dict):
         raise TypeError(
             f"Checkpoint at {checkpoint_path} must contain a dict payload, got {type(ckpt)}."
         )
-    if "model_state_dict" in ckpt:
-        return "model_state_dict", ckpt["model_state_dict"]
-    if "policy_state_dict" in ckpt:
-        return "policy_state_dict", ckpt["policy_state_dict"]
-    raise KeyError(
-        f"Checkpoint at {checkpoint_path} does not include 'model_state_dict' or 'policy_state_dict'."
-    )
+    if "model_state_dict" not in ckpt:
+        raise KeyError(
+            f"Checkpoint at {checkpoint_path} does not include 'model_state_dict'."
+        )
+    return ckpt["model_state_dict"]
 
 
 def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Model]:
@@ -225,13 +223,9 @@ def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Mod
 
     init_checkpoint = _resolve_model_init_checkpoint(cfg)
     if init_checkpoint is not None:
-        state_key, state_dict = _load_model_init_state_dict(init_checkpoint)
-        if state_key == "model_state_dict":
-            policy.load_state_dict(state_dict)
-            reference.load_state_dict(state_dict)
-        else:
-            policy.model.load_state_dict(state_dict)
-            reference.model.load_state_dict(state_dict)
+        state_dict = _load_model_init_state_dict(init_checkpoint)
+        policy.load_state_dict(state_dict)
+        reference.load_state_dict(state_dict)
         logger.info(
             "Initialized policy/reference from checkpoint: %s",
             init_checkpoint,
@@ -282,7 +276,7 @@ def _save_checkpoint(
 ) -> None:
     state = {
         "epoch": int(epoch),
-        "policy_state_dict": policy.model.state_dict(),
+        "model_state_dict": policy.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
         "best_val_loss": float(best_val_loss),
@@ -297,7 +291,7 @@ def _load_checkpoint(
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
 ) -> Tuple[int, float]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
-    policy.model.load_state_dict(ckpt["policy_state_dict"])
+    policy.load_state_dict(ckpt["model_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -977,6 +971,124 @@ def run_dpo(cfg: Any) -> Path:
     val_spearman_df = _load_validation_spearman_df(cfg, logger)
     test_spearman_df = _load_test_spearman_df(cfg, logger)
     val_spearman_batch_size = int(getattr(cfg.model, "pll_mask_chunk_size", 64))
+
+    if start_epoch <= 1 and global_step == 0:
+        val_metrics_step0, _ = _run_epoch(
+            policy=policy,
+            reference=reference,
+            dataloader=val_loader,
+            loss=str(cfg.training.loss),
+            beta=float(cfg.training.beta),
+            temperature=float(cfg.training.temperature),
+            optimizer=None,
+            grad_clip_norm=0.0,
+            logger=logger,
+            log_every_n_steps=0,
+            track_metrics=True,
+            global_step=global_step,
+            wandb_mod=None,
+            epoch=0,
+        )
+        val_perplexity_step0 = _compute_chosen_perplexity(val_loader, policy)
+        lr_step0 = float(optimizer.param_groups[0]["lr"])
+        step0_record: Dict[str, float] = {
+            "epoch": 0.0,
+            "lr": lr_step0,
+            "train_loss": float("nan"),
+            "train_reward_accuracy": float("nan"),
+            "train_reward_margin": float("nan"),
+            "train_implicit_kl": float("nan"),
+            "val_loss": float(val_metrics_step0["loss"]),
+            "val_reward_accuracy": float(val_metrics_step0["reward_accuracy"]),
+            "val_reward_margin": float(val_metrics_step0["reward_margin"]),
+            "val_implicit_kl": float(val_metrics_step0["implicit_kl"]),
+            "val_perplexity": float(val_perplexity_step0),
+            "train_batches": 0.0,
+            "train_pairs": 0.0,
+            "val_batches": float(val_metrics_step0["num_batches"]),
+            "val_pairs": float(val_metrics_step0["num_pairs"]),
+            "train_skipped": 0.0,
+            "val_skipped": float(val_metrics_step0["skipped_batches"]),
+        }
+
+        val_eval_sets = _load_validation_pll_eval_sets(cfg, logger)
+        if val_eval_sets is not None:
+            val_ppl_metrics = evaluate_perplexity(
+                model=policy,
+                eval_sets=val_eval_sets,
+                device=str(cfg.training.device),
+            )
+            step0_record.update(val_ppl_metrics)
+            logger.info(
+                "Validation Perplexity (step 0) | ppl/val_pos=%.4f | ppl/val_neg=%.4f | ppl/val_wt=%.4f",
+                float(val_ppl_metrics["ppl/val_pos"]),
+                float(val_ppl_metrics["ppl/val_neg"]),
+                float(val_ppl_metrics["ppl/val_wt"]),
+            )
+
+        if val_spearman_df is not None:
+            try:
+                val_spearman = run_scoring_evaluation(
+                    scorer=policy,
+                    df=val_spearman_df,
+                    enrichment_col="M22_binding_enrichment_adj",
+                    batch_size=val_spearman_batch_size,
+                    seed=int(cfg.seed),
+                    scoring_mode="cdr_pll",
+                )
+                step0_record.update(
+                    {
+                        "val_spearman_avg": float(val_spearman["spearman_avg"]),
+                        "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
+                        "val_spearman_random": float(val_spearman["spearman_random"]),
+                        "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                    }
+                )
+                logger.info(
+                    "Validation Spearman (step 0) | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                    float(val_spearman["spearman_avg"]),
+                    float(val_spearman["spearman_avg_pval"]),
+                    float(val_spearman["spearman_random"]),
+                    float(val_spearman["spearman_random_pval"]),
+                )
+            except Exception as exc:
+                logger.warning("Validation Spearman evaluation failed at step 0 (%s). Skipping this metric.", exc)
+
+        history.append(step0_record)
+        logger.info(
+            "Epoch 0 (pretrained) | lr=%.3e | val_loss=%.6f | val_acc=%.4f | val_margin=%.4f | val_kl=%.4f | val_ppl=%.4f | val_batches=%d",
+            lr_step0,
+            step0_record["val_loss"],
+            step0_record["val_reward_accuracy"],
+            step0_record["val_reward_margin"],
+            step0_record["val_implicit_kl"],
+            step0_record["val_perplexity"],
+            int(step0_record["val_batches"]),
+        )
+        if wandb_run is not None:
+            wandb_mod.log(step0_record, step=global_step)
+
+        best_val_loss = float(step0_record["val_loss"])
+        _save_checkpoint(
+            best_ckpt,
+            epoch=0,
+            policy=policy,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            best_val_loss=best_val_loss,
+        )
+        shutil.copy2(best_ckpt, root_best_ckpt)
+        _save_checkpoint(
+            last_ckpt,
+            epoch=0,
+            policy=policy,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            best_val_loss=best_val_loss,
+        )
+        step0_ckpt = ckpt_dir / f"{step_prefix}_0.pt"
+        shutil.copy2(last_ckpt, step0_ckpt)
+        logger.info("Saved step-0 pretrained checkpoints to %s and %s", root_best_ckpt, step0_ckpt)
 
     for epoch in range(start_epoch, int(cfg.training.num_epochs) + 1):
         train_metrics, global_step = _run_epoch(
