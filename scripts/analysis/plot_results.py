@@ -93,7 +93,7 @@ def _make_eval_loaders(fasta_path: str, cfg: DictConfig):
     what training used — no more reconstruction drift.
     """
     split_cfg = _split_cfg_from(cfg)
-    _train, val_loader, test_loader = make_dataloaders(
+    _train, val_loader, test_loader, *_ = make_dataloaders(
         fasta_path=fasta_path,
         tokenizer_name=cfg.model.name,
         max_seq_len=int(cfg.data.max_seq_len),

@@ -33,7 +33,7 @@ from protein_design.eval import (
 )
 from protein_design.config import ModelConfig, RunConfig, ScoringConfig
 from protein_design.evotuning.config import DataConfig, TrainingConfig
-from protein_design.evotuning.data import make_dataloaders
+from protein_design.evotuning.data import build_train_loader, make_dataloaders
 from protein_design.model import ESM2Model
 from protein_design.utils import ensure_dir, init_wandb, setup_train_logger
 
@@ -72,6 +72,39 @@ def _make_masked_batch(
 # ---------------------------------------------------------------------------
 
 
+def _load_resume_checkpoint(
+    path: str,
+    model: ESM2Model,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: torch.amp.GradScaler,
+    log: logging.Logger,
+) -> tuple[int, int, int, float]:
+    """Restore full training state from an evotuning checkpoint.
+
+    Returns (epoch, global_step, samples_seen_this_epoch, best_val_ppl).
+    The caller is responsible for the epoch-rollover decision when
+    samples_seen_this_epoch >= full_train_len.
+    """
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state_dict"])
+    if "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    if ckpt.get("scheduler_state_dict") is not None:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    if ckpt.get("scaler_state_dict") is not None:
+        scaler.load_state_dict(ckpt["scaler_state_dict"])
+    epoch = int(ckpt.get("epoch", 1))
+    global_step = int(ckpt.get("global_step", 0))
+    samples_seen = int(ckpt.get("samples_seen", 0))
+    best_val_ppl = float(ckpt.get("best_val_ppl", ckpt.get("val_perplexity", float("inf"))))
+    log.info(
+        "Loaded resume checkpoint %s: epoch=%d global_step=%d samples_seen=%d best_val_ppl=%.4f",
+        path, epoch, global_step, samples_seen, best_val_ppl,
+    )
+    return epoch, global_step, samples_seen, best_val_ppl
+
+
 def _train_evotuning(
     model: ESM2Model,
     model_cfg: ModelConfig,
@@ -89,23 +122,41 @@ def _train_evotuning(
 ) -> tuple[list, list, int, Optional[Path]]:
     """Run corpus-MLM training. Returns (training_history, scoring_history,
     global_step, best_ckpt_path_or_None, final_metrics)."""
-    train_loader, val_loader, test_loader = make_dataloaders(
+    accum_steps = training_cfg.gradient_accumulation_steps
+    if training_cfg.save_every_n_steps:
+        # Resume relies on optim_step = global_step // accum_steps being exact.
+        assert training_cfg.save_every_n_steps % accum_steps == 0, (
+            "save_every_n_steps must be divisible by gradient_accumulation_steps "
+            f"(got {training_cfg.save_every_n_steps} % {accum_steps} != 0) "
+            "to keep optimizer-step accounting exact across resume."
+        )
+
+    # Build val/test loaders + cache the train_dataset+collator so that we can
+    # rebuild train_loader cheaply per epoch without rescanning the FASTA.
+    # The initial train_loader uses skip=0,seed=run_cfg.seed+1 — it is discarded
+    # and rebuilt below once we know start_epoch / start_samples_seen.
+    _initial_train_loader, val_loader, test_loader, train_dataset, collator, full_train_len = make_dataloaders(
         fasta_path=data_cfg.fasta_path,
         max_seq_len=data_cfg.max_seq_len,
         mlm_probability=data_cfg.mlm_probability,
         batch_size=training_cfg.batch_size,
         split_cfg=data_cfg.split,
         tokenizer=model.tokenizer,
+        skip_samples=0,
+        epoch_seed=run_cfg.seed + 1,
     )
+    del _initial_train_loader
 
     optimizer = AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=training_cfg.learning_rate,
         weight_decay=0.01,
     )
-    accum_steps = training_cfg.gradient_accumulation_steps
     max_steps = training_cfg.max_steps
-    epoch_based_steps = training_cfg.max_epochs * len(train_loader) // accum_steps
+    # Size the LR schedule from full_train_len, not len(train_loader): on
+    # resume the loader is truncated, but the schedule must be the same shape
+    # as the original run so the loaded scheduler state lands on the right LR.
+    epoch_based_steps = training_cfg.max_epochs * (full_train_len // training_cfg.batch_size) // accum_steps
     num_training_steps = max_steps if max_steps else epoch_based_steps
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -117,6 +168,23 @@ def _train_evotuning(
 
     use_fp16 = training_cfg.fp16 and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_fp16)
+
+    start_epoch = 1
+    start_samples_seen = 0
+    start_global_step = 0
+    best_val_ppl = float("inf")
+    if training_cfg.resume_checkpoint:
+        start_epoch, start_global_step, start_samples_seen, best_val_ppl = _load_resume_checkpoint(
+            training_cfg.resume_checkpoint, model, optimizer, scheduler, scaler, log,
+        )
+        if start_samples_seen >= full_train_len:
+            # Previous run finished an epoch exactly at the checkpoint boundary.
+            start_epoch += 1
+            start_samples_seen = 0
+        log.info(
+            "Resuming training at epoch=%d, global_step=%d, samples_seen_this_epoch=%d",
+            start_epoch, start_global_step, start_samples_seen,
+        )
 
     tokenizer = model.tokenizer
 
@@ -134,9 +202,8 @@ def _train_evotuning(
     model.train()
     running_loss = 0.0
     log_steps = 0
-    global_step = 0
-    optim_step = 0
-    best_val_ppl = float("inf")
+    global_step = start_global_step
+    optim_step = global_step // accum_steps
     best_ckpt_path: Optional[Path] = None
 
     save_every_n_steps = training_cfg.save_every_n_steps
@@ -145,10 +212,25 @@ def _train_evotuning(
     training_history = []
     scoring_history = []
 
-    for epoch in range(1, max_epochs + 1):
-        progress = tqdm(train_loader, desc=f"Epoch {epoch}/{max_epochs}")
+    for epoch in range(start_epoch, max_epochs + 1):
+        skip = start_samples_seen if epoch == start_epoch else 0
+        epoch_seed = run_cfg.seed + epoch
+        train_loader = build_train_loader(
+            train_dataset=train_dataset,
+            collator=collator,
+            batch_size=training_cfg.batch_size,
+            epoch_seed=epoch_seed,
+            skip_samples=skip,
+        )
+        samples_seen_this_epoch = skip
+        progress = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch}/{max_epochs}",
+            initial=skip // training_cfg.batch_size,
+        )
         for batch in progress:
             global_step += 1
+            samples_seen_this_epoch += training_cfg.batch_size
             batch = {k: v.to(device) for k, v in batch.items()}
 
             with torch.amp.autocast("cuda", enabled=use_fp16):
@@ -218,11 +300,14 @@ def _train_evotuning(
                 ckpt_state = {
                     "epoch": epoch,
                     "global_step": global_step,
+                    "samples_seen": samples_seen_this_epoch,
+                    "epoch_seed": epoch_seed,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "scaler_state_dict": scaler.state_dict(),
                     "val_perplexity": ppl,
+                    "best_val_ppl": best_val_ppl,
                 }
 
                 ckpt_path = checkpoint_dir / f"step_{global_step}.pt"
@@ -308,11 +393,14 @@ def _train_evotuning(
     final_state = {
         "epoch": max_epochs,
         "global_step": global_step,
+        "samples_seen": full_train_len,
+        "epoch_seed": run_cfg.seed + max_epochs,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
         "val_perplexity": final_ppl,
+        "best_val_ppl": best_val_ppl,
     }
     torch.save(final_state, final_path)
     log.info("Training complete. Final checkpoint: %s", final_path)
@@ -502,13 +590,36 @@ def run_stage(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run_log.info("Device: %s", device)
 
+    wandb_id_path = run_dir / "wandb_id.txt"
+    resume_wandb_id: Optional[str] = None
+    if training_cfg.resume_checkpoint and wandb_id_path.exists():
+        resume_wandb_id = wandb_id_path.read_text().strip() or None
+        if resume_wandb_id:
+            run_log.info("Resuming W&B run id=%s (from %s)", resume_wandb_id, wandb_id_path)
+        else:
+            run_log.warning("%s exists but is empty; starting a fresh W&B run.", wandb_id_path)
+    elif training_cfg.resume_checkpoint:
+        run_log.warning(
+            "resume_checkpoint set but %s not found; starting a fresh W&B run.",
+            wandb_id_path,
+        )
+
     wandb_mod, wandb_run = init_wandb(
         cfg,
         run_dir,
         run_log,
         run_name=run_name,
         group="evotuning",
+        resume_id=resume_wandb_id,
     ) if cfg is not None else (None, None)
+
+    if wandb_run is not None and resume_wandb_id is None:
+        # First launch of this run: persist the id so a future resume can attach.
+        try:
+            wandb_id_path.write_text(str(wandb_run.id))
+            run_log.info("Persisted W&B run id to %s", wandb_id_path)
+        except Exception as exc:
+            run_log.warning("Failed to write %s: %s", wandb_id_path, exc)
 
     model = ESM2Model(model_cfg)
 
