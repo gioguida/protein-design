@@ -20,4 +20,4 @@ source bash_scripts/common_setup.sh
 ALPHAS=(0.1 0.3 1.0 3.0)
 ALPHA="${ALPHAS[$SLURM_ARRAY_TASK_ID]}"
 
-python [train.py](http://_vscodecontentref_/1) task=unlikelihood training.alpha="${ALPHA}"
+python scripts/train.py task=unlikelihood training.alpha="${ALPHA}"

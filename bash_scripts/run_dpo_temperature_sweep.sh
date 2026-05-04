@@ -22,4 +22,4 @@ TEMPERATURE="${TEMPERATURES[$SLURM_ARRAY_TASK_ID]}"
 
 CHECKPOINT="/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/c05_c05_cdrh3_blosum25__evo_seed_20260424_191020/best.pt"
 
-python scripts/train_dpo.py task=dpo training.temperature="${TEMPERATURE}" training.resume_checkpoint="${CHECKPOINT}"
+python scripts/train.py task=dpo training.temperature="${TEMPERATURE}" training.resume_checkpoint="${CHECKPOINT}"

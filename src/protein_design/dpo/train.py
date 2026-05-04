@@ -293,10 +293,23 @@ def _load_checkpoint(
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     policy.load_state_dict(ckpt["model_state_dict"])
 
+    cross_task = False
     if optimizer is not None and "optimizer_state_dict" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    if scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except (ValueError, KeyError) as exc:
+            cross_task = True
+            logging.getLogger(__name__).warning(
+                "Skipping optimizer state (incompatible with current optimizer, "
+                "likely a cross-task checkpoint): %s",
+                exc,
+            )
+    if not cross_task and scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+    if cross_task:
+        # Cross-task resume: only model weights transfer; training starts fresh.
+        return 1, float("inf")
 
     next_epoch = int(ckpt.get("epoch", 0)) + 1
     best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
