@@ -41,14 +41,14 @@ case "${GIBBS_CONFIG:-}" in
     N_STEPS="${N_STEPS:-4}"
     SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-1}"
     START_MODE="${START_MODE:-dms}"
-    OUT_DIR="${OUT_DIR:-outputs/gibbs/distribution}"
+    OUT_DIR="${OUT_DIR:-outputs/beam_search/distribution}"
     ;;
   fitness)
     BEAM_SIZE="${BEAM_SIZE:-15}"
     N_STEPS="${N_STEPS:-4}"
     SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-1}"
     START_MODE="${START_MODE:-wt}"
-    OUT_DIR="${OUT_DIR:-outputs/gibbs/fitness}"
+    OUT_DIR="${OUT_DIR:-outputs/beam_search/fitness}"
     ;;
   "")
     ;;
@@ -63,7 +63,7 @@ N_STEPS="${N_STEPS:-4}"
 SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-1}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 SEED="${SEED:-42}"
-OUT_DIR="${OUT_DIR:-outputs/gibbs}"
+OUT_DIR="${OUT_DIR:-outputs/beam_search}"
 START_MODE="${START_MODE:-wt}"
 
 PROJECT_BASE_DIR="${PROJECT_DIR:-/cluster/project/infk/krause/${USER}/protein-design}"
@@ -130,4 +130,3 @@ if [[ "${START_MODE}" == "dms" ]]; then
 fi
 
 uv run python scripts/stochastic_beam_search.py "${ARGS[@]}"
-

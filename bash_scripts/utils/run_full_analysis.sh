@@ -19,9 +19,10 @@
 #   compute_procrustes_displacement  (gated on CKA threshold)
 #   compute_pll_pca              (joint PLL biplot + per-position loadings)
 #   gibbs_diagnostics            (only when Gibbs CSVs exist)
+#   beam_diagnostics             (only when stochastic-beam CSVs exist)
 #   ↓
 #   plot_per_model_pca, plot_gibbs_per_model_pca, plot_diff_vectors_pca,
-#   plot_oas_umap (×5 modes), plot_pll_pca
+#   plot_oas_umap (×5 modes), plot_pll_pca, plot_beam_per_model_pca
 
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "${ROOT_DIR}"
@@ -53,8 +54,11 @@ CKA_DIR="${CKA_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}/cka}"
 PROCRUSTES_DIR="${PROCRUSTES_DIR:-${SCRATCH_BASE}/procrustes/${DMS_DATASET}}"
 PLL_DIR="${PLL_DIR:-${SCRATCH_BASE}/pll_pca/${DMS_DATASET}}"
 GIBBS_DIAG_DIR="${GIBBS_DIAG_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}/gibbs_diagnostics}"
+BEAM_DIAG_DIR="${BEAM_DIAG_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}/beam_diagnostics}"
 
 PLOTS_DIR="${PLOTS_DIR:-${PROJECT_BASE}/plots/${DMS_DATASET}}"
+BEAM_PLOTS_DIR="${BEAM_PLOTS_DIR:-${PLOTS_DIR}/per_model_pca_beam}"
+BEAM_EMB_DIR="${BEAM_EMB_DIR:-${SCRATCH_BASE}/embeddings_beam/${DMS_DATASET}}"
 
 CKA_THRESHOLD="${CKA_THRESHOLD:-0.5}"
 MAX_DMS="${MAX_DMS:-500}"
@@ -69,6 +73,8 @@ FORCE="${FORCE:-0}"
 # Set SKIP_OAS=1 to skip extract_oas_embeddings (Step 1a) and plot_oas_umap.
 # Safe when OAS plots are not needed; all DMS/Gibbs steps are unaffected.
 SKIP_OAS="${SKIP_OAS:-0}"
+# Set SKIP_BEAM=1 to skip stochastic-beam extraction/diagnostics/plots.
+SKIP_BEAM="${SKIP_BEAM:-0}"
 
 # Variants — edit the arrays below to add/remove models.
 # Each entry is "label|checkpoint|gibbs_csv". Use empty checkpoint for vanilla.
@@ -88,6 +94,8 @@ UNLIKELIHOOD_CKPT="${UNLIKELIHOOD_CKPT:-${CKPT_ROOT}/unlikelihood-experiment}"
 
 GIBBS_DIST_DIR="${GIBBS_DIST_DIR:-outputs/gibbs/distribution}"
 GIBBS_FIT_DIR="${GIBBS_FIT_DIR:-outputs/gibbs/fitness}"
+BEAM_DIST_DIR="${BEAM_DIST_DIR:-outputs/beam_search/distribution}"
+BEAM_FIT_DIR="${BEAM_FIT_DIR:-outputs/beam_search/fitness}"
 
 # Each entry: "label|checkpoint|distribution_csv|fitness_csv". Either CSV
 # slot may point to a non-existent path; per-step logic below checks file
@@ -106,7 +114,55 @@ VARIANTS=(
 
 mkdir -p "${EMB_DIR}" "${OAS_DIR}" "${PER_MODEL_DIR}" "${DIFF_DIR}" \
          "${CKA_DIR}" "${PROCRUSTES_DIR}" "${PLL_DIR}" "${GIBBS_DIAG_DIR}" \
-         "${PLOTS_DIR}"
+         "${BEAM_DIAG_DIR}" "${PLOTS_DIR}" "${BEAM_PLOTS_DIR}" "${BEAM_EMB_DIR}"
+
+append_sampler_paths() {
+  local label="$1"
+  local checkpoint="$2"
+  local dist_csv="$3"
+  local fit_csv="$4"
+  local -n diag_args_ref="$5"
+  local -n extract_args_ref="$6"
+
+  if [[ -f "${dist_csv}" ]]; then
+    diag_args_ref+=(--gibbs "${label}=${checkpoint}=${dist_csv}=distribution")
+    extract_args_ref+=(--gibbs-path "distribution=${dist_csv}")
+  fi
+  if [[ -f "${fit_csv}" ]]; then
+    diag_args_ref+=(--gibbs "${label}=${checkpoint}=${fit_csv}=fitness")
+    extract_args_ref+=(--gibbs-path "fitness=${fit_csv}")
+  fi
+}
+
+run_sampler_diagnostics() {
+  local sampler_name="$1"
+  local diag_dir="$2"
+  local skip_flag="$3"
+  local -n diag_args_ref="$4"
+
+  if [[ "${skip_flag}" == "1" ]]; then
+    echo "[${sampler_name}_diagnostics] skip flag enabled — skipping"
+    return
+  fi
+
+  if (( ${#diag_args_ref[@]} )); then
+    echo "============================================================"
+    echo "[${sampler_name}_diagnostics]"
+    echo "============================================================"
+    local marker="${diag_dir}/gibbs_pll_trajectory.png"
+    if [[ "${FORCE}" != "1" && -f "${marker}" ]]; then
+      echo "[${sampler_name}_diagnostics] ${marker} exists — skipping (set FORCE=1 to recompute)"
+    else
+      uv run python scripts/analysis/gibbs_diagnostics.py \
+        "${diag_args_ref[@]}" \
+        --dms-dataset "${DMS_DATASET}" \
+        --max-dms "${MAX_DMS}" \
+        --output-dir "${diag_dir}"
+    fi
+  else
+    echo "[${sampler_name}_diagnostics] no CSVs found — skipping"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 1a — Extract OAS embeddings per variant (dataset-agnostic, cached)
@@ -140,15 +196,22 @@ fi
 EMBED_NPZ=()
 PLL_VARIANT_ARGS=()
 GIBBS_DIAG_ARGS=()
+BEAM_DIAG_ARGS=()
 
 for entry in "${VARIANTS[@]}"; do
   IFS='|' read -r label checkpoint dist_csv fit_csv <<<"${entry}"
   npz_path="${EMB_DIR}/${label}.npz"
+  beam_npz_path="${BEAM_EMB_DIR}/${label}.npz"
+  beam_dist_csv="${BEAM_DIST_DIR}/${label}.csv"
+  beam_fit_csv="${BEAM_FIT_DIR}/${label}.csv"
   EMBED_NPZ+=("${npz_path}")
 
   echo "============================================================"
   echo "[extract_embeddings] variant=${label}"
   echo "============================================================"
+  gibbs_extract_args=()
+  append_sampler_paths "${label}" "${checkpoint}" "${dist_csv}" "${fit_csv}" \
+    GIBBS_DIAG_ARGS gibbs_extract_args
   extract_args=(
     --model-variant "${label}"
     --output-path "${npz_path}"
@@ -156,19 +219,36 @@ for entry in "${VARIANTS[@]}"; do
     --max-dms "${MAX_DMS}"
     --max-gibbs "${MAX_GIBBS}"
   )
+  extract_args+=("${gibbs_extract_args[@]}")
   [[ -n "${checkpoint}" ]] && extract_args+=(--checkpoint-path "${checkpoint}")
-  [[ -f "${dist_csv}" ]] && extract_args+=(--gibbs-path "distribution=${dist_csv}")
-  [[ -f "${fit_csv}" ]] && extract_args+=(--gibbs-path "fitness=${fit_csv}")
   [[ "${FORCE}" != "1" ]] && extract_args+=(--skip-if-current)
   uv run python scripts/analysis/extract_embeddings.py "${extract_args[@]}"
 
+  if [[ "${SKIP_BEAM}" != "1" ]]; then
+    echo "============================================================"
+    echo "[extract_embeddings_beam] variant=${label}"
+    echo "============================================================"
+    beam_extract_args=()
+    append_sampler_paths "${label}" "${checkpoint}" "${beam_dist_csv}" "${beam_fit_csv}" \
+      BEAM_DIAG_ARGS beam_extract_args
+    if (( ${#beam_extract_args[@]} )); then
+      beam_args=(
+        --model-variant "${label}"
+        --output-path "${beam_npz_path}"
+        --dms-dataset "${DMS_DATASET}"
+        --max-dms "${MAX_DMS}"
+        --max-gibbs "${MAX_GIBBS}"
+      )
+      beam_args+=("${beam_extract_args[@]}")
+      [[ -n "${checkpoint}" ]] && beam_args+=(--checkpoint-path "${checkpoint}")
+      [[ "${FORCE}" != "1" ]] && beam_args+=(--skip-if-current)
+      uv run python scripts/analysis/extract_embeddings.py "${beam_args[@]}"
+    else
+      echo "[extract_embeddings_beam] no beam CSVs for ${label} — skipping"
+    fi
+  fi
+
   PLL_VARIANT_ARGS+=(--variant "${label}=${checkpoint}")
-  if [[ -f "${dist_csv}" ]]; then
-    GIBBS_DIAG_ARGS+=(--gibbs "${label}=${checkpoint}=${dist_csv}=distribution")
-  fi
-  if [[ -f "${fit_csv}" ]]; then
-    GIBBS_DIAG_ARGS+=(--gibbs "${label}=${checkpoint}=${fit_csv}=fitness")
-  fi
 done
 
 # ---------------------------------------------------------------------------
@@ -230,28 +310,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7 — Gibbs diagnostics (Phase 7; only if Gibbs CSVs exist)
+# Step 7 — Sampler diagnostics (Phase 7; Gibbs + optional beam)
 # ---------------------------------------------------------------------------
-if (( ${#GIBBS_DIAG_ARGS[@]} )); then
-  echo "============================================================"
-  echo "[gibbs_diagnostics]"
-  echo "============================================================"
-  # Use the trajectory PNG as the skip marker: it's a newer output, so any
-  # pre-existing GIBBS_DIAG_DIR from before the trajectory plot was added
-  # will still trigger a re-run the first time after upgrade.
-  GIBBS_MARKER="${GIBBS_DIAG_DIR}/gibbs_pll_trajectory.png"
-  if [[ "${FORCE}" != "1" && -f "${GIBBS_MARKER}" ]]; then
-    echo "[gibbs_diagnostics] ${GIBBS_MARKER} exists — skipping (set FORCE=1 to recompute)"
-  else
-    uv run python scripts/analysis/gibbs_diagnostics.py \
-      "${GIBBS_DIAG_ARGS[@]}" \
-      --dms-dataset "${DMS_DATASET}" \
-      --max-dms "${MAX_DMS}" \
-      --output-dir "${GIBBS_DIAG_DIR}"
-  fi
-else
-  echo "[gibbs_diagnostics] no Gibbs CSVs found — skipping"
-fi
+run_sampler_diagnostics "gibbs" "${GIBBS_DIAG_DIR}" "0" GIBBS_DIAG_ARGS
+run_sampler_diagnostics "beam" "${BEAM_DIAG_DIR}" "${SKIP_BEAM}" BEAM_DIAG_ARGS
 
 # ---------------------------------------------------------------------------
 # Step 8 — Plotting
@@ -270,6 +332,18 @@ uv run python scripts/analysis/plot_gibbs_per_model_pca.py \
   --per-model-pca-dir "${PER_MODEL_DIR}" \
   --embeddings-dir "${EMB_DIR}" \
   --output-dir "${PLOTS_DIR}/per_model_pca"
+
+echo "============================================================"
+echo "[plot_beam_per_model_pca]"
+echo "============================================================"
+if [[ "${SKIP_BEAM}" == "1" ]]; then
+  echo "[plot_beam_per_model_pca] SKIP_BEAM=1 — skipping"
+else
+  uv run python scripts/analysis/plot_gibbs_per_model_pca.py \
+    --per-model-pca-dir "${PER_MODEL_DIR}" \
+    --embeddings-dir "${BEAM_EMB_DIR}" \
+    --output-dir "${BEAM_PLOTS_DIR}"
+fi
 
 echo "============================================================"
 echo "[plot_diff_vectors_pca]"
