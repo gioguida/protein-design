@@ -26,9 +26,18 @@ training:
   resume_checkpoint: null
   evaluate_best_checkpoint: true
   scheduler:
-    enabled: false
+    enabled: true
+    name: linear_warmup_cosine  # step | cosine | linear_warmup | linear_warmup_cosine | reduce_on_plateau
+    interval: step        # epoch | step
     step_size: 100
     gamma: 0.95
+    warmup_steps: 200
+    min_lr: 0.0
+    plateau_monitor: val_spearman_avg
+    plateau_mode: max
+    plateau_factor: 0.5
+    plateau_patience: 2
+    plateau_threshold: 1e-4
 
 checkpointing:
   dir: checkpoints
