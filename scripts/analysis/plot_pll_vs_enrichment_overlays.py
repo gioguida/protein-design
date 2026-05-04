@@ -3,10 +3,10 @@
 For each model variant and each requested DMS dataset, compute sequence-level
 CDR-H3 PLL and render:
   - DMS background: PLL vs assay enrichment
-  - overlay points: Gibbs/beam samples that can be matched by CDR-H3 to the
-    DMS dataset's enrichment table.
+  - overlay points: Gibbs/beam samples matched by CDR-H3 against DMS enrichment.
 
-Datasets default to ED2, ED5, and ED8/11 (key: ed811 in existing pipelines).
+Backwards compatible defaults still support built-in dataset keys and
+directory-based sampler CSV discovery.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from transformers import AutoTokenizer
 
 from protein_design.constants import C05_CDRH3
 
-# Reuse model loading + PLL inference utilities.
 from gibbs_diagnostics import (
     DMS_DATASETS,
     ESM2_MODEL_ID,
@@ -46,6 +45,7 @@ SAMPLER_SPECS = [
     ("beam_dist", "beam distribution", "^", "#2980b9"),
     ("beam_fit", "beam fitness", "D", "#16a085"),
 ]
+SAMPLER_KEYS = {k for k, _, _, _ in SAMPLER_SPECS}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plot_pll_vs_enrichment_overlays")
@@ -56,6 +56,37 @@ def parse_variant_spec(spec: str) -> Tuple[str, str]:
         raise argparse.ArgumentTypeError(f"--variant must be LABEL=CHECKPOINT, got {spec!r}")
     label, ckpt = spec.split("=", 1)
     return label.strip(), ckpt.strip()
+
+
+def parse_dataset_spec(spec: str) -> Tuple[str, dict[str, str]]:
+    parts = spec.split("=")
+    if len(parts) < 2 or len(parts) > 3:
+        raise argparse.ArgumentTypeError(
+            "--dataset-spec must be KEY=M22_CSV_PATH[=SI06_CSV_PATH]"
+        )
+    key = parts[0].strip()
+    m22 = parts[1].strip()
+    si06 = parts[2].strip() if len(parts) == 3 and parts[2].strip() else None
+    if not key or not m22:
+        raise argparse.ArgumentTypeError("dataset key and M22 path must be non-empty")
+    out = {"m22": m22}
+    if si06 is not None:
+        out["si06"] = si06
+    return key, out
+
+
+def parse_overlay_csv_spec(spec: str) -> Tuple[str, str, Path]:
+    parts = spec.split("=", 2)
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("--overlay-csv must be SAMPLER=VARIANT=CSV_PATH")
+    sampler, variant, csv_path = parts[0].strip(), parts[1].strip(), parts[2].strip()
+    if sampler not in SAMPLER_KEYS:
+        raise argparse.ArgumentTypeError(
+            f"--overlay-csv sampler must be one of {sorted(SAMPLER_KEYS)}, got {sampler!r}"
+        )
+    if not variant or not csv_path:
+        raise argparse.ArgumentTypeError("--overlay-csv variant and path must be non-empty")
+    return sampler, variant, Path(csv_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,16 +102,40 @@ def parse_args() -> argparse.Namespace:
         "--datasets",
         nargs="+",
         default=["ed2", "ed5", "ed811"],
-        choices=sorted(DMS_DATASETS.keys()),
-        help="DMS datasets to plot (ed811 corresponds to the ED8/11 file in this repo).",
+        help="Dataset keys to plot. Defaults to built-in ed2/ed5/ed811.",
+    )
+    p.add_argument(
+        "--dataset-spec",
+        action="append",
+        default=[],
+        type=parse_dataset_spec,
+        help="Override/add dataset paths with KEY=M22_CSV_PATH[=SI06_CSV_PATH]. Repeatable.",
     )
     p.add_argument("--gibbs-dist-dir", type=Path, default=Path("outputs/gibbs/distribution"))
     p.add_argument("--gibbs-fit-dir", type=Path, default=Path("outputs/gibbs/fitness"))
     p.add_argument("--beam-dist-dir", type=Path, default=Path("outputs/beam_search/distribution"))
     p.add_argument("--beam-fit-dir", type=Path, default=Path("outputs/beam_search/fitness"))
+    p.add_argument(
+        "--overlay-csv",
+        action="append",
+        default=[],
+        type=parse_overlay_csv_spec,
+        help="Explicit overlay CSV mapping: SAMPLER=VARIANT=CSV_PATH. Repeatable.",
+    )
+    p.add_argument(
+        "--include-samplers",
+        nargs="+",
+        default=[k for k, _, _, _ in SAMPLER_SPECS],
+        choices=sorted(SAMPLER_KEYS),
+        help="Subset of sampler overlays to include.",
+    )
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--max-overlay", type=int, default=4000,
-                   help="Per source cap before PLL inference (for very large CSVs).")
+    p.add_argument(
+        "--max-overlay",
+        type=int,
+        default=4000,
+        help="Per source cap before PLL inference (for very large CSVs).",
+    )
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -91,12 +146,25 @@ def _dataset_label(dataset_key: str) -> str:
     return dataset_key
 
 
-def load_dms_full(dataset_key: str) -> pd.DataFrame:
-    paths = DMS_DATASETS[dataset_key]
+def _build_dataset_map(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:
+    dataset_map: Dict[str, Dict[str, str]] = {
+        key: dict(paths) for key, paths in DMS_DATASETS.items()
+    }
+    for key, paths in args.dataset_spec:
+        dataset_map[key] = paths
+    for ds in args.datasets:
+        if ds not in dataset_map:
+            raise ValueError(
+                f"Dataset key {ds!r} not found. Use --dataset-spec to define it."
+            )
+    return dataset_map
+
+
+def load_dms_full(paths: Dict[str, str]) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
-    if "m22" in paths:
+    if "m22" in paths and paths["m22"]:
         frames.append(pd.read_csv(paths["m22"])[["aa", "M22_binding_enrichment_adj"]])
-    if "si06" in paths:
+    if "si06" in paths and paths["si06"]:
         frames.append(pd.read_csv(paths["si06"])[["aa", "SI06_binding_enrichment_adj"]])
     if not frames:
         return pd.DataFrame(columns=["aa", "M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"])
@@ -107,7 +175,6 @@ def load_dms_full(dataset_key: str) -> pd.DataFrame:
         if col not in merged.columns:
             merged[col] = np.nan
     merged = merged[merged["aa"].astype(str).str.len() == len(C05_CDRH3)].copy()
-    # Keep one row per CDR-H3 to make mapping deterministic.
     merged = merged.drop_duplicates(subset=["aa"], keep="first").reset_index(drop=True)
     return merged
 
@@ -202,7 +269,10 @@ def make_plot(
 
     ax.set_xlabel("CDR-H3 PLL")
     ax.set_ylabel(fitness_label)
-    ax.set_title(f"{variant} — {dataset_label.upper()} — PLL vs {fitness_label}\nDMS background + Gibbs/beam overlays")
+    ax.set_title(
+        f"{variant} - {dataset_label.upper()} - PLL vs {fitness_label}\n"
+        "DMS background + Gibbs/beam overlays"
+    )
     ax.grid(alpha=0.22)
     ax.legend(loc="lower right", fontsize=8, frameon=True)
     fig.tight_layout()
@@ -211,11 +281,39 @@ def make_plot(
     log.info("Wrote %s", out_path)
 
 
+def _overlay_lookup(args: argparse.Namespace) -> Dict[Tuple[str, str], Path]:
+    return {(sampler, variant): path for sampler, variant, path in args.overlay_csv}
+
+
+def _resolve_overlay_path(
+    sampler_key: str,
+    variant: str,
+    args: argparse.Namespace,
+    lookup: Dict[Tuple[str, str], Path],
+) -> Path:
+    explicit = lookup.get((sampler_key, variant))
+    if explicit is not None:
+        return explicit
+    if sampler_key == "gibbs_dist":
+        return args.gibbs_dist_dir / f"{variant}.csv"
+    if sampler_key == "gibbs_fit":
+        return args.gibbs_fit_dir / f"{variant}.csv"
+    if sampler_key == "beam_dist":
+        return args.beam_dist_dir / f"{variant}.csv"
+    if sampler_key == "beam_fit":
+        return args.beam_fit_dir / f"{variant}.csv"
+    return Path("__missing__.csv")
+
+
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
+
+    include = set(args.include_samplers)
+    dataset_map = _build_dataset_map(args)
+    overlay_lookup = _overlay_lookup(args)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
@@ -223,7 +321,7 @@ def main() -> int:
 
     dms_by_dataset: Dict[str, pd.DataFrame] = {}
     for ds in args.datasets:
-        df = load_dms_full(ds)
+        df = load_dms_full(dataset_map[ds])
         dms_by_dataset[ds] = df
         log.info("DMS %s: %d unique CDR-H3 rows", ds, len(df))
 
@@ -239,22 +337,25 @@ def main() -> int:
             ds_label = _dataset_label(ds)
             dms_df = dms_by_dataset[ds].copy()
 
-            sampler_cdr = {
-                "gibbs_dist": load_sampler_cdrh3(args.gibbs_dist_dir / f"{variant}.csv", args.max_overlay),
-                "gibbs_fit": load_sampler_cdrh3(args.gibbs_fit_dir / f"{variant}.csv", args.max_overlay),
-                "beam_dist": load_sampler_cdrh3(args.beam_dist_dir / f"{variant}.csv", args.max_overlay),
-                "beam_fit": load_sampler_cdrh3(args.beam_fit_dir / f"{variant}.csv", args.max_overlay),
-            }
+            sampler_cdr: Dict[str, List[str]] = {}
+            for key, _, _, _ in SAMPLER_SPECS:
+                if key not in include:
+                    sampler_cdr[key] = []
+                    continue
+                sampler_path = _resolve_overlay_path(key, variant, args, overlay_lookup)
+                sampler_cdr[key] = load_sampler_cdrh3(sampler_path, args.max_overlay)
 
-            union_sequences = list(dict.fromkeys(
-                dms_df["aa"].astype(str).tolist()
-                + sampler_cdr["gibbs_dist"]
-                + sampler_cdr["gibbs_fit"]
-                + sampler_cdr["beam_dist"]
-                + sampler_cdr["beam_fit"]
-            ))
+            union_sequences = list(
+                dict.fromkeys(
+                    dms_df["aa"].astype(str).tolist()
+                    + sampler_cdr["gibbs_dist"]
+                    + sampler_cdr["gibbs_fit"]
+                    + sampler_cdr["beam_dist"]
+                    + sampler_cdr["beam_fit"]
+                )
+            )
             if not union_sequences:
-                log.warning("[%s/%s] no sequences to score — skipping", variant, ds)
+                log.warning("[%s/%s] no sequences to score - skipping", variant, ds)
                 continue
 
             pll_map = compute_pll_map(model, tokenizer, device, union_sequences, args.batch_size)
@@ -275,14 +376,16 @@ def main() -> int:
                 else:
                     overlay_df["pll"] = overlay_df["cdrh3"].map(pll_map)
                     matched = overlay_df.merge(dms_lookup, on="cdrh3", how="inner")
-                sampler_rows.append({
-                    "key": key,
-                    "label": label,
-                    "marker": marker,
-                    "color": color,
-                    "total": len(cdrs),
-                    "matched": matched,
-                })
+                sampler_rows.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "marker": marker,
+                        "color": color,
+                        "total": len(cdrs),
+                        "matched": matched,
+                    }
+                )
 
             out_ds_dir = args.output_dir / ds_label
             out_ds_dir.mkdir(parents=True, exist_ok=True)

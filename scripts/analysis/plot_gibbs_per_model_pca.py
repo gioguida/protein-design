@@ -320,6 +320,12 @@ def parse_args() -> argparse.Namespace:
                    help="Skip the full-trajectory plot; emit only the early view.")
     p.add_argument("--skip-early", action="store_true",
                    help="Skip the early-trajectory plot; emit only the full view.")
+    p.add_argument(
+        "--configs",
+        nargs="+",
+        default=None,
+        help="Optional list of gibbs_config names to include (e.g. gibbs_dist gibbs_fit).",
+    )
     return p.parse_args()
 
 
@@ -367,6 +373,9 @@ def main() -> int:
                 wt_pc = pca.transform(grows["wt_emb"][None, :])[0, :2]
 
             configs = sorted(set(grows["gibbs_config"].tolist())) if len(grows["gibbs_config"]) else []
+            if args.configs is not None:
+                wanted = set(args.configs)
+                configs = [cfg for cfg in configs if cfg in wanted]
             multi_config = len(configs) >= 2
 
             def _collect_data(emb, chains, steps):
