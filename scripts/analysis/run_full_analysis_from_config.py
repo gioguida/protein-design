@@ -98,7 +98,7 @@ def _append_flag(cmd: list[str], name: str, value: Any) -> None:
     cmd.extend([flag, str(value)])
 
 
-def _resolve_models(cfg: dict[str, Any]) -> list[ModelSpec]:
+def _resolve_models(cfg: dict[str, Any], repo_root: Path) -> list[ModelSpec]:
     models_cfg = cfg.get("models", {})
     catalog = models_cfg.get("catalog", {})
     selected = models_cfg.get("selected_models", [])
@@ -111,7 +111,8 @@ def _resolve_models(cfg: dict[str, Any]) -> list[ModelSpec]:
     for mid in selected:
         entry = catalog[mid] or {}
         display_name = str(entry.get("display_name", "")).strip() or mid
-        checkpoint_path = str(entry.get("checkpoint_path", "") or "")
+        raw_ckpt = str(entry.get("checkpoint_path", "") or "")
+        checkpoint_path = str(_expand(raw_ckpt, repo_root)) if raw_ckpt else ""
         resolved.append(ModelSpec(model_id=mid, display_name=display_name, checkpoint_path=checkpoint_path))
     return resolved
 
@@ -201,7 +202,7 @@ def _load_and_validate(cfg_path: Path, repo_root: Path) -> dict[str, Any]:
         if not dval or not dval.get("m22_csv"):
             fail(f"datasets.catalog.{dkey}.m22_csv is required")
 
-    models = _resolve_models(cfg)
+    models = _resolve_models(cfg, repo_root)
     strategies = _resolve_strategies(cfg, repo_root, models)
     _validate_plots(cfg, datasets_catalog, {s.strategy_id for s in strategies})
     return cfg
@@ -252,7 +253,7 @@ def main() -> int:
     scratch_base = _expand(str(run_cfg.get("scratch_base", "embedding_analysis")), repo_root)
     project_base = _expand(str(run_cfg.get("project_base", "reports/embedding_analysis")), repo_root)
 
-    models = _resolve_models(cfg)
+    models = _resolve_models(cfg, repo_root)
     sampling_cfg = cfg.get("sampling", {})
     strategy_catalog: dict[str, Any] = sampling_cfg.get("strategies", {})
     selected_strategy_ids: list[str] = list(sampling_cfg.get("selected_sampling_strategies", []) or [])
@@ -278,7 +279,7 @@ def main() -> int:
                 "python",
                 script,
                 "--model-variant",
-                model.display_name,
+                model.model_id,
                 "--output-path",
                 str(csv_path),
             ]
