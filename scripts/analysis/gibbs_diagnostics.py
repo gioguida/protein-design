@@ -12,24 +12,26 @@ accepted by ``compute_pll_pca.py``.
 
 Writes (in ``--output-dir``)
 ----------------------------
-- ``gibbs_pll_dist_{M22,SI06}.png`` — DMS+Gibbs violins, rows = config,
+With ``--sampler-label <name>``, files use ``<name>_`` as prefix (default:
+``gibbs_``).
+- ``<name>_pll_dist_{M22,SI06}.png`` — DMS+sampler violins, rows = config,
   cols = variant; DMS strip coloured by enrichment, WT PLL marked.
-- ``gibbs_pll_trajectory.png`` — sequence PLL across Gibbs steps; rows =
+- ``<name>_pll_trajectory.png`` — sequence PLL across sampler steps; rows =
   config, cols = variant; one line per chain, WT/DMS bands.
-- ``gibbs_pairwise_hamming.png`` — pairwise CDR-H3 Hamming histograms;
+- ``<name>_pairwise_hamming.png`` — pairwise CDR-H3 Hamming histograms;
   rows = config, cols = variant.
-- ``gibbs_edit_distance.png`` — n_mutations from WT; rows = config, cols
+- ``<name>_edit_distance.png`` — n_mutations from WT; rows = config, cols
   = variant.
-- ``gibbs_sequence_logo[_{config}].png`` — per-position AA frequency stacks
+- ``<name>_sequence_logo[_{config}].png`` — per-position AA frequency stacks
   per variant. One file per config when ≥ 2 configs.
-- ``gibbs_position_mutation_freq[_{config}].png`` — per-position mutation
+- ``<name>_position_mutation_freq[_{config}].png`` — per-position mutation
   rate heatmap. One file per config when ≥ 2 configs.
-- ``gibbs_summary.csv`` — per (variant, config, slice) row of summary stats.
+- ``<name>_summary.csv`` — per (variant, config, slice) row of summary stats.
 
 Each plot above is also emitted with an ``_early`` suffix, restricted to
 Gibbs samples within ``--early-max-ed`` mutations of the C05 WT (default 10)
 and capped at ``--early-max-chains`` chains (default 10). Use ``--skip-early``
-to disable. The early slice is a separate row in ``gibbs_summary.csv``
+to disable. The early slice is a separate row in ``<name>_summary.csv``
 (``slice=early`` vs ``slice=full``).
 """
 
@@ -246,6 +248,7 @@ def plot_pll_violin_grid(
     fkey: str,
     flabel: str,
     out_path: Path,
+    sampler_title: str,
 ) -> None:
     """Rows = configs, cols = variants. Each cell: DMS+Gibbs violins, DMS
     strip colored by enrichment, WT line. One figure per readout.
@@ -300,7 +303,7 @@ def plot_pll_violin_grid(
                     transform=ax.get_yaxis_transform(), ha="left", va="bottom")
 
             ax.set_xticks([1.0, 2.0])
-            ax.set_xticklabels(["DMS", "Gibbs"], fontsize=9)
+            ax.set_xticklabels(["DMS", sampler_title], fontsize=9)
             if row == 0:
                 ax.set_title(v, fontsize=11)
             if col == 0:
@@ -309,7 +312,7 @@ def plot_pll_violin_grid(
                 ax.set_ylabel("CDR-H3 sequence PLL", fontsize=9)
 
     fig.suptitle(
-        f"{flabel} — DMS vs Gibbs PLL  (rows = config, cols = variant)\n"
+        f"{flabel} — DMS vs {sampler_title} PLL  (rows = config, cols = variant)\n"
         "DMS strip colored by enrichment; WT PLL marked",
         fontsize=12,
     )
@@ -324,6 +327,7 @@ def plot_pll_trajectory(
     labels: List[str],
     configs: List[str],
     out_path: Path,
+    sampler_title: str,
 ) -> None:
     """Rows = configs, cols = variants. One line per chain. WT PLL dashed;
     DMS [5, 95] percentile band shaded grey.
@@ -372,13 +376,13 @@ def plot_pll_trajectory(
                 ax.set_title(v, fontsize=11)
             if col == 0:
                 ax.set_ylabel(f"{cfg}\nCDR-H3 sequence PLL", fontsize=9)
-            ax.set_xlabel("Gibbs step")
+            ax.set_xlabel(f"{sampler_title} step")
 
     handles, leg_labels = axes[0, 0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, leg_labels, loc="upper right", fontsize=8, ncol=1,
                    bbox_to_anchor=(0.998, 0.998))
-    fig.suptitle("Gibbs PLL trajectory — rows = config, cols = variant", fontsize=12)
+    fig.suptitle(f"{sampler_title} PLL trajectory — rows = config, cols = variant", fontsize=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -388,6 +392,7 @@ def plot_pll_trajectory(
 def plot_sequence_logo(
     per_variant: Dict[str, Dict[str, np.ndarray]],
     out_path: Path,
+    sampler_title: str,
     min_freq: float = 0.02,
 ) -> None:
     """One row per variant; each column = a CDR position with stacked AA
@@ -438,7 +443,7 @@ def plot_sequence_logo(
                                 fontsize=8)
     axes[-1, 0].set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
     fig.suptitle(
-        "Sequence logo — per-position AA frequency in Gibbs samples\n"
+        f"Sequence logo — per-position AA frequency in {sampler_title} samples\n"
         "(tall single letters indicate collapse onto one consensus residue)",
         fontsize=11,
     )
@@ -453,6 +458,7 @@ def plot_pairwise_hamming(
     labels: List[str],
     configs: List[str],
     out_path: Path,
+    sampler_title: str,
     max_n: int = 1000,
 ) -> None:
     """Rows = configs, cols = variants. Histogram of pairwise CDR-H3 Hamming
@@ -500,7 +506,7 @@ def plot_pairwise_hamming(
                 ax.set_ylabel(f"{cfg}\npair count", fontsize=9)
             ax.set_xlim(-0.5, P + 0.5)
 
-    fig.suptitle("Pairwise Hamming among Gibbs CDR-H3s — collapse → mass at 0",
+    fig.suptitle(f"Pairwise Hamming among {sampler_title} CDR-H3s — collapse → mass at 0",
                  fontsize=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -513,6 +519,7 @@ def plot_edit_distance(
     labels: List[str],
     configs: List[str],
     out_path: Path,
+    sampler_title: str,
 ) -> None:
     """Rows = configs, cols = variants. Histogram of n_mutations vs C05 WT."""
     n_cols = len(labels)
@@ -539,7 +546,7 @@ def plot_edit_distance(
             if col == 0:
                 ax.set_ylabel(f"{cfg}\ncount", fontsize=9)
             ax.set_xlim(left=-0.5)
-    fig.suptitle("Gibbs samples — edit distance from C05 WT CDR-H3", fontsize=12)
+    fig.suptitle(f"{sampler_title} samples — edit distance from C05 WT CDR-H3", fontsize=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -547,7 +554,7 @@ def plot_edit_distance(
 
 
 def plot_position_mutation_freq(
-    per_variant: Dict[str, Dict[str, np.ndarray]], out_path: Path
+    per_variant: Dict[str, Dict[str, np.ndarray]], out_path: Path, sampler_title: str
 ) -> None:
     variants = list(per_variant.keys())
     P = len(C05_CDRH3)
@@ -563,7 +570,7 @@ def plot_position_mutation_freq(
     ax.set_xticks(range(P))
     ax.set_xticklabels([f"{i + 1}\n{a}" for i, a in enumerate(C05_CDRH3)], fontsize=8)
     ax.set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
-    ax.set_title("Per-position mutation frequency in Gibbs samples", fontsize=11)
+    ax.set_title(f"Per-position mutation frequency in {sampler_title} samples", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -698,6 +705,11 @@ def parse_args() -> argparse.Namespace:
                    help="Cap on number of chains shown in the early-trajectory plots.")
     p.add_argument("--skip-early", action="store_true",
                    help="Skip the early-trajectory diagnostic plots and summary slice.")
+    p.add_argument(
+        "--sampler-label",
+        default="gibbs",
+        help="Label used in plot titles and output filename prefix (e.g. gibbs, beam).",
+    )
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -705,6 +717,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    sampler_prefix = args.sampler_label.strip().lower().replace(" ", "_")
+    sampler_title = args.sampler_label.strip().title() or "Gibbs"
 
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -850,14 +864,18 @@ def main() -> int:
                 continue
             plot_pll_violin_grid(
                 pv, labels_local, configs_local, fkey, flabel,
-                args.output_dir / f"gibbs_pll_dist_{readout}{slice_suffix}.png",
+                args.output_dir / f"{sampler_prefix}_pll_dist_{readout}{slice_suffix}.png",
+                sampler_title,
             )
         plot_pll_trajectory(pv, labels_local, configs_local,
-                            args.output_dir / f"gibbs_pll_trajectory{slice_suffix}.png")
+                            args.output_dir / f"{sampler_prefix}_pll_trajectory{slice_suffix}.png",
+                            sampler_title)
         plot_pairwise_hamming(pv, labels_local, configs_local,
-                              args.output_dir / f"gibbs_pairwise_hamming{slice_suffix}.png")
+                              args.output_dir / f"{sampler_prefix}_pairwise_hamming{slice_suffix}.png",
+                              sampler_title)
         plot_edit_distance(pv, labels_local, configs_local,
-                           args.output_dir / f"gibbs_edit_distance{slice_suffix}.png")
+                           args.output_dir / f"{sampler_prefix}_edit_distance{slice_suffix}.png",
+                           sampler_title)
 
         for cfg in configs_local:
             cfg_subset = {label: pv[(label, cfg)]
@@ -865,11 +883,13 @@ def main() -> int:
             cfg_part = f"_{cfg}" if len(configs_local) > 1 else ""
             plot_sequence_logo(
                 cfg_subset,
-                args.output_dir / f"gibbs_sequence_logo{slice_suffix}{cfg_part}.png",
+                args.output_dir / f"{sampler_prefix}_sequence_logo{slice_suffix}{cfg_part}.png",
+                sampler_title,
             )
             plot_position_mutation_freq(
                 cfg_subset,
-                args.output_dir / f"gibbs_position_mutation_freq{slice_suffix}{cfg_part}.png",
+                args.output_dir / f"{sampler_prefix}_position_mutation_freq{slice_suffix}{cfg_part}.png",
+                sampler_title,
             )
 
     _emit_plots(per_variant, "")
@@ -887,7 +907,7 @@ def main() -> int:
             log.warning("Early slice empty across all cells — skipping early plots")
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_path = args.output_dir / "gibbs_summary.csv"
+    summary_path = args.output_dir / f"{sampler_prefix}_summary.csv"
     summary_df.to_csv(summary_path, index=False)
     log.info("Wrote %s\n%s", summary_path,
              summary_df.drop(columns=["top_alt_per_position"]).round(3).to_string())

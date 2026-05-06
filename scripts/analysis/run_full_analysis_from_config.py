@@ -246,6 +246,7 @@ def main() -> int:
     dry_run = bool(run_cfg.get("dry_run", False)) or bool(args.dry_run)
     force = bool(run_cfg.get("force", False))
     reuse_existing = bool(run_cfg.get("reuse_existing_artifacts", False))
+    plots_only = bool(run_cfg.get("plots_only", False))
     max_dms = int(run_cfg.get("max_dms", 500))
     max_oas = int(run_cfg.get("max_oas", 2000))
     max_gibbs = int(run_cfg.get("max_gibbs", 200))
@@ -262,36 +263,39 @@ def main() -> int:
     plots_cfg = cfg.get("plots", {})
 
     # 1) Optional: generate sampler CSVs from YAML.
-    for model in models:
-        for sid in selected_strategy_ids:
-            sentry = selected_entries[sid]
-            stype = str(sentry.get("type", "")).lower()
-            generate = bool(sentry.get("generate", False))
-            csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
-            if not generate:
-                if not csv_path.exists() and not dry_run:
-                    fail(f"existing_csv_path for strategy={sid}, model={model.model_id} does not exist: {csv_path}")
-                continue
-            _mkdir(csv_path.parent, dry_run, f"sample:{sid}:{model.model_id}")
-            if reuse_existing and csv_path.exists():
-                print(f"[sample:{sid}:{model.model_id}] reuse existing {csv_path}")
-                continue
-            script = "scripts/gibbs_sampling.py" if stype == "gibbs" else "scripts/stochastic_beam_search.py"
-            cmd = [
-                "uv",
-                "run",
-                "python",
-                script,
-                "--model-variant",
-                model.model_id,
-                "--output-path",
-                str(csv_path),
-            ]
-            if model.checkpoint_path:
-                cmd.extend(["--checkpoint-path", model.checkpoint_path])
-            for k, v in (sentry.get("params", {}) or {}).items():
-                _append_flag(cmd, k, v)
-            _run(cmd, dry_run, f"sample:{sid}:{model.model_id}")
+    if plots_only:
+        print("[sample] plots_only=true -> skip sampler generation")
+    else:
+        for model in models:
+            for sid in selected_strategy_ids:
+                sentry = selected_entries[sid]
+                stype = str(sentry.get("type", "")).lower()
+                generate = bool(sentry.get("generate", False))
+                csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
+                if not generate:
+                    if not csv_path.exists() and not dry_run:
+                        fail(f"existing_csv_path for strategy={sid}, model={model.model_id} does not exist: {csv_path}")
+                    continue
+                _mkdir(csv_path.parent, dry_run, f"sample:{sid}:{model.model_id}")
+                if reuse_existing and csv_path.exists():
+                    print(f"[sample:{sid}:{model.model_id}] reuse existing {csv_path}")
+                    continue
+                script = "scripts/gibbs_sampling.py" if stype == "gibbs" else "scripts/stochastic_beam_search.py"
+                cmd = [
+                    "uv",
+                    "run",
+                    "python",
+                    script,
+                    "--model-variant",
+                    model.model_id,
+                    "--output-path",
+                    str(csv_path),
+                ]
+                if model.checkpoint_path:
+                    cmd.extend(["--checkpoint-path", model.checkpoint_path])
+                for k, v in (sentry.get("params", {}) or {}).items():
+                    _append_flag(cmd, k, v)
+                _run(cmd, dry_run, f"sample:{sid}:{model.model_id}")
 
     # 2) Optional: OAS extraction + plotting (dataset-agnostic).
     oas_plot_cfg = plots_cfg.get("oas_umap", {}) or {}
@@ -306,6 +310,8 @@ def main() -> int:
         for model in models:
             oas_npz = oas_dir / f"{model.model_id}.npz"
             oas_npz_paths.append(oas_npz)
+            if plots_only:
+                continue
             cmd = [
                 "uv",
                 "run",
@@ -405,6 +411,9 @@ def main() -> int:
                     beam_paths.extend(["--gibbs-path", f"{sid}={csv_path}"])
                     beam_diag_args.extend(["--gibbs", f"{label}={ckpt}={csv_path}={sid}"])
 
+            if plots_only:
+                continue
+
             cmd = [
                 "uv",
                 "run",
@@ -466,125 +475,130 @@ def main() -> int:
                 else:
                     _run(beam_cmd, dry_run, f"extract_beam_embeddings:{ds}:{model.model_id}")
 
-        per_model_out = per_model_dir / "per_model_pca_cdrh3.npz"
-        if reuse_existing and per_model_out.exists():
-            print(f"[compute_per_model_pca:{ds}] reuse existing {per_model_out}")
-        else:
-            _run(
-                ["uv", "run", "python", "scripts/analysis/compute_per_model_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(per_model_dir)],
-                dry_run,
-                f"compute_per_model_pca:{ds}",
-            )
-
-        diff_out = diff_dir / "diff_pca_cdrh3.npz"
-        if reuse_existing and diff_out.exists():
-            print(f"[compute_diff_vectors_pca:{ds}] reuse existing {diff_out}")
-        else:
-            _run(
-                ["uv", "run", "python", "scripts/analysis/compute_diff_vectors_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(diff_dir)],
-                dry_run,
-                f"compute_diff_vectors_pca:{ds}",
-            )
-
-        cka_out = cka_dir / "cka_cdrh3.csv"
-        if reuse_existing and cka_out.exists():
-            print(f"[compute_cka:{ds}] reuse existing {cka_out}")
-        else:
-            _run(
-                ["uv", "run", "python", "scripts/analysis/compute_cka.py", *[str(p) for p in embed_npz], "--output-dir", str(cka_dir)],
-                dry_run,
-                f"compute_cka:{ds}",
-            )
-
-        procrustes_out = procrustes_dir / "procrustes_summary_cdrh3.csv"
-        if reuse_existing and procrustes_out.exists():
-            print(f"[compute_procrustes:{ds}] reuse existing {procrustes_out}")
-        else:
-            _run(
-                [
-                    "uv",
-                    "run",
-                    "python",
-                    "scripts/analysis/compute_procrustes_displacement.py",
-                    *[str(p) for p in embed_npz],
-                    "--cka-dir",
-                    str(cka_dir),
-                    "--cka-threshold",
-                    str(cka_threshold),
-                    "--output-dir",
-                    str(procrustes_dir),
-                ],
-                dry_run,
-                f"compute_procrustes:{ds}",
-            )
-
         pll_out = pll_dir / "pll_pca.npz"
-        if force or not pll_out.exists() or dry_run or not reuse_existing:
-            _run(
-                [
-                    "uv",
-                    "run",
-                    "python",
-                    "scripts/analysis/compute_pll_pca.py",
-                    *pll_variant_args,
-                    "--max-dms",
-                    str(max_dms),
-                    "--output-path",
-                    str(pll_out),
-                ],
-                dry_run,
-                f"compute_pll_pca:{ds}",
-            )
-        else:
-            print(f"[compute_pll_pca:{ds}] skip existing {pll_out}")
-
-        if gibbs_diag_args:
-            marker = gibbs_diag_dir / "gibbs_pll_trajectory.png"
-            if force or not marker.exists() or dry_run or not reuse_existing:
-                cmd = [
-                    "uv",
-                    "run",
-                    "python",
-                    "scripts/analysis/gibbs_diagnostics.py",
-                    *gibbs_diag_args,
-                    "--dms-dataset",
-                    dms_arg,
-                    "--dms-m22",
-                    dms_m22,
-                    "--max-dms",
-                    str(max_dms),
-                    "--output-dir",
-                    str(gibbs_diag_dir),
-                ]
-                if dms_si06:
-                    cmd.extend(["--dms-si06", dms_si06])
-                _run(cmd, dry_run, f"gibbs_diagnostics:{ds}")
+        if not plots_only:
+            per_model_out = per_model_dir / "per_model_pca_cdrh3.npz"
+            if reuse_existing and per_model_out.exists():
+                print(f"[compute_per_model_pca:{ds}] reuse existing {per_model_out}")
             else:
-                print(f"[gibbs_diagnostics:{ds}] skip existing {marker}")
+                _run(
+                    ["uv", "run", "python", "scripts/analysis/compute_per_model_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(per_model_dir)],
+                    dry_run,
+                    f"compute_per_model_pca:{ds}",
+                )
 
-        if beam_diag_args:
-            marker = beam_diag_dir / "gibbs_pll_trajectory.png"
-            if force or not marker.exists() or dry_run or not reuse_existing:
-                cmd = [
-                    "uv",
-                    "run",
-                    "python",
-                    "scripts/analysis/gibbs_diagnostics.py",
-                    *beam_diag_args,
-                    "--dms-dataset",
-                    dms_arg,
-                    "--dms-m22",
-                    dms_m22,
-                    "--max-dms",
-                    str(max_dms),
-                    "--output-dir",
-                    str(beam_diag_dir),
-                ]
-                if dms_si06:
-                    cmd.extend(["--dms-si06", dms_si06])
-                _run(cmd, dry_run, f"beam_diagnostics:{ds}")
+            diff_out = diff_dir / "diff_pca_cdrh3.npz"
+            if reuse_existing and diff_out.exists():
+                print(f"[compute_diff_vectors_pca:{ds}] reuse existing {diff_out}")
             else:
-                print(f"[beam_diagnostics:{ds}] skip existing {marker}")
+                _run(
+                    ["uv", "run", "python", "scripts/analysis/compute_diff_vectors_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(diff_dir)],
+                    dry_run,
+                    f"compute_diff_vectors_pca:{ds}",
+                )
+
+            cka_out = cka_dir / "cka_cdrh3.csv"
+            if reuse_existing and cka_out.exists():
+                print(f"[compute_cka:{ds}] reuse existing {cka_out}")
+            else:
+                _run(
+                    ["uv", "run", "python", "scripts/analysis/compute_cka.py", *[str(p) for p in embed_npz], "--output-dir", str(cka_dir)],
+                    dry_run,
+                    f"compute_cka:{ds}",
+                )
+
+            procrustes_out = procrustes_dir / "procrustes_summary_cdrh3.csv"
+            if reuse_existing and procrustes_out.exists():
+                print(f"[compute_procrustes:{ds}] reuse existing {procrustes_out}")
+            else:
+                _run(
+                    [
+                        "uv",
+                        "run",
+                        "python",
+                        "scripts/analysis/compute_procrustes_displacement.py",
+                        *[str(p) for p in embed_npz],
+                        "--cka-dir",
+                        str(cka_dir),
+                        "--cka-threshold",
+                        str(cka_threshold),
+                        "--output-dir",
+                        str(procrustes_dir),
+                    ],
+                    dry_run,
+                    f"compute_procrustes:{ds}",
+                )
+
+            if force or not pll_out.exists() or dry_run or not reuse_existing:
+                _run(
+                    [
+                        "uv",
+                        "run",
+                        "python",
+                        "scripts/analysis/compute_pll_pca.py",
+                        *pll_variant_args,
+                        "--max-dms",
+                        str(max_dms),
+                        "--output-path",
+                        str(pll_out),
+                    ],
+                    dry_run,
+                    f"compute_pll_pca:{ds}",
+                )
+            else:
+                print(f"[compute_pll_pca:{ds}] skip existing {pll_out}")
+
+            if gibbs_diag_args:
+                marker = gibbs_diag_dir / "gibbs_pll_trajectory.png"
+                if force or not marker.exists() or dry_run or not reuse_existing:
+                    cmd = [
+                        "uv",
+                        "run",
+                        "python",
+                        "scripts/analysis/gibbs_diagnostics.py",
+                        *gibbs_diag_args,
+                        "--dms-dataset",
+                        dms_arg,
+                        "--dms-m22",
+                        dms_m22,
+                        "--max-dms",
+                        str(max_dms),
+                        "--sampler-label",
+                        "gibbs",
+                        "--output-dir",
+                        str(gibbs_diag_dir),
+                    ]
+                    if dms_si06:
+                        cmd.extend(["--dms-si06", dms_si06])
+                    _run(cmd, dry_run, f"gibbs_diagnostics:{ds}")
+                else:
+                    print(f"[gibbs_diagnostics:{ds}] skip existing {marker}")
+
+            if beam_diag_args:
+                marker = beam_diag_dir / "beam_pll_trajectory.png"
+                if force or not marker.exists() or dry_run or not reuse_existing:
+                    cmd = [
+                        "uv",
+                        "run",
+                        "python",
+                        "scripts/analysis/gibbs_diagnostics.py",
+                        *beam_diag_args,
+                        "--dms-dataset",
+                        dms_arg,
+                        "--dms-m22",
+                        dms_m22,
+                        "--max-dms",
+                        str(max_dms),
+                        "--sampler-label",
+                        "beam",
+                        "--output-dir",
+                        str(beam_diag_dir),
+                    ]
+                    if dms_si06:
+                        cmd.extend(["--dms-si06", dms_si06])
+                    _run(cmd, dry_run, f"beam_diagnostics:{ds}")
+                else:
+                    print(f"[beam_diagnostics:{ds}] skip existing {marker}")
 
         def _plot_enabled(name: str) -> bool:
             p = plots_cfg.get(name, {}) or {}
@@ -665,20 +679,23 @@ def main() -> int:
             )
 
         if _plot_enabled("pll_pca"):
-            _run(
-                [
-                    "uv",
-                    "run",
-                    "python",
-                    "scripts/analysis/plot_pll_pca.py",
-                    "--input",
-                    str(pll_out),
-                    "--output-dir",
-                    str(plots_root / "pll_pca"),
-                ],
-                dry_run,
-                f"plot_pll_pca:{ds}",
-            )
+            if not pll_out.exists() and not dry_run:
+                print(f"[plot_pll_pca:{ds}] skip missing input {pll_out}")
+            else:
+                _run(
+                    [
+                        "uv",
+                        "run",
+                        "python",
+                        "scripts/analysis/plot_pll_pca.py",
+                        "--input",
+                        str(pll_out),
+                        "--output-dir",
+                        str(plots_root / "pll_pca"),
+                    ],
+                    dry_run,
+                    f"plot_pll_pca:{ds}",
+                )
 
         if _plot_enabled("pll_vs_enrichment_overlays"):
             overlay_plot_cfg = plots_cfg.get("pll_vs_enrichment_overlays", {}) or {}
@@ -713,6 +730,11 @@ def main() -> int:
 
     # 4) OAS UMAP plots.
     if oas_enabled and oas_npz_paths:
+        oas_npz_paths = [p for p in oas_npz_paths if dry_run or p.exists()]
+        if not oas_npz_paths:
+            print("[plot_oas_umap] skip: no existing OAS embedding artifacts found")
+            print("[done] config-driven analysis completed")
+            return 0
         modes = list(oas_plot_cfg.get("color_modes", []) or [])
         if not modes:
             modes = ["germline_family", "j_gene", "vgene_within_family", "shm_within_family", "cdr3_length"]

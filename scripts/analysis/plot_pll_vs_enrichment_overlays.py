@@ -20,10 +20,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from omegaconf import OmegaConf
 from scipy.stats import pearsonr, spearmanr
 from transformers import AutoTokenizer
 
-from protein_design.constants import C05_CDRH3
+from protein_design.constants import C05_CDRH3, WT_M22_BINDING_ENRICHMENT, WILD_TYPE
+from protein_design.dpo.data_processing import ensure_delta_m22_binding_enrichment
+from protein_design.dpo.splitting import (
+    build_or_load_cluster_split_membership,
+    split_membership_keys,
+)
 
 from gibbs_diagnostics import (
     DMS_DATASETS,
@@ -136,6 +142,42 @@ def parse_args() -> argparse.Namespace:
         default=4000,
         help="Per source cap before PLL inference (for very large CSVs).",
     )
+    p.add_argument(
+        "--split-mode",
+        choices=("full", "train_dpo", "val_dpo", "test_dpo"),
+        default="full",
+        help="Subset DMS background to one DPO cluster split partition.",
+    )
+    p.add_argument(
+        "--dpo-split-config",
+        type=Path,
+        default=Path("conf/data/dpo/default.yaml"),
+        help="DPO config used to read split fractions and clustering knobs.",
+    )
+    p.add_argument("--split-seed", type=int, default=42)
+    p.add_argument(
+        "--split-cache-dir",
+        type=Path,
+        default=None,
+        help="Cache root for split membership CSVs. Defaults to <output-dir>/split_cache.",
+    )
+    p.add_argument(
+        "--wt-seq",
+        default=WILD_TYPE,
+        help="WT CDR-H3 sequence used for dedicated WT marker/PLL scoring.",
+    )
+    p.add_argument(
+        "--wt-m22-enrichment",
+        type=float,
+        default=float(WT_M22_BINDING_ENRICHMENT),
+        help="WT M22 enrichment value used for WT marker on M22 plots.",
+    )
+    p.add_argument(
+        "--wt-si06-enrichment",
+        type=float,
+        default=None,
+        help="Optional WT SI06 enrichment value used for WT marker on SI06 plots.",
+    )
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -163,9 +205,21 @@ def _build_dataset_map(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:
 def load_dms_full(paths: Dict[str, str]) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     if "m22" in paths and paths["m22"]:
-        frames.append(pd.read_csv(paths["m22"])[["aa", "M22_binding_enrichment_adj"]])
+        m22_df = pd.read_csv(paths["m22"])
+        if "aa" not in m22_df.columns or "M22_binding_enrichment_adj" not in m22_df.columns:
+            raise ValueError(
+                f"M22 dataset at {paths['m22']} must contain columns 'aa' and 'M22_binding_enrichment_adj'."
+            )
+        frames.append(m22_df)
     if "si06" in paths and paths["si06"]:
-        frames.append(pd.read_csv(paths["si06"])[["aa", "SI06_binding_enrichment_adj"]])
+        si06_df = pd.read_csv(paths["si06"])
+        required = {"aa", "SI06_binding_enrichment_adj"}
+        missing = required.difference(si06_df.columns)
+        if missing:
+            raise ValueError(
+                f"SI06 dataset at {paths['si06']} missing required columns: {sorted(missing)}"
+            )
+        frames.append(si06_df[["aa", "SI06_binding_enrichment_adj"]])
     if not frames:
         return pd.DataFrame(columns=["aa", "M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"])
     merged = frames[0]
@@ -175,8 +229,65 @@ def load_dms_full(paths: Dict[str, str]) -> pd.DataFrame:
         if col not in merged.columns:
             merged[col] = np.nan
     merged = merged[merged["aa"].astype(str).str.len() == len(C05_CDRH3)].copy()
-    merged = merged.drop_duplicates(subset=["aa"], keep="first").reset_index(drop=True)
+    merged["aa"] = merged["aa"].astype(str).str.strip()
+    merged = merged[merged["aa"] != ""].reset_index(drop=True)
     return merged
+
+
+def _load_dpo_split_params(config_path: Path) -> dict[str, float | int]:
+    if not config_path.exists():
+        raise FileNotFoundError(f"DPO split config not found: {config_path}")
+    cfg = OmegaConf.load(config_path)
+    if "data" not in cfg:
+        raise ValueError(f"Expected 'data' section in DPO split config: {config_path}")
+    split_cfg = cfg.data.get("split") if "split" in cfg.data else None
+    return {
+        "train_frac": float(cfg.data.get("train_frac", 0.8)),
+        "val_frac": float(cfg.data.get("val_frac", 0.1)),
+        "test_frac": float(cfg.data.get("test_frac", 0.1)),
+        "stratify_bins": int(getattr(split_cfg, "stratify_bins", 10)),
+        "hamming_distance": int(getattr(split_cfg, "hamming_distance", 1)),
+    }
+
+
+def _filter_split_like_dpo(
+    *,
+    dataset_name: str,
+    dataset_m22_path: Path,
+    df: pd.DataFrame,
+    split_name: str,
+    split_params: dict[str, float | int],
+    split_seed: int,
+    cache_root: Path,
+) -> pd.DataFrame:
+    required = {"aa", "mut", "num_mut", "M22_binding_enrichment_adj"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(
+            f"{dataset_name} must contain {sorted(required)} for DPO-style split. Missing: {sorted(missing)}"
+        )
+
+    base_df = ensure_delta_m22_binding_enrichment(df.copy())
+    cache_dir = cache_root / dataset_name.lower()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    membership = build_or_load_cluster_split_membership(
+        base_df=base_df,
+        base_csv_path=dataset_m22_path,
+        processed_dir=cache_dir,
+        train_frac=float(split_params["train_frac"]),
+        val_frac=float(split_params["val_frac"]),
+        test_frac=float(split_params["test_frac"]),
+        seed=int(split_seed),
+        force_rebuild=False,
+        positive_threshold=0.0,
+        stratify_bins=int(split_params["stratify_bins"]),
+        hamming_distance=int(split_params["hamming_distance"]),
+    )
+    split_keys = set(
+        membership.loc[membership["split"] == split_name, "split_key"].astype(str).tolist()
+    )
+    row_keys = split_membership_keys(base_df).astype(str)
+    return base_df.loc[row_keys.isin(split_keys)].reset_index(drop=True)
 
 
 def load_sampler_cdrh3(path: Path, max_n: int) -> List[str]:
@@ -213,6 +324,9 @@ def make_plot(
     fitness_label: str,
     dms_df: pd.DataFrame,
     sampler_rows: List[dict],
+    wt_pll: float,
+    wt_seq: str,
+    wt_fitness: float,
 ) -> None:
     valid = dms_df[fitness_col].notna() & dms_df["pll"].notna()
     x = dms_df.loc[valid, "pll"].to_numpy(dtype=np.float32)
@@ -250,6 +364,38 @@ def make_plot(
             label=f"{row['label']} ({len(matched)}/{total} matched)",
         )
         legend_rows.append(f"{row['label']}: {len(matched)}/{total} matched")
+
+    if np.isfinite(wt_pll) and np.isfinite(wt_fitness):
+        ax.scatter(
+            [wt_pll],
+            [wt_fitness],
+            s=280,
+            marker="*",
+            c="#e31a1c",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=6,
+            label=f"WT ({wt_seq})",
+        )
+        ax.annotate(
+            "WT",
+            (wt_pll, wt_fitness),
+            textcoords="offset points",
+            xytext=(9, 8),
+            color="#a50000",
+            fontsize=9,
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.9, edgecolor="none"),
+        )
+    elif np.isfinite(wt_pll):
+        ax.axvline(
+            wt_pll,
+            color="#e31a1c",
+            linestyle="--",
+            linewidth=1.4,
+            zorder=2.5,
+            label="WT PLL",
+        )
 
     text = (
         f"DMS Pearson r = {rp:.3f} (p={pp:.1e})\n"
@@ -314,6 +460,27 @@ def main() -> int:
     include = set(args.include_samplers)
     dataset_map = _build_dataset_map(args)
     overlay_lookup = _overlay_lookup(args)
+    wt_seq = str(args.wt_seq).strip() or C05_CDRH3
+    wt_fitness_by_col = {
+        "M22_binding_enrichment_adj": float(args.wt_m22_enrichment),
+        "SI06_binding_enrichment_adj": float(args.wt_si06_enrichment)
+        if args.wt_si06_enrichment is not None
+        else float("nan"),
+    }
+    split_cache_root = (
+        args.split_cache_dir
+        if args.split_cache_dir is not None
+        else (args.output_dir / "split_cache")
+    )
+    split_params: dict[str, float | int] | None = None
+    split_name = ""
+    if args.split_mode != "full":
+        repo_root = Path(__file__).resolve().parents[2]
+        dpo_cfg_path = args.dpo_split_config
+        if not dpo_cfg_path.is_absolute():
+            dpo_cfg_path = repo_root / dpo_cfg_path
+        split_params = _load_dpo_split_params(dpo_cfg_path)
+        split_name = args.split_mode.replace("_dpo", "")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
@@ -321,9 +488,31 @@ def main() -> int:
 
     dms_by_dataset: Dict[str, pd.DataFrame] = {}
     for ds in args.datasets:
-        df = load_dms_full(dataset_map[ds])
+        ds_paths = dataset_map[ds]
+        df_full = load_dms_full(ds_paths)
+        df = df_full
+        if args.split_mode != "full":
+            assert split_params is not None
+            m22_path = Path(ds_paths["m22"])
+            df = _filter_split_like_dpo(
+                dataset_name=ds,
+                dataset_m22_path=m22_path,
+                df=df_full,
+                split_name=split_name,
+                split_params=split_params,
+                split_seed=int(args.split_seed),
+                cache_root=split_cache_root,
+            )
+        # Keep a single background point per CDR-H3 for plotting and regression.
+        df = df.drop_duplicates(subset=["aa"], keep="first").reset_index(drop=True)
         dms_by_dataset[ds] = df
-        log.info("DMS %s: %d unique CDR-H3 rows", ds, len(df))
+        log.info(
+            "DMS %s: %d rows after split_mode=%s (%d before split/filter)",
+            ds,
+            len(df),
+            args.split_mode,
+            len(df_full),
+        )
 
     for variant, checkpoint in args.variant:
         log.info("=== %s (checkpoint=%r) ===", variant, checkpoint)
@@ -352,6 +541,7 @@ def main() -> int:
                     + sampler_cdr["gibbs_fit"]
                     + sampler_cdr["beam_dist"]
                     + sampler_cdr["beam_fit"]
+                    + [wt_seq]
                 )
             )
             if not union_sequences:
@@ -360,6 +550,7 @@ def main() -> int:
 
             pll_map = compute_pll_map(model, tokenizer, device, union_sequences, args.batch_size)
             dms_df["pll"] = dms_df["aa"].map(pll_map)
+            wt_pll = float(pll_map.get(wt_seq, float("nan")))
 
             lookup_cols = ["aa", "M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"]
             dms_lookup = dms_df[lookup_cols].rename(columns={"aa": "cdrh3"})
@@ -394,7 +585,18 @@ def main() -> int:
                     log.info("[%s/%s] skipping %s (no assay values)", variant, ds, short)
                     continue
                 out_path = out_ds_dir / f"pll_vs_enrichment_{variant}_{ds_label}_{short}.png"
-                make_plot(out_path, variant, ds_label, fitness_col, fitness_label, dms_df, sampler_rows)
+                make_plot(
+                    out_path,
+                    variant,
+                    ds_label,
+                    fitness_col,
+                    fitness_label,
+                    dms_df,
+                    sampler_rows,
+                    wt_pll,
+                    wt_seq,
+                    float(wt_fitness_by_col.get(fitness_col, float("nan"))),
+                )
 
         del model
         if device.type == "cuda":

@@ -3,6 +3,7 @@ version: 1
 run:
   force: false
   reuse_existing_artifacts: true
+  plots_only: false
   dry_run: false
   cka_threshold: 0.5
   max_dms: 500
@@ -40,7 +41,7 @@ models:
     unlikelihood:
       display_name: "Unlikelihood"
       checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/unlikelihood-experiment"
-  selected_models: [vanilla, evotuned, c05_finetuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
+  selected_models: [vanilla, evotuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
 
 datasets:
   catalog:
@@ -97,10 +98,10 @@ sampling:
       generate: true
       output_csv_path: "outputs/beam_search/distribution/{model_id}.csv"
       params:
-        beam_size: 15
-        n_steps: 2
+        beam_size: 40
+        n_steps: 4
         snapshot_every: 1
-        temperature: 1.0
+        temperature: 1.5
         seed: 42
         start_mode: dms
         wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
@@ -114,10 +115,10 @@ sampling:
       generate: true
       output_csv_path: "outputs/beam_search/fitness/{model_id}.csv"
       params:
-        beam_size: 15
-        n_steps: 2
+        beam_size: 40
+        n_steps: 4
         snapshot_every: 1
-        temperature: 1.0
+        temperature: 1.5
         seed: 42
         start_mode: wt
         wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
@@ -125,11 +126,11 @@ sampling:
 
 plots:
   per_model_pca:
-    enabled: true
+    enabled: false
     datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   gibbs_per_model_pca:
-    enabled: true
+    enabled: false
     datasets: [ed2, ed5, ed811]
     overlay_sampling: [gibbs_dist, gibbs_fit]
   beam_per_model_pca:
@@ -137,7 +138,7 @@ plots:
     datasets: [ed2, ed5, ed811]
     overlay_sampling: [beam_dist, beam_fit]
   diff_vectors_pca:
-    enabled: true
+    enabled: false
     datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   oas_umap:
@@ -158,4 +159,7 @@ plots:
     overlay_sampling: [gibbs_dist, gibbs_fit, beam_dist, beam_fit]
     params:
       batch_size: 32
-      max_overlay: 4000
+      max_overlay: 12000
+      split_mode: train_dpo
+      dpo_split_config: conf/data/dpo/default.yaml
+      split_seed: 42
