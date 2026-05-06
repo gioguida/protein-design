@@ -17,29 +17,29 @@ models:
       checkpoint_path: ""
     evotuned:
       display_name: "Evo-tuned"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/oas_dedup___esm2_t12_35M_UR50D__lr2e-05__ep3_48h_20260414_101859"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_dedup___esm2_t12_35M_UR50D__lr2e-05__ep3_48h_20260414_101859"
     c05_finetuned:
       display_name: "C05 finetuned"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/c05_c05_cdrh3_blosum25__evo_seed_20260424_191020"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/c05_c05_cdrh3_blosum25__evo_seed_20260424_191020"
     dpo_from_evo:
       display_name: "DPO from evo"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo__evo_base_20260425_190014"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__evo_base_20260425_190014"
     dpo_from_c05:
       display_name: "DPO from C05"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo__c05_ft_20260425_190143"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__c05_ft_20260425_190143"
     dpo_from_c05_ep6:
       display_name: "DPO from C05 ep6"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo__c05_ft_20260425_190143_ep6"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__c05_ft_20260425_190143_ep6"
     giovanni_dpo:
       display_name: "Giovanni DPO"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/giovanni-dpo"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/giovanni-dpo"
     giovanni_dpo_less:
       display_name: "Giovanni DPO (less)"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/giovanni-dpo-trained-less"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/giovanni-dpo-trained-less"
     unlikelihood:
       display_name: "Unlikelihood"
-      checkpoint_path: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/unlikelihood-experiment"
-  selected_models: [vanilla, evotuned, c05_finetuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo, giovanni_dpo_less, unlikelihood]
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/unlikelihood-experiment"
+  selected_models: [vanilla, evotuned, c05_finetuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
 
 datasets:
   catalog:
@@ -97,7 +97,7 @@ sampling:
       output_csv_path: "outputs/beam_search/distribution/{model_id}.csv"
       params:
         beam_size: 15
-        n_steps: 4
+        n_steps: 2
         snapshot_every: 1
         temperature: 1.0
         seed: 42
@@ -114,7 +114,7 @@ sampling:
       output_csv_path: "outputs/beam_search/fitness/{model_id}.csv"
       params:
         beam_size: 15
-        n_steps: 4
+        n_steps: 2
         snapshot_every: 1
         temperature: 1.0
         seed: 42
@@ -140,7 +140,7 @@ plots:
     datasets: [ed2]
     overlay_sampling: []
   oas_umap:
-    enabled: true
+    enabled: false
     datasets: []
     overlay_sampling: []
     color_modes: [germline_family, j_gene, vgene_within_family, shm_within_family, cdr3_length]
