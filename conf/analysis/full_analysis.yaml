@@ -2,6 +2,7 @@ version: 1
 
 run:
   force: false
+  reuse_existing_artifacts: true
   dry_run: false
   cka_threshold: 0.5
   max_dms: 500
@@ -125,19 +126,19 @@ sampling:
 plots:
   per_model_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   gibbs_per_model_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: [gibbs_dist, gibbs_fit]
   beam_per_model_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: [beam_dist, beam_fit]
   diff_vectors_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   oas_umap:
     enabled: false
@@ -149,7 +150,7 @@ plots:
       shm_within_family: IGHV3
   pll_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   pll_vs_enrichment_overlays:
     enabled: true

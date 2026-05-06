@@ -245,6 +245,7 @@ def main() -> int:
     run_cfg = cfg.get("run", {})
     dry_run = bool(run_cfg.get("dry_run", False)) or bool(args.dry_run)
     force = bool(run_cfg.get("force", False))
+    reuse_existing = bool(run_cfg.get("reuse_existing_artifacts", False))
     max_dms = int(run_cfg.get("max_dms", 500))
     max_oas = int(run_cfg.get("max_oas", 2000))
     max_gibbs = int(run_cfg.get("max_gibbs", 200))
@@ -272,6 +273,9 @@ def main() -> int:
                     fail(f"existing_csv_path for strategy={sid}, model={model.model_id} does not exist: {csv_path}")
                 continue
             _mkdir(csv_path.parent, dry_run, f"sample:{sid}:{model.model_id}")
+            if reuse_existing and csv_path.exists():
+                print(f"[sample:{sid}:{model.model_id}] reuse existing {csv_path}")
+                continue
             script = "scripts/gibbs_sampling.py" if stype == "gibbs" else "scripts/stochastic_beam_search.py"
             cmd = [
                 "uv",
@@ -322,7 +326,10 @@ def main() -> int:
                 cmd.extend(["--checkpoint-path", model.checkpoint_path])
             if not force:
                 cmd.append("--skip-if-current")
-            _run(cmd, dry_run, f"extract_oas:{model.model_id}")
+            if reuse_existing and oas_npz.exists():
+                print(f"[extract_oas:{model.model_id}] reuse existing {oas_npz}")
+            else:
+                _run(cmd, dry_run, f"extract_oas:{model.model_id}")
 
     # 3) Dataset-driven stages.
     required_datasets: list[str] = []
@@ -423,7 +430,10 @@ def main() -> int:
                 cmd.extend(["--checkpoint-path", ckpt])
             if not force:
                 cmd.append("--skip-if-current")
-            _run(cmd, dry_run, f"extract_embeddings:{ds}:{model.model_id}")
+            if reuse_existing and npz_path.exists():
+                print(f"[extract_embeddings:{ds}:{model.model_id}] reuse existing {npz_path}")
+            else:
+                _run(cmd, dry_run, f"extract_embeddings:{ds}:{model.model_id}")
 
             if beam_paths:
                 beam_cmd = [
@@ -451,43 +461,65 @@ def main() -> int:
                     beam_cmd.extend(["--checkpoint-path", ckpt])
                 if not force:
                     beam_cmd.append("--skip-if-current")
-                _run(beam_cmd, dry_run, f"extract_beam_embeddings:{ds}:{model.model_id}")
+                if reuse_existing and beam_npz_path.exists():
+                    print(f"[extract_beam_embeddings:{ds}:{model.model_id}] reuse existing {beam_npz_path}")
+                else:
+                    _run(beam_cmd, dry_run, f"extract_beam_embeddings:{ds}:{model.model_id}")
 
-        _run(
-            ["uv", "run", "python", "scripts/analysis/compute_per_model_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(per_model_dir)],
-            dry_run,
-            f"compute_per_model_pca:{ds}",
-        )
-        _run(
-            ["uv", "run", "python", "scripts/analysis/compute_diff_vectors_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(diff_dir)],
-            dry_run,
-            f"compute_diff_vectors_pca:{ds}",
-        )
-        _run(
-            ["uv", "run", "python", "scripts/analysis/compute_cka.py", *[str(p) for p in embed_npz], "--output-dir", str(cka_dir)],
-            dry_run,
-            f"compute_cka:{ds}",
-        )
-        _run(
-            [
-                "uv",
-                "run",
-                "python",
-                "scripts/analysis/compute_procrustes_displacement.py",
-                *[str(p) for p in embed_npz],
-                "--cka-dir",
-                str(cka_dir),
-                "--cka-threshold",
-                str(cka_threshold),
-                "--output-dir",
-                str(procrustes_dir),
-            ],
-            dry_run,
-            f"compute_procrustes:{ds}",
-        )
+        per_model_out = per_model_dir / "per_model_pca_cdrh3.npz"
+        if reuse_existing and per_model_out.exists():
+            print(f"[compute_per_model_pca:{ds}] reuse existing {per_model_out}")
+        else:
+            _run(
+                ["uv", "run", "python", "scripts/analysis/compute_per_model_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(per_model_dir)],
+                dry_run,
+                f"compute_per_model_pca:{ds}",
+            )
+
+        diff_out = diff_dir / "diff_pca_cdrh3.npz"
+        if reuse_existing and diff_out.exists():
+            print(f"[compute_diff_vectors_pca:{ds}] reuse existing {diff_out}")
+        else:
+            _run(
+                ["uv", "run", "python", "scripts/analysis/compute_diff_vectors_pca.py", *[str(p) for p in embed_npz], "--output-dir", str(diff_dir)],
+                dry_run,
+                f"compute_diff_vectors_pca:{ds}",
+            )
+
+        cka_out = cka_dir / "cka_cdrh3.csv"
+        if reuse_existing and cka_out.exists():
+            print(f"[compute_cka:{ds}] reuse existing {cka_out}")
+        else:
+            _run(
+                ["uv", "run", "python", "scripts/analysis/compute_cka.py", *[str(p) for p in embed_npz], "--output-dir", str(cka_dir)],
+                dry_run,
+                f"compute_cka:{ds}",
+            )
+
+        procrustes_out = procrustes_dir / "procrustes_summary_cdrh3.csv"
+        if reuse_existing and procrustes_out.exists():
+            print(f"[compute_procrustes:{ds}] reuse existing {procrustes_out}")
+        else:
+            _run(
+                [
+                    "uv",
+                    "run",
+                    "python",
+                    "scripts/analysis/compute_procrustes_displacement.py",
+                    *[str(p) for p in embed_npz],
+                    "--cka-dir",
+                    str(cka_dir),
+                    "--cka-threshold",
+                    str(cka_threshold),
+                    "--output-dir",
+                    str(procrustes_dir),
+                ],
+                dry_run,
+                f"compute_procrustes:{ds}",
+            )
 
         pll_out = pll_dir / "pll_pca.npz"
-        if force or not pll_out.exists() or dry_run:
+        if force or not pll_out.exists() or dry_run or not reuse_existing:
             _run(
                 [
                     "uv",
@@ -508,7 +540,7 @@ def main() -> int:
 
         if gibbs_diag_args:
             marker = gibbs_diag_dir / "gibbs_pll_trajectory.png"
-            if force or not marker.exists() or dry_run:
+            if force or not marker.exists() or dry_run or not reuse_existing:
                 cmd = [
                     "uv",
                     "run",
@@ -532,7 +564,7 @@ def main() -> int:
 
         if beam_diag_args:
             marker = beam_diag_dir / "gibbs_pll_trajectory.png"
-            if force or not marker.exists() or dry_run:
+            if force or not marker.exists() or dry_run or not reuse_existing:
                 cmd = [
                     "uv",
                     "run",
