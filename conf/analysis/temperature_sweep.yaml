@@ -7,12 +7,12 @@
 #     --config conf/analysis/temperature_sweep.yaml
 
 sweep:
-  temperatures: [0.5, 0.8, 1.0, 1.5, 2.0]
-  beam_size: 5
+  temperatures: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5]
+  beam_size: 40
   n_steps: 5          # max 5 mutations
   snapshot_every: 1
-  start_mode: "wt"    # wt | dms | top_dms
-  n_chains: 10        # maps to beam_size for wt/dms; top-k seeds for top_dms
+  start_mode: "top_dms"    # wt | dms | top_dms
+  n_chains: 40        # maps to beam_size for wt/dms; top-k seeds for top_dms
 
 models:
   - name: "dpo_from_evo"
@@ -37,7 +37,7 @@ plots:
   beam_pll_vs_dms_histogram: true
   beam_diversity_diagnostics: true
   beam_pll_vs_nmut: true
-  beam_aa_heatmap: false
+  beam_aa_heatmap: true
 
 # Summary comparison plots across temperatures.
 summary:
@@ -46,5 +46,5 @@ summary:
   top_k_for_pll: 50                 # top sequences used for mean PLL in tradeoff plot
 
 output:
-  base_dir: "outputs/temperature_sweep"
-  plots_dir: "reports/temperature_sweep"
+  base_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/temperature_sweep/outputs"
+  plots_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/temperature_sweep/plots"
