@@ -130,7 +130,7 @@ def main() -> int:
     # Subplot 2
     ax1 = axes[1]
     x_pos = np.arange(P)
-    bars = ax1.bar(x_pos, entropies, color="tab:teal", edgecolor="white", linewidth=0.4)
+    bars = ax1.bar(x_pos, entropies, color="tab:cyan", edgecolor="white", linewidth=0.4)
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(
         [f"{i + 1}\n{a}" for i, a in enumerate(args.wt_cdrh3)],
