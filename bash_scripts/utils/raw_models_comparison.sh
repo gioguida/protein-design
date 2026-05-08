@@ -30,20 +30,19 @@ RUN_DATASET_PPL=1
 RUN_SPEARMAN=1
 RUN_PLOTS=1
 
-# Dataset selection mode
-# 1 -> use DPO-style cluster split and keep only validation rows
-# 0 -> use full raw datasets
-USE_DPO_VAL_SPLIT=1
-DPO_SPLIT_CONFIG="conf/data/dpo/default.yaml"
-SPLIT_SEED=42
+# Dataset selection mode: use shared DMS split resolver.
+DMS_CONFIG="conf/data/dms/default.yaml"
+SPLIT_NAME="test"
+ED2_DATASET_KEY="ed2_m22"
+ED5_DATASET_KEY="ed5_m22"
+ED811_DATASET_KEY="ed811_m22"
+FORCE_SPLIT_REBUILD=0
+MAX_DATASET_ROWS=5000
+SUBSAMPLE_SEED=42
+SUBSAMPLE_STRATIFY_BINS=10
 
 # Runtime knobs
 BATCH_SIZE=64
-
-# Cluster scoring datasets (as requested)
-ED2_PATH="/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-ED5_PATH="/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_M22_binding_enrichment.csv"
-ED811_PATH="/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv"
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="/cluster/project/infk/krause/${USER}/protein-design/reports/raw_models_comparison/${STAMP}"
@@ -51,9 +50,15 @@ mkdir -p "${OUT_DIR}"
 
 ARGS=(
   --output-dir "${OUT_DIR}"
-  --ed2-path "${ED2_PATH}"
-  --ed5-path "${ED5_PATH}"
-  --ed811-path "${ED811_PATH}"
+  --split-mode "dms_split"
+  --dms-config "${DMS_CONFIG}"
+  --split-name "${SPLIT_NAME}"
+  --ed2-dataset-key "${ED2_DATASET_KEY}"
+  --ed5-dataset-key "${ED5_DATASET_KEY}"
+  --ed811-dataset-key "${ED811_DATASET_KEY}"
+  --max-dataset-rows "${MAX_DATASET_ROWS}"
+  --subsample-seed "${SUBSAMPLE_SEED}"
+  --subsample-stratify-bins "${SUBSAMPLE_STRATIFY_BINS}"
   --batch-size "${BATCH_SIZE}"
 )
 
@@ -71,13 +76,10 @@ if [[ "${RUN_DATASET_PPL}" == "1" ]]; then ARGS+=(--run-dataset-ppl); fi
 if [[ "${RUN_SPEARMAN}" == "1" ]]; then ARGS+=(--run-spearman); fi
 if [[ "${RUN_PLOTS}" == "1" ]]; then ARGS+=(--run-plots); fi
 
-if [[ "${USE_DPO_VAL_SPLIT}" == "1" ]]; then
-  ARGS+=(--split-mode "val_dpo")
-  ARGS+=(--dpo-split-config "${DPO_SPLIT_CONFIG}")
-  ARGS+=(--split-seed "${SPLIT_SEED}")
-else
-  ARGS+=(--split-mode "full")
-fi
+if [[ "${FORCE_SPLIT_REBUILD}" == "1" ]]; then ARGS+=(--force-split-rebuild); fi
 
 echo "[run] output dir: ${OUT_DIR}"
+echo "[run] DMS config: ${DMS_CONFIG}"
+echo "[run] DMS split: ${SPLIT_NAME}"
+echo "[run] max dataset rows: ${MAX_DATASET_ROWS}"
 uv run python scripts/analysis/raw_models_comparison.py "${ARGS[@]}"

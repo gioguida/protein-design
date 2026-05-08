@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,13 +22,14 @@ import pandas as pd
 import torch
 from omegaconf import OmegaConf
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 from protein_design.config import build_model_config
 from protein_design.constants import C05_CDRH3
-from protein_design.dpo.data_processing import ensure_delta_m22_binding_enrichment
-from protein_design.dpo.splitting import (
-    build_or_load_cluster_split_membership,
-    split_membership_keys,
-)
+from protein_design.dms_splitting import dataset_spec, resolve_dataset_split
 from protein_design.eval import corpus_perplexity, run_scoring_evaluation
 from protein_design.model import ESM2Model
 
@@ -39,6 +41,11 @@ MODEL_CONF_PATHS: dict[str, str] = {
 }
 
 ENRICHMENT_COL = "M22_binding_enrichment_adj"
+DATASET_TO_DMS_KEY = {
+    "ED2": "ed2_m22",
+    "ED5": "ed5_m22",
+    "ED811": "ed811_m22",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,19 +53,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--include-model", action="append", required=True)
     parser.add_argument("--include-dataset", action="append", required=True)
-    parser.add_argument("--ed2-path", required=True, type=Path)
-    parser.add_argument("--ed5-path", required=True, type=Path)
-    parser.add_argument("--ed811-path", required=True, type=Path)
+    parser.add_argument("--ed2-path", type=Path, default=None)
+    parser.add_argument("--ed5-path", type=Path, default=None)
+    parser.add_argument("--ed811-path", type=Path, default=None)
+    parser.add_argument("--dms-config", type=Path, default=Path("conf/data/dms/default.yaml"))
+    parser.add_argument("--split-name", choices=("train", "val", "test"), default="test")
+    parser.add_argument("--ed2-dataset-key", default="ed2_m22")
+    parser.add_argument("--ed5-dataset-key", default="ed5_m22")
+    parser.add_argument("--ed811-dataset-key", default="ed811_m22")
+    parser.add_argument(
+        "--max-dataset-rows",
+        type=int,
+        default=None,
+        help="Optional cap per resolved dataset split. Sampling is deterministic and stratified.",
+    )
+    parser.add_argument("--subsample-seed", type=int, default=42)
+    parser.add_argument("--subsample-stratify-bins", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument(
         "--split-mode",
-        choices=("full", "val_dpo"),
-        default="full",
-        help="full: use all rows. val_dpo: use only validation split from DPO cluster split.",
+        choices=("dms_split", "explicit_csv"),
+        default="dms_split",
+        help="dms_split: resolve shared DMS split CSVs. explicit_csv: use --ed*-path inputs.",
     )
-    parser.add_argument("--dpo-split-config", type=Path, default=Path("conf/data/dpo/default.yaml"))
-    parser.add_argument("--split-seed", type=int, default=42)
-    parser.add_argument("--split-cache-dir", type=Path, default=None)
+    parser.add_argument("--force-split-rebuild", action="store_true")
     parser.add_argument("--run-c05-ppl", action="store_true")
     parser.add_argument("--run-dataset-ppl", action="store_true")
     parser.add_argument("--run-spearman", action="store_true")
@@ -78,75 +96,119 @@ def _load_model_config(repo_root: Path, model_key: str):
     return cfg
 
 
-def _load_dataset(path: Path) -> pd.DataFrame:
+def _load_dataset(path: Path, enrichment_col: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
     df = pd.read_csv(path)
-    required = {"aa", ENRICHMENT_COL}
+    required = {"aa", enrichment_col}
     missing = required.difference(df.columns)
     if missing:
         raise ValueError(f"Dataset {path} missing required columns: {sorted(missing)}")
     out = df.copy()
     out["aa"] = out["aa"].astype(str).str.strip()
     out = out[out["aa"] != ""].copy()
-    out[ENRICHMENT_COL] = pd.to_numeric(out[ENRICHMENT_COL], errors="coerce")
+    out[ENRICHMENT_COL] = pd.to_numeric(out[enrichment_col], errors="coerce")
     out = out.reset_index(drop=True)
     return out
 
 
-def _load_dpo_split_params(config_path: Path) -> dict[str, float | int]:
-    if not config_path.exists():
-        raise FileNotFoundError(f"DPO split config not found: {config_path}")
-    cfg = OmegaConf.load(config_path)
-    if "data" not in cfg:
-        raise ValueError(f"Expected 'data' section in DPO split config: {config_path}")
-    split_cfg = cfg.data.get("split") if "split" in cfg.data else None
-    return {
-        "train_frac": float(cfg.data.get("train_frac", 0.8)),
-        "val_frac": float(cfg.data.get("val_frac", 0.1)),
-        "test_frac": float(cfg.data.get("test_frac", 0.1)),
-        "stratify_bins": int(getattr(split_cfg, "stratify_bins", 10)),
-        "hamming_distance": int(getattr(split_cfg, "hamming_distance", 1)),
-    }
+def _metric_strata(values: pd.Series, bins: int) -> pd.Series:
+    clean = pd.to_numeric(values, errors="coerce")
+    fill_value = clean.median()
+    if pd.isna(fill_value):
+        fill_value = 0.0
+    clean = clean.fillna(fill_value)
+    bins = max(1, min(int(bins), len(clean)))
+    if bins == 1:
+        return pd.Series(np.zeros(len(clean), dtype=np.int64), index=clean.index)
+    try:
+        return pd.qcut(clean, q=bins, labels=False, duplicates="drop").fillna(0).astype(int)
+    except ValueError:
+        return pd.Series(np.zeros(len(clean), dtype=np.int64), index=clean.index)
 
 
-def _filter_val_split_like_dpo(
+def _subsample_dataset(
+    df: pd.DataFrame,
+    *,
+    max_rows: int | None,
+    seed: int,
+    stratify_bins: int,
+) -> pd.DataFrame:
+    if max_rows is None or max_rows <= 0 or len(df) <= max_rows:
+        return df.reset_index(drop=True)
+
+    rng = np.random.default_rng(int(seed))
+    working = df.copy()
+    working["_metric_bin"] = _metric_strata(working[ENRICHMENT_COL], int(stratify_bins))
+    group_cols = ["_metric_bin"]
+    if "num_mut" in working.columns:
+        group_cols = ["num_mut", "_metric_bin"]
+
+    grouped = working.groupby(group_cols, dropna=False, sort=True)
+    group_sizes = grouped.size()
+    raw_targets = group_sizes / len(working) * int(max_rows)
+    targets = np.floor(raw_targets).astype(int)
+    for idx in group_sizes[group_sizes > 0].index:
+        if targets.loc[idx] == 0:
+            targets.loc[idx] = 1
+
+    overflow = int(targets.sum() - int(max_rows))
+    if overflow > 0:
+        removable = (targets - 1).sort_values(ascending=False)
+        for idx, can_remove in removable.items():
+            if overflow <= 0:
+                break
+            delta = min(int(can_remove), overflow)
+            targets.loc[idx] -= delta
+            overflow -= delta
+    elif overflow < 0:
+        remaining = -overflow
+        remainders = (raw_targets - np.floor(raw_targets)).sort_values(ascending=False)
+        for idx in remainders.index:
+            if remaining <= 0:
+                break
+            capacity = int(group_sizes.loc[idx] - targets.loc[idx])
+            if capacity <= 0:
+                continue
+            targets.loc[idx] += 1
+            remaining -= 1
+
+    selected: list[int] = []
+    for group_key, group in grouped:
+        n = int(targets.loc[group_key])
+        if n <= 0:
+            continue
+        selected.extend(
+            rng.choice(group.index.to_numpy(), size=min(n, len(group)), replace=False).tolist()
+        )
+    if len(selected) > max_rows:
+        selected = rng.choice(np.array(selected), size=int(max_rows), replace=False).tolist()
+    return df.loc[selected].reset_index(drop=True)
+
+
+def _resolve_dataset_input(
     *,
     dataset_name: str,
-    dataset_path: Path,
-    df: pd.DataFrame,
-    split_params: dict[str, float | int],
-    split_seed: int,
-    cache_root: Path,
-) -> pd.DataFrame:
-    required = {"aa", "mut", "num_mut", ENRICHMENT_COL}
-    missing = required.difference(df.columns)
-    if missing:
-        raise ValueError(
-            f"{dataset_name} must contain {sorted(required)} for DPO-style split. Missing: {sorted(missing)}"
+    args: argparse.Namespace,
+    repo_root: Path,
+) -> tuple[Path, str]:
+    dms_config = args.dms_config if args.dms_config.is_absolute() else repo_root / args.dms_config
+    if args.split_mode == "dms_split":
+        key_attr = f"{dataset_name.lower()}_dataset_key"
+        dataset_key = str(getattr(args, key_attr))
+        path = resolve_dataset_split(
+            dataset_key,
+            args.split_name,
+            dms_config,
+            force=bool(args.force_split_rebuild),
         )
+        return path, dataset_spec(dataset_key, dms_config).key_metric_col
 
-    base_df = ensure_delta_m22_binding_enrichment(df.copy())
-    cache_dir = cache_root / dataset_name.lower()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    membership = build_or_load_cluster_split_membership(
-        base_df=base_df,
-        base_csv_path=dataset_path,
-        processed_dir=cache_dir,
-        train_frac=float(split_params["train_frac"]),
-        val_frac=float(split_params["val_frac"]),
-        test_frac=float(split_params["test_frac"]),
-        seed=int(split_seed),
-        force_rebuild=False,
-        positive_threshold=0.0,
-        stratify_bins=int(split_params["stratify_bins"]),
-        hamming_distance=int(split_params["hamming_distance"]),
-    )
-    val_keys = set(
-        membership.loc[membership["split"] == "val", "split_key"].astype(str).tolist()
-    )
-    row_keys = split_membership_keys(base_df).astype(str)
-    return base_df.loc[row_keys.isin(val_keys)].reset_index(drop=True)
+    path_attr = f"{dataset_name.lower()}_path"
+    path = getattr(args, path_attr)
+    if path is None:
+        raise ValueError(f"--{dataset_name.lower()}-path is required when --split-mode explicit_csv")
+    return path, ENRICHMENT_COL
 
 
 def _dataset_cdr_ppl(scores_pll: np.ndarray, sequences: list[str]) -> float:
@@ -221,43 +283,33 @@ def main() -> int:
 
     selected_models = list(dict.fromkeys(args.include_model))
     selected_datasets = list(dict.fromkeys(args.include_dataset))
-    dataset_paths = {
-        "ED2": args.ed2_path,
-        "ED5": args.ed5_path,
-        "ED811": args.ed811_path,
-    }
     for ds in selected_datasets:
-        if ds not in dataset_paths:
+        if ds not in DATASET_TO_DMS_KEY:
             raise ValueError(f"Unsupported dataset key: {ds}")
-
-    split_cache_dir = (
-        (args.split_cache_dir if args.split_cache_dir is not None else (out_dir / "split_cache"))
-    )
-    split_params: dict[str, float | int] | None = None
-    if args.split_mode == "val_dpo":
-        dpo_cfg_path = args.dpo_split_config
-        if not dpo_cfg_path.is_absolute():
-            dpo_cfg_path = repo_root / dpo_cfg_path
-        split_params = _load_dpo_split_params(dpo_cfg_path)
 
     dataset_frames: dict[str, pd.DataFrame] = {}
     dataset_row_stats: dict[str, dict[str, int]] = {}
+    dataset_paths: dict[str, Path] = {}
+    dataset_metric_cols: dict[str, str] = {}
     for ds in selected_datasets:
-        full_df = _load_dataset(dataset_paths[ds])
-        selected_df = full_df
-        if args.split_mode == "val_dpo":
-            assert split_params is not None
-            selected_df = _filter_val_split_like_dpo(
-                dataset_name=ds,
-                dataset_path=dataset_paths[ds],
-                df=full_df,
-                split_params=split_params,
-                split_seed=int(args.split_seed),
-                cache_root=split_cache_dir,
-            )
+        dataset_path, metric_col = _resolve_dataset_input(
+            dataset_name=ds,
+            args=args,
+            repo_root=repo_root,
+        )
+        selected_df = _load_dataset(dataset_path, metric_col)
+        full_rows = int(len(selected_df))
+        selected_df = _subsample_dataset(
+            selected_df,
+            max_rows=args.max_dataset_rows,
+            seed=int(args.subsample_seed),
+            stratify_bins=int(args.subsample_stratify_bins),
+        )
         dataset_frames[ds] = selected_df
+        dataset_paths[ds] = dataset_path
+        dataset_metric_cols[ds] = metric_col
         dataset_row_stats[ds] = {
-            "full_rows": int(len(full_df)),
+            "resolved_rows": full_rows,
             "selected_rows": int(len(selected_df)),
         }
 
@@ -347,9 +399,12 @@ def main() -> int:
         },
         "data_selection": {
             "split_mode": args.split_mode,
-            "dpo_split_config": str(args.dpo_split_config),
-            "split_seed": int(args.split_seed),
-            "split_cache_dir": str(split_cache_dir),
+            "dms_config": str(args.dms_config),
+            "split_name": str(args.split_name),
+            "max_dataset_rows": args.max_dataset_rows,
+            "subsample_seed": int(args.subsample_seed),
+            "subsample_stratify_bins": int(args.subsample_stratify_bins),
+            "metric_columns": dataset_metric_cols,
             "dataset_rows": dataset_row_stats,
         },
         "rows": rows,
