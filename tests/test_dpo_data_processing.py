@@ -43,14 +43,14 @@ def test_get_distance2_data_supports_new_raw_schema_and_derives_delta():
 
     d2_df, n_bind, n_non_bind = get_distance2_data(df_raw)
 
-    assert len(d2_df) == 2
+    assert len(d2_df) == 3
     assert n_bind == 22.0
     assert n_non_bind == 11.0
     assert "M22_binding_count_adj" in d2_df.columns
     assert "M22_non_binding_count_adj" in d2_df.columns
     assert "delta_M22_binding_enrichment_adj" in d2_df.columns
     deltas = [round(float(v), 6) for v in d2_df["delta_M22_binding_enrichment_adj"].tolist()]
-    assert deltas == [0.5, -0.1]
+    assert deltas == [0.5, -0.5, -0.1]
 
 
 class _DummyValConfig:

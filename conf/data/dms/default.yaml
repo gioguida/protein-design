@@ -1,0 +1,33 @@
+split:
+  enabled: true
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  seed: 42
+  output_dir: data/processed/dms_splits
+  hamming_distance: 1
+  stratify_bins: 10
+
+datasets:
+  ed2_m22:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED2_M22_binding_enrichment.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj
+  ed2_si06:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv
+    sequence_col: aa
+    key_metric_col: SI06_binding_enrichment_adj
+    split_source: ed2_m22
+  ed5_m22:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED5_M22_binding_enrichment.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj
+  ed5_si06:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_SI06_binding_enrichment.csv
+    sequence_col: aa
+    key_metric_col: SI06_binding_enrichment_adj
+    split_source: ed5_m22
+  ed811_m22:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj

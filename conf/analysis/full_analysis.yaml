@@ -44,16 +44,24 @@ models:
   selected_models: [vanilla, evotuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
 
 datasets:
+  dms_config: conf/data/dms/default.yaml
+  split_name: test
+  subsample:
+    enabled: true
+    max_rows: 5000
+    seed: 42
+    output_dir: data/processed/analysis_subsamples
+    stratify_bins: 10
   catalog:
     ed2:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+      m22_dataset: ed2_m22
+      si06_dataset: ed2_si06
     ed5:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_M22_binding_enrichment.csv"
-      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_SI06_binding_enrichment.csv"
+      m22_dataset: ed5_m22
+      si06_dataset: ed5_si06
     ed811:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv"
-      si06_csv: null
+      m22_dataset: ed811_m22
+      si06_dataset: null
   oas:
     fasta_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_dedup_rep_seq.fasta"
     meta_csv_gz_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_filtered.csv.gz"
@@ -73,9 +81,9 @@ sampling:
         temperature: 1.0
         seed: 42
         start_mode: dms
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
-        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
+        dms_m22_path: "dms_split:ed2_m22:test"
+        dms_si06_path: "dms_split:ed2_si06:test"
         max_dms_seeds: 500
         device: cuda
     gibbs_fit:
@@ -90,7 +98,7 @@ sampling:
         temperature: 1.0
         seed: 42
         start_mode: wt
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
         device: cuda
     beam_dist:
       type: beam
@@ -104,9 +112,9 @@ sampling:
         temperature: 1.5
         seed: 42
         start_mode: dms
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
-        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
+        dms_m22_path: "dms_split:ed2_m22:test"
+        dms_si06_path: "dms_split:ed2_si06:test"
         max_dms_seeds: 500
         device: cuda
     beam_fit:
@@ -121,7 +129,7 @@ sampling:
         temperature: 1.5
         seed: 42
         start_mode: wt
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
         device: cuda
 
 plots:
@@ -160,6 +168,6 @@ plots:
     params:
       batch_size: 32
       max_overlay: 12000
-      split_mode: train_dpo
+      split_mode: full
       dpo_split_config: conf/data/dpo/default.yaml
       split_seed: 42

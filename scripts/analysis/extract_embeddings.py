@@ -82,7 +82,11 @@ log = logging.getLogger("extract_embeddings")
 
 
 def load_dms(
-    m22_path: Optional[Path], si06_path: Optional[Path], max_n: int
+    m22_path: Optional[Path],
+    si06_path: Optional[Path],
+    max_n: int,
+    m22_col: str = "M22_binding_enrichment_adj",
+    si06_col: str = "SI06_binding_enrichment_adj",
 ) -> pd.DataFrame:
     """Outer-merge M22 + SI06 on `aa` (24-aa CDRH3), sample up to max_n rows.
 
@@ -92,9 +96,11 @@ def load_dms(
     """
     frames: List[pd.DataFrame] = []
     if m22_path is not None:
-        frames.append(pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]])
+        frame = pd.read_csv(m22_path)[["aa", m22_col]].rename(columns={m22_col: "M22_binding_enrichment_adj"})
+        frames.append(frame)
     if si06_path is not None:
-        frames.append(pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]])
+        frame = pd.read_csv(si06_path)[["aa", si06_col]].rename(columns={si06_col: "SI06_binding_enrichment_adj"})
+        frames.append(frame)
     if not frames:
         return pd.DataFrame(columns=["aa", "M22_binding_enrichment_adj",
                                      "SI06_binding_enrichment_adj"])
@@ -162,6 +168,8 @@ def build_reference_set(
     gibbs_paths: List[Tuple[str, Path]],
     max_dms: int,
     max_gibbs: int,
+    m22_col: str = "M22_binding_enrichment_adj",
+    si06_col: str = "SI06_binding_enrichment_adj",
 ) -> pd.DataFrame:
     """Assemble the per-row table (WT + DMS + Gibbs) all subsequent steps operate on.
 
@@ -187,7 +195,7 @@ def build_reference_set(
 
     # 2) DMS
     log.info("Loading DMS …")
-    dms = load_dms(dms_m22, dms_si06, max_dms)
+    dms = load_dms(dms_m22, dms_si06, max_dms, m22_col=m22_col, si06_col=si06_col)
     for _, r in dms.iterrows():
         full = add_context(r["aa"])
         rows.append({
@@ -371,6 +379,8 @@ def parse_args() -> argparse.Namespace:
                    help="Override M22 CSV path (defaults to the --dms-dataset entry).")
     p.add_argument("--dms-si06", default=None,
                    help="Override SI06 CSV path (defaults to the --dms-dataset entry).")
+    p.add_argument("--dms-m22-col", default="M22_binding_enrichment_adj")
+    p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--max-gibbs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=32)
@@ -442,6 +452,8 @@ def main() -> int:
         gibbs_paths,
         args.max_dms,
         args.max_gibbs,
+        m22_col=args.dms_m22_col,
+        si06_col=args.dms_si06_col,
     )
     log.info("Reference set: %d rows  (%s)", len(df), dict(df["source"].value_counts()))
 

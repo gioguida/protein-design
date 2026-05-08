@@ -142,6 +142,8 @@ def parse_args() -> argparse.Namespace:
         default=4000,
         help="Per source cap before PLL inference (for very large CSVs).",
     )
+    p.add_argument("--dms-m22-col", default="M22_binding_enrichment_adj")
+    p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument(
         "--split-mode",
         choices=("full", "train_dpo", "val_dpo", "test_dpo"),
@@ -202,23 +204,31 @@ def _build_dataset_map(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:
     return dataset_map
 
 
-def load_dms_full(paths: Dict[str, str]) -> pd.DataFrame:
+def load_dms_full(
+    paths: Dict[str, str],
+    m22_col: str = "M22_binding_enrichment_adj",
+    si06_col: str = "SI06_binding_enrichment_adj",
+) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     if "m22" in paths and paths["m22"]:
         m22_df = pd.read_csv(paths["m22"])
-        if "aa" not in m22_df.columns or "M22_binding_enrichment_adj" not in m22_df.columns:
+        if "aa" not in m22_df.columns or m22_col not in m22_df.columns:
             raise ValueError(
-                f"M22 dataset at {paths['m22']} must contain columns 'aa' and 'M22_binding_enrichment_adj'."
+                f"M22 dataset at {paths['m22']} must contain columns 'aa' and {m22_col!r}."
             )
+        if m22_col != "M22_binding_enrichment_adj":
+            m22_df = m22_df.rename(columns={m22_col: "M22_binding_enrichment_adj"})
         frames.append(m22_df)
     if "si06" in paths and paths["si06"]:
         si06_df = pd.read_csv(paths["si06"])
-        required = {"aa", "SI06_binding_enrichment_adj"}
+        required = {"aa", si06_col}
         missing = required.difference(si06_df.columns)
         if missing:
             raise ValueError(
                 f"SI06 dataset at {paths['si06']} missing required columns: {sorted(missing)}"
             )
+        if si06_col != "SI06_binding_enrichment_adj":
+            si06_df = si06_df.rename(columns={si06_col: "SI06_binding_enrichment_adj"})
         frames.append(si06_df[["aa", "SI06_binding_enrichment_adj"]])
     if not frames:
         return pd.DataFrame(columns=["aa", "M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"])
@@ -489,7 +499,7 @@ def main() -> int:
     dms_by_dataset: Dict[str, pd.DataFrame] = {}
     for ds in args.datasets:
         ds_paths = dataset_map[ds]
-        df_full = load_dms_full(ds_paths)
+        df_full = load_dms_full(ds_paths, m22_col=args.dms_m22_col, si06_col=args.dms_si06_col)
         df = df_full
         if args.split_mode != "full":
             assert split_params is not None

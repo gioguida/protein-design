@@ -179,7 +179,11 @@ def sequence_pll(per_pos_log_probs: np.ndarray) -> np.ndarray:
 
 
 def load_dms(
-    m22_path: "Path | None", si06_path: "Path | None", max_n: int
+    m22_path: "Path | None",
+    si06_path: "Path | None",
+    max_n: int,
+    m22_col: str = "M22_binding_enrichment_adj",
+    si06_col: str = "SI06_binding_enrichment_adj",
 ) -> Tuple[List[str], np.ndarray, np.ndarray]:
     """Return aligned (cdrh3 list, M22 enrichment array, SI06 enrichment array).
 
@@ -189,9 +193,11 @@ def load_dms(
     """
     frames: List[pd.DataFrame] = []
     if m22_path is not None:
-        frames.append(pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]])
+        frame = pd.read_csv(m22_path)[["aa", m22_col]].rename(columns={m22_col: "M22_binding_enrichment_adj"})
+        frames.append(frame)
     if si06_path is not None:
-        frames.append(pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]])
+        frame = pd.read_csv(si06_path)[["aa", si06_col]].rename(columns={si06_col: "SI06_binding_enrichment_adj"})
+        frames.append(frame)
     if not frames:
         empty = np.zeros(0, dtype=np.float32)
         return [], empty, empty
@@ -697,6 +703,8 @@ def parse_args() -> argparse.Namespace:
                    help="Override M22 CSV path (defaults to the --dms-dataset entry).")
     p.add_argument("--dms-si06", default=None,
                    help="Override SI06 CSV path (defaults to the --dms-dataset entry).")
+    p.add_argument("--dms-m22-col", default="M22_binding_enrichment_adj")
+    p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--early-max-ed", type=int, default=10,
@@ -739,6 +747,8 @@ def main() -> int:
         Path(dms_m22_path) if dms_m22_path else None,
         Path(dms_si06_path) if dms_si06_path else None,
         args.max_dms,
+        m22_col=args.dms_m22_col,
+        si06_col=args.dms_si06_col,
     )
     log.info("DMS: %d sequences", len(dms_cdrh3))
 

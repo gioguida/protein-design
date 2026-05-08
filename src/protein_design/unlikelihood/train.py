@@ -21,12 +21,12 @@ from protein_design.config import (
     generate_run_name,
 )
 from protein_design.constants import C05_CDRH3
+from protein_design.dms_splitting import DEFAULT_CONFIG_PATH, dataset_spec, project_root, resolve_dataset_split
 from protein_design.dpo.data_processing import (
     build_clean_ed5_csv,
     build_processed_views,
     build_validation_perplexity_csvs,
 )
-from protein_design.dpo.dataset import default_data_paths
 from protein_design.dpo.train import (
     _load_test_pll_eval_sets,
     _load_test_spearman_df,
@@ -54,21 +54,23 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_raw_ed2_csv_path(cfg: Any) -> Path:
-    defaults = default_data_paths()
-    return (
-        defaults["raw_m22"]
-        if getattr(cfg.data, "raw_csv", None) is None
-        else Path(to_absolute_path(str(cfg.data.raw_csv)))
-    )
+    return dataset_spec(str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")), _resolve_dms_config_path(cfg)).path
 
 
 def _resolve_processed_dir(cfg: Any) -> Path:
-    defaults = default_data_paths()
     return (
-        defaults["processed_dir"]
+        project_root() / "data" / "processed"
         if getattr(cfg.data, "processed_dir", None) is None
         else Path(to_absolute_path(str(cfg.data.processed_dir)))
     )
+
+
+def _resolve_dms_config_path(cfg: Any) -> Path:
+    raw = getattr(cfg.data, "dms_config", None)
+    path = Path(str(raw)) if raw is not None else project_root() / DEFAULT_CONFIG_PATH
+    if not path.is_absolute():
+        path = project_root() / path
+    return path
 
 
 def _resolve_unwanted_json_path(cfg: Any) -> Path:
@@ -79,11 +81,9 @@ def _resolve_unwanted_json_path(cfg: Any) -> Path:
 
 
 def _resolve_ed5_raw_csv_path(cfg: Any) -> Path:
-    defaults = default_data_paths()
-    fallback = defaults["raw_m22"].parent / "ED5_M22_binding_enrichment.csv"
     test_cfg = getattr(cfg.data, "test", None)
-    ed5_csv = None if test_cfg is None else getattr(test_cfg, "ed5_csv", None)
-    return fallback if ed5_csv is None else Path(to_absolute_path(str(ed5_csv)))
+    dataset_key = str(getattr(test_cfg, "dataset_key", "ed5_m22"))
+    return dataset_spec(dataset_key, _resolve_dms_config_path(cfg)).path
 
 
 def _ensure_unwanted_set_json(cfg: Any, run_log: logging.Logger) -> Path:
@@ -135,18 +135,14 @@ def _ensure_preprocessed_artifacts(cfg: Any, run_log: logging.Logger) -> None:
     if not raw_ed2_csv.exists():
         raise FileNotFoundError(f"ED2 raw CSV not found: {raw_ed2_csv}")
 
-    processed_paths = build_processed_views(
-        raw_csv_path=raw_ed2_csv,
-        processed_dir=processed_dir,
+    dms_config_path = _resolve_dms_config_path(cfg)
+    ed2_split = resolve_dataset_split(
+        str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")),
+        "train",
+        dms_config_path,
         force=force,
-        verbose=False,
     )
-    run_log.info(
-        "Ensured processed ED2 views: %s, %s, %s",
-        processed_paths["ed2_all"],
-        processed_paths["d2_clustered_mut1"],
-        processed_paths["d2_clustered_mut2"],
-    )
+    run_log.info("Ensured ED2 train split: %s", ed2_split)
 
     try:
         val_outputs = build_validation_perplexity_csvs(
@@ -166,23 +162,12 @@ def _ensure_preprocessed_artifacts(cfg: Any, run_log: logging.Logger) -> None:
     except Exception as exc:
         run_log.warning("Could not prebuild validation eval CSVs (%s).", exc)
 
-    ed5_raw_csv = _resolve_ed5_raw_csv_path(cfg)
-    if ed5_raw_csv.exists():
-        try:
-            d5_path = build_clean_ed5_csv(
-                raw_csv_path=ed5_raw_csv,
-                processed_dir=processed_dir,
-                force=force,
-                verbose=False,
-            )
-            run_log.info("Ensured processed ED5 CSV: %s", d5_path)
-        except Exception as exc:
-            run_log.warning("Could not prebuild processed ED5 CSV (%s).", exc)
-    else:
-        run_log.warning(
-            "ED5 raw CSV not found at %s. Test ED5 perplexity/Spearman may be unavailable.",
-            ed5_raw_csv,
-        )
+    test_dataset = str(getattr(getattr(cfg.data, "test", None), "dataset_key", "ed5_m22"))
+    try:
+        test_split = resolve_dataset_split(test_dataset, "test", dms_config_path, force=force)
+        run_log.info("Ensured %s test split: %s", test_dataset, test_split)
+    except Exception as exc:
+        run_log.warning("Could not prebuild %s test split (%s).", test_dataset, exc)
 
     _ensure_unwanted_set_json(cfg, run_log)
 

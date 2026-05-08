@@ -431,10 +431,9 @@ def load_scoring_data(
     enrichment_col: str,
     seed: int,
 ) -> pd.DataFrame:
-    """Load ED2 data, filter to exactly 2 mutations, and subsample."""
+    """Load scoring data and subsample."""
     df = pd.read_csv(data_path)
-    df = df[df["num_mut"] == 2].copy()
-    logger.info("Loaded %d double-mutant sequences from %s", len(df), data_path)
+    logger.info("Loaded %d scoring sequences from %s", len(df), data_path)
 
     df = df[np.isfinite(df[enrichment_col])].copy()
 

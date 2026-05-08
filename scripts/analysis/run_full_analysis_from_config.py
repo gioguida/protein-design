@@ -8,11 +8,21 @@ import os
 import shlex
 import subprocess
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from protein_design.dms_splitting import dataset_spec, load_dms_config, resolve_dataset_split
 
 BUILTIN_DMS_KEYS = {"ed2", "ed5", "ed811"}
 DATASET_PLOTS = {
@@ -96,6 +106,235 @@ def _append_flag(cmd: list[str], name: str, value: Any) -> None:
             cmd.append(flag)
         return
     cmd.extend([flag, str(value)])
+
+
+def _subsample_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return dict(((cfg.get("datasets", {}) or {}).get("subsample", {}) or {}))
+
+
+def _subsample_enabled(cfg: dict[str, Any]) -> bool:
+    scfg = _subsample_cfg(cfg)
+    return bool(scfg.get("enabled", False)) and scfg.get("max_rows") is not None
+
+
+def _analysis_subsample_dir(cfg: dict[str, Any], repo_root: Path) -> Path:
+    scfg = _subsample_cfg(cfg)
+    return _expand(str(scfg.get("output_dir", "data/processed/analysis_subsamples")), repo_root)
+
+
+def _subsample_path_for(
+    cfg: dict[str, Any],
+    repo_root: Path,
+    dataset_key: str,
+    split_name: str,
+    *,
+    source_dataset_key: str | None = None,
+) -> Path:
+    scfg = _subsample_cfg(cfg)
+    max_rows = int(scfg.get("max_rows", 0))
+    seed = int(scfg.get("seed", 42))
+    suffix = f"{split_name}_max{max_rows}_seed{seed}.csv"
+    out_key = source_dataset_key or dataset_key
+    return _analysis_subsample_dir(cfg, repo_root) / out_key / dataset_key / suffix
+
+
+def _metric_strata(values: pd.Series, bins: int) -> pd.Series:
+    clean = pd.to_numeric(values, errors="coerce")
+    fill_value = clean.median()
+    if pd.isna(fill_value):
+        fill_value = 0.0
+    clean = clean.fillna(fill_value)
+    bins = max(1, min(int(bins), len(clean)))
+    if bins == 1:
+        return pd.Series(np.zeros(len(clean), dtype=np.int64), index=clean.index)
+    try:
+        return pd.qcut(clean, q=bins, labels=False, duplicates="drop").fillna(0).astype(int)
+    except ValueError:
+        return pd.Series(np.zeros(len(clean), dtype=np.int64), index=clean.index)
+
+
+def _representative_sample_indices(
+    df: pd.DataFrame,
+    *,
+    metric_col: str,
+    max_rows: int,
+    seed: int,
+    stratify_bins: int,
+) -> pd.Index:
+    if len(df) <= max_rows:
+        return df.index
+    rng = np.random.default_rng(seed)
+    working = df.copy()
+    working["_metric_bin"] = _metric_strata(working[metric_col], stratify_bins)
+    if "num_mut" in working.columns:
+        group_cols = ["num_mut", "_metric_bin"]
+    else:
+        group_cols = ["_metric_bin"]
+
+    grouped = working.groupby(group_cols, dropna=False, sort=True)
+    group_sizes = grouped.size()
+    raw_targets = group_sizes / len(working) * max_rows
+    base_targets = np.floor(raw_targets).astype(int)
+    nonzero_groups = group_sizes[group_sizes > 0].index
+    for idx in nonzero_groups:
+        if base_targets.loc[idx] == 0:
+            base_targets.loc[idx] = 1
+    overflow = int(base_targets.sum() - max_rows)
+    if overflow > 0:
+        removable = (base_targets - 1).sort_values(ascending=False)
+        for idx, can_remove in removable.items():
+            if overflow <= 0:
+                break
+            delta = min(int(can_remove), overflow)
+            base_targets.loc[idx] -= delta
+            overflow -= delta
+    elif overflow < 0:
+        remainder = (raw_targets - np.floor(raw_targets)).sort_values(ascending=False)
+        remaining = -overflow
+        for idx in remainder.index:
+            if remaining <= 0:
+                break
+            capacity = int(group_sizes.loc[idx] - base_targets.loc[idx])
+            if capacity <= 0:
+                continue
+            base_targets.loc[idx] += 1
+            remaining -= 1
+
+    selected: list[int] = []
+    for group_key, group in grouped:
+        n = int(base_targets.loc[group_key])
+        if n <= 0:
+            continue
+        indices = group.index.to_numpy()
+        selected.extend(rng.choice(indices, size=min(n, len(indices)), replace=False).tolist())
+    if len(selected) > max_rows:
+        selected = rng.choice(np.array(selected), size=max_rows, replace=False).tolist()
+    return pd.Index(selected)
+
+
+def _metadata_matches(path: Path, expected: dict[str, Any]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            existing = json.load(handle)
+    except Exception:
+        return False
+    return all(existing.get(k) == v for k, v in expected.items())
+
+
+def _resolve_analysis_split(
+    cfg: dict[str, Any],
+    dataset_key: str,
+    split_name: str,
+    *,
+    force: bool,
+    materialize: bool,
+    repo_root: Path,
+    sequence_filter: set[str] | None = None,
+    source_dataset_key: str | None = None,
+) -> tuple[str, set[str] | None]:
+    dms_cfg = (cfg.get("datasets", {}) or {}).get("dms_config", "conf/data/dms/default.yaml")
+    if materialize:
+        full_path = resolve_dataset_split(dataset_key, split_name, dms_cfg, force=force)
+    else:
+        dms_config = load_dms_config(dms_cfg)
+        full_path = dms_config.split.output_dir / dataset_key / f"{split_name}.csv"
+
+    if not _subsample_enabled(cfg):
+        return str(full_path), sequence_filter
+
+    spec = dataset_spec(dataset_key, dms_cfg)
+    if source_dataset_key is None and spec.split_source:
+        source_dataset_key = spec.split_source
+    if materialize and sequence_filter is None and spec.split_source:
+        _, sequence_filter = _resolve_analysis_split(
+            cfg,
+            spec.split_source,
+            split_name,
+            force=force,
+            materialize=materialize,
+            repo_root=repo_root,
+        )
+    out_path = _subsample_path_for(
+        cfg,
+        repo_root,
+        dataset_key,
+        split_name,
+        source_dataset_key=source_dataset_key,
+    )
+    if not materialize:
+        return str(out_path), sequence_filter
+
+    scfg = _subsample_cfg(cfg)
+    max_rows = int(scfg["max_rows"])
+    seed = int(scfg.get("seed", 42))
+    stratify_bins = int(scfg.get("stratify_bins", 10))
+    source_stat = full_path.stat()
+    expected = {
+        "version": 1,
+        "source_path": str(full_path),
+        "source_mtime": source_stat.st_mtime,
+        "dataset_key": dataset_key,
+        "split_name": split_name,
+        "sequence_col": spec.sequence_col,
+        "key_metric_col": spec.key_metric_col,
+        "max_rows": max_rows,
+        "seed": seed,
+        "stratify_bins": stratify_bins,
+        "sequence_filter_size": None if sequence_filter is None else len(sequence_filter),
+        "source_dataset_key": source_dataset_key,
+    }
+    meta_path = out_path.with_suffix(".meta.json")
+    if not force and _metadata_matches(meta_path, expected):
+        if sequence_filter is None:
+            existing = pd.read_csv(out_path, usecols=[spec.sequence_col])
+            return str(out_path), set(existing[spec.sequence_col].astype(str))
+        return str(out_path), sequence_filter
+
+    df = pd.read_csv(full_path)
+    if sequence_filter is not None:
+        df = df[df[spec.sequence_col].astype(str).isin(sequence_filter)].copy()
+    if len(df) > max_rows:
+        indices = _representative_sample_indices(
+            df,
+            metric_col=spec.key_metric_col,
+            max_rows=max_rows,
+            seed=seed,
+            stratify_bins=stratify_bins,
+        )
+        df = df.loc[indices].copy()
+    df = df.reset_index(drop=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+    with meta_path.open("w", encoding="utf-8") as handle:
+        json.dump({**expected, "rows": int(len(df))}, handle, indent=2, sort_keys=True)
+    if sequence_filter is None:
+        sequence_filter = set(df[spec.sequence_col].astype(str))
+    return str(out_path), sequence_filter
+
+
+def _resolve_param_value(
+    value: Any,
+    cfg: dict[str, Any],
+    force: bool,
+    materialize: bool,
+    repo_root: Path,
+) -> Any:
+    if not isinstance(value, str) or not value.startswith("dms_split:"):
+        return value
+    parts = value.split(":")
+    if len(parts) != 3:
+        fail(f"Invalid dms_split reference {value!r}; expected dms_split:DATASET_KEY:SPLIT")
+    path, _ = _resolve_analysis_split(
+        cfg,
+        parts[1],
+        parts[2],
+        force=force,
+        materialize=materialize,
+        repo_root=repo_root,
+    )
+    return path
 
 
 def _resolve_models(cfg: dict[str, Any], repo_root: Path) -> list[ModelSpec]:
@@ -199,8 +438,8 @@ def _load_and_validate(cfg_path: Path, repo_root: Path) -> dict[str, Any]:
     if not datasets_catalog:
         fail("datasets.catalog must be non-empty")
     for dkey, dval in datasets_catalog.items():
-        if not dval or not dval.get("m22_csv"):
-            fail(f"datasets.catalog.{dkey}.m22_csv is required")
+        if not dval or (not dval.get("m22_csv") and not dval.get("m22_dataset")):
+            fail(f"datasets.catalog.{dkey} requires m22_csv or m22_dataset")
 
     models = _resolve_models(cfg, repo_root)
     strategies = _resolve_strategies(cfg, repo_root, models)
@@ -228,12 +467,50 @@ def _strategy_csv_path(
     )
 
 
-def _dataset_paths(cfg: dict[str, Any], dataset_key: str, repo_root: Path) -> tuple[str, str | None]:
+def _dataset_paths(
+    cfg: dict[str, Any],
+    dataset_key: str,
+    repo_root: Path,
+    *,
+    force: bool = False,
+    materialize: bool = True,
+) -> tuple[str, str | None, str, str]:
     d = cfg["datasets"]["catalog"][dataset_key]
-    m22 = str(_expand(str(d["m22_csv"]), repo_root))
-    si06_raw = d.get("si06_csv")
-    si06 = str(_expand(str(si06_raw), repo_root)) if si06_raw else None
-    return m22, si06
+    dms_cfg = (cfg.get("datasets", {}) or {}).get("dms_config", "conf/data/dms/default.yaml")
+    split_name = str(((cfg.get("datasets", {}) or {}).get("split_name", "test")))
+    m22_dataset = d.get("m22_dataset")
+    si06_dataset = d.get("si06_dataset")
+    if m22_dataset:
+        m22, selected_sequences = _resolve_analysis_split(
+            cfg,
+            str(m22_dataset),
+            split_name,
+            force=force,
+            materialize=materialize,
+            repo_root=repo_root,
+        )
+        m22_col = dataset_spec(str(m22_dataset), dms_cfg).key_metric_col
+    else:
+        m22 = str(_expand(str(d["m22_csv"]), repo_root))
+        m22_col = str(d.get("m22_metric_col", "M22_binding_enrichment_adj"))
+        selected_sequences = None
+    if si06_dataset:
+        si06, _ = _resolve_analysis_split(
+            cfg,
+            str(si06_dataset),
+            split_name,
+            force=force,
+            materialize=materialize,
+            repo_root=repo_root,
+            sequence_filter=selected_sequences,
+            source_dataset_key=str(m22_dataset) if m22_dataset else None,
+        )
+        si06_col = dataset_spec(str(si06_dataset), dms_cfg).key_metric_col
+    else:
+        si06_raw = d.get("si06_csv")
+        si06 = str(_expand(str(si06_raw), repo_root)) if si06_raw else None
+        si06_col = str(d.get("si06_metric_col", "SI06_binding_enrichment_adj"))
+    return m22, si06, m22_col, si06_col
 
 
 def main() -> int:
@@ -294,7 +571,7 @@ def main() -> int:
                 if model.checkpoint_path:
                     cmd.extend(["--checkpoint-path", model.checkpoint_path])
                 for k, v in (sentry.get("params", {}) or {}).items():
-                    _append_flag(cmd, k, v)
+                    _append_flag(cmd, k, _resolve_param_value(v, cfg, force, not dry_run, repo_root))
                 _run(cmd, dry_run, f"sample:{sid}:{model.model_id}")
 
     # 2) Optional: OAS extraction + plotting (dataset-agnostic).
@@ -350,7 +627,13 @@ def main() -> int:
 
     for ds in required_datasets:
         dms_arg = _dataset_arg(ds)
-        dms_m22, dms_si06 = _dataset_paths(cfg, ds, repo_root)
+        dms_m22, dms_si06, dms_m22_col, dms_si06_col = _dataset_paths(
+            cfg,
+            ds,
+            repo_root,
+            force=force,
+            materialize=not dry_run,
+        )
 
         emb_dir = scratch_base / "embeddings" / ds
         beam_emb_dir = scratch_base / "embeddings_beam" / ds
@@ -427,13 +710,15 @@ def main() -> int:
                 dms_arg,
                 "--dms-m22",
                 dms_m22,
+                "--dms-m22-col",
+                dms_m22_col,
                 "--max-dms",
                 str(max_dms),
                 "--max-gibbs",
                 str(max_gibbs),
             ]
             if dms_si06:
-                cmd.extend(["--dms-si06", dms_si06])
+                cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
             cmd.extend(gibbs_paths)
             if ckpt:
                 cmd.extend(["--checkpoint-path", ckpt])
@@ -458,13 +743,15 @@ def main() -> int:
                     dms_arg,
                     "--dms-m22",
                     dms_m22,
+                    "--dms-m22-col",
+                    dms_m22_col,
                     "--max-dms",
                     str(max_dms),
                     "--max-gibbs",
                     str(max_gibbs),
                 ]
                 if dms_si06:
-                    beam_cmd.extend(["--dms-si06", dms_si06])
+                    beam_cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
                 beam_cmd.extend(beam_paths)
                 if ckpt:
                     beam_cmd.extend(["--checkpoint-path", ckpt])
@@ -530,21 +817,24 @@ def main() -> int:
                 )
 
             if force or not pll_out.exists() or dry_run or not reuse_existing:
-                _run(
-                    [
-                        "uv",
-                        "run",
-                        "python",
-                        "scripts/analysis/compute_pll_pca.py",
-                        *pll_variant_args,
-                        "--max-dms",
-                        str(max_dms),
-                        "--output-path",
-                        str(pll_out),
-                    ],
-                    dry_run,
-                    f"compute_pll_pca:{ds}",
-                )
+                pll_cmd = [
+                    "uv",
+                    "run",
+                    "python",
+                    "scripts/analysis/compute_pll_pca.py",
+                    *pll_variant_args,
+                    "--dms-m22",
+                    dms_m22,
+                    "--dms-m22-col",
+                    dms_m22_col,
+                    "--max-dms",
+                    str(max_dms),
+                    "--output-path",
+                    str(pll_out),
+                ]
+                if dms_si06:
+                    pll_cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
+                _run(pll_cmd, dry_run, f"compute_pll_pca:{ds}")
             else:
                 print(f"[compute_pll_pca:{ds}] skip existing {pll_out}")
 
@@ -561,6 +851,8 @@ def main() -> int:
                         dms_arg,
                         "--dms-m22",
                         dms_m22,
+                        "--dms-m22-col",
+                        dms_m22_col,
                         "--max-dms",
                         str(max_dms),
                         "--sampler-label",
@@ -569,7 +861,7 @@ def main() -> int:
                         str(gibbs_diag_dir),
                     ]
                     if dms_si06:
-                        cmd.extend(["--dms-si06", dms_si06])
+                        cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
                     _run(cmd, dry_run, f"gibbs_diagnostics:{ds}")
                 else:
                     print(f"[gibbs_diagnostics:{ds}] skip existing {marker}")
@@ -587,6 +879,8 @@ def main() -> int:
                         dms_arg,
                         "--dms-m22",
                         dms_m22,
+                        "--dms-m22-col",
+                        dms_m22_col,
                         "--max-dms",
                         str(max_dms),
                         "--sampler-label",
@@ -595,7 +889,7 @@ def main() -> int:
                         str(beam_diag_dir),
                     ]
                     if dms_si06:
-                        cmd.extend(["--dms-si06", dms_si06])
+                        cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
                     _run(cmd, dry_run, f"beam_diagnostics:{ds}")
                 else:
                     print(f"[beam_diagnostics:{ds}] skip existing {marker}")
@@ -719,11 +1013,24 @@ def main() -> int:
                     sentry = selected_entries[sid]
                     csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
                     cmd.extend(["--overlay-csv", f"{sid}={model.display_name}={csv_path}"])
-            m22, si06 = _dataset_paths(cfg, ds, repo_root)
+            m22, si06, m22_col, si06_col = _dataset_paths(
+                cfg,
+                ds,
+                repo_root,
+                force=force,
+                materialize=not dry_run,
+            )
             dataset_spec = f"{ds}={m22}"
             if si06:
                 dataset_spec = f"{dataset_spec}={si06}"
-            cmd.extend(["--dataset-spec", dataset_spec])
+            cmd.extend([
+                "--dataset-spec",
+                dataset_spec,
+                "--dms-m22-col",
+                m22_col,
+                "--dms-si06-col",
+                si06_col,
+            ])
             for k, v in params.items():
                 _append_flag(cmd, k, v)
             _run(cmd, dry_run, f"plot_pll_vs_enrichment_overlays:{ds}")
