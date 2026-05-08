@@ -5,7 +5,7 @@ split:
   test_frac: 0.1
   seed: 42
   output_dir: data/processed/dms_splits
-  hamming_distance: 1
+  hamming_distance: 0
   stratify_bins: 10
 
 datasets:

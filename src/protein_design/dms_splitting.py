@@ -104,8 +104,8 @@ def load_dms_config(config_path: str | Path | None = None) -> DMSConfig:
     )
     if abs(split.train_frac + split.val_frac + split.test_frac - 1.0) >= 1e-6:
         raise ValueError("DMS split fractions must sum to 1.0.")
-    if split.hamming_distance != 1:
-        raise ValueError("Only hamming_distance=1 is currently supported.")
+    if split.hamming_distance not in {0, 1}:
+        raise ValueError("Only hamming_distance=0 or hamming_distance=1 is currently supported.")
 
     datasets: Dict[str, DatasetSpec] = {}
     for key, entry in (raw.get("datasets", {}) or {}).items():
@@ -168,6 +168,14 @@ def _cluster_ids_hamming_lte_one(sequences: list[str]) -> np.ndarray:
             root_to_id[root] = len(root_to_id)
         out[idx] = root_to_id[root]
     return out
+
+
+def _cluster_ids(sequences: list[str], hamming_distance: int) -> np.ndarray:
+    if hamming_distance == 0:
+        return np.arange(len(sequences), dtype=np.int64)
+    if hamming_distance == 1:
+        return _cluster_ids_hamming_lte_one(sequences)
+    raise ValueError(f"Unsupported hamming_distance: {hamming_distance}")
 
 
 def _target_counts(n: int, split: SplitConfig) -> Dict[str, int]:
@@ -246,7 +254,7 @@ def _expected_meta(config: DMSConfig, dataset_key: str, spec: DatasetSpec, sourc
     source_spec = config.datasets[source_key]
     source_stat = source_spec.path.stat()
     return {
-        "version": 2,
+        "version": 3,
         "method": "size_aware_hamming_components_with_stratified_oversized_component_fallback",
         "dataset_key": dataset_key,
         "split_source": source_key,
@@ -299,7 +307,10 @@ def _build_source_membership(source_df: pd.DataFrame, spec: DatasetSpec, split: 
     working["_split_metric_for_strata"] = working["_split_metric"].fillna(working["_split_metric"].median())
     if working["_split_metric_for_strata"].isna().all():
         working["_split_metric_for_strata"] = 0.0
-    working["cluster_id"] = _cluster_ids_hamming_lte_one(working["_split_sequence"].tolist())
+    working["cluster_id"] = _cluster_ids(
+        working["_split_sequence"].tolist(),
+        split.hamming_distance,
+    )
     stats = (
         working.groupby("cluster_id", sort=True)["_split_metric_for_strata"]
         .agg(cluster_size="size", metric_mean="mean")

@@ -7,7 +7,12 @@ import yaml
 from protein_design.dms_splitting import ensure_dataset_splits, resolve_dataset_split
 
 
-def _write_config(tmp_path: Path, csv_path: Path, metric: str = "M22_binding_enrichment_adj") -> Path:
+def _write_config(
+    tmp_path: Path,
+    csv_path: Path,
+    metric: str = "M22_binding_enrichment_adj",
+    hamming_distance: int = 1,
+) -> Path:
     cfg = {
         "split": {
             "enabled": True,
@@ -16,7 +21,7 @@ def _write_config(tmp_path: Path, csv_path: Path, metric: str = "M22_binding_enr
             "test_frac": 0.25,
             "seed": 7,
             "output_dir": str(tmp_path / "splits"),
-            "hamming_distance": 1,
+            "hamming_distance": hamming_distance,
             "stratify_bins": 2,
         },
         "datasets": {
@@ -81,3 +86,26 @@ def test_dms_split_cache_invalidates_when_metric_changes(tmp_path: Path) -> None
     cfg = _write_config(tmp_path, raw, metric="alt_metric")
     second = resolve_dataset_split("toy_m22", "test", cfg)
     assert second.stat().st_mtime > first_mtime
+
+
+def test_hamming_distance_zero_splits_by_individual_sequence(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.csv"
+    pd.DataFrame(
+        {
+            "aa": ["AAAA", "AAAB", "AAAC", "AAAD", "AAAE", "AAAF", "AAAG", "AAAH"],
+            "M22_binding_enrichment_adj": [8.0, 7.0, 6.0, 5.0, -1.0, -2.0, -3.0, -4.0],
+        }
+    ).to_csv(raw, index=False)
+    cfg = _write_config(tmp_path, raw, hamming_distance=0)
+
+    paths = ensure_dataset_splits("toy_m22", cfg)
+    split_aas = {
+        split: set(pd.read_csv(path)["aa"].astype(str))
+        for split, path in paths.items()
+    }
+
+    assert sum(len(values) for values in split_aas.values()) == 8
+    assert split_aas["train"].isdisjoint(split_aas["val"])
+    assert split_aas["train"].isdisjoint(split_aas["test"])
+    assert split_aas["val"].isdisjoint(split_aas["test"])
+    assert len([split for split, values in split_aas.items() if values]) >= 2
