@@ -17,6 +17,7 @@ uv run python scripts/analysis/run_temperature_sweep.py \
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -59,6 +60,14 @@ def _temp_label(temp: float) -> str:
     return str(temp)
 
 
+def _expand_path(path_str: str, repo_root: Path) -> Path:
+    expanded = os.path.expandvars(os.path.expanduser(path_str))
+    p = Path(expanded)
+    if not p.is_absolute():
+        p = repo_root / p
+    return p
+
+
 def main() -> int:
     args = parse_args()
     repo_root = REPO_ROOT
@@ -90,12 +99,8 @@ def main() -> int:
     top_k_pll = int(summary_cfg.get("top_k_for_pll", 50))
 
     out_cfg = dict(cfg.get("output", {}))
-    base_dir = Path(str(out_cfg.get("base_dir", "outputs/temperature_sweep")))
-    if not base_dir.is_absolute():
-        base_dir = repo_root / base_dir
-    plots_dir = Path(str(out_cfg.get("plots_dir", "reports/temperature_sweep")))
-    if not plots_dir.is_absolute():
-        plots_dir = repo_root / plots_dir
+    base_dir = _expand_path(str(out_cfg.get("base_dir", "outputs/temperature_sweep")), repo_root)
+    plots_dir = _expand_path(str(out_cfg.get("plots_dir", "reports/temperature_sweep")), repo_root)
 
     dms_cfg = dict(cfg.get("dms", {}))
     dms_m22 = dms_cfg.get("m22_path")
@@ -235,11 +240,24 @@ def main() -> int:
         # --- Summary plots across temperatures ---
         summary_dir = plots_dir / model_name / "summary"
         _mkdir(summary_dir, dry_run, f"summary:{model_name}")
+        comparisons_dir = plots_dir / model_name / "comparisons"
+        _mkdir(comparisons_dir, dry_run, f"comparisons:{model_name}")
 
         # Build --temp-csv T=PATH arguments for summary scripts.
         temp_csv_args: list[str] = []
+        temp_dir_args: list[str] = []
         for temp, csv_p in temp_csv_map.items():
             temp_csv_args.extend(["--temp-csv", f"{temp}={csv_p}"])
+            temp_dir = plots_dir / model_name / f"temp_{_temp_label(temp)}"
+            temp_dir_args.extend(["--temp-dir", f"{temp}={temp_dir}"])
+
+        stack_cmd = [
+            "uv", "run", "python",
+            "scripts/analysis/stack_temperature_plots.py",
+            *temp_dir_args,
+            "--output-dir", str(comparisons_dir),
+        ]
+        _run(stack_cmd, dry_run, f"stack_temperature_plots:{model_name}")
 
         if bool(summary_cfg.get("pll_vs_diversity_tradeoff", False)):
             tradeoff_cmd = [

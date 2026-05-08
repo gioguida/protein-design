@@ -698,7 +698,10 @@ def main() -> int:
             label = model.display_name
             ckpt = model.checkpoint_path
             npz_path = emb_dir / f"{model.model_id}.npz"
-            beam_npz_path = beam_emb_dir / f"{model.model_id}.npz"
+            # Keep beam embedding filename aligned with model_variant stored in
+            # extract_embeddings outputs (display_name), which is what
+            # plot_gibbs_per_model_pca.py uses when resolving files.
+            beam_npz_path = beam_emb_dir / f"{label}.npz"
             embed_npz.append(npz_path)
             pll_variant_args.extend(["--variant", f"{label}={ckpt}"])
 

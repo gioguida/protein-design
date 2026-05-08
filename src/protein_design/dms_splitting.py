@@ -307,19 +307,32 @@ def _build_source_membership(source_df: pd.DataFrame, spec: DatasetSpec, split: 
     working["_split_metric_for_strata"] = working["_split_metric"].fillna(working["_split_metric"].median())
     if working["_split_metric_for_strata"].isna().all():
         working["_split_metric_for_strata"] = 0.0
+    rng = np.random.default_rng(int(split.seed))
     working["cluster_id"] = _cluster_ids(
         working["_split_sequence"].tolist(),
         split.hamming_distance,
     )
+    working["split"] = pd.Series(index=working.index, dtype=object)
+
+    # For hamming_distance=0 each row is an independent unit, so perform a
+    # direct row-wise stratified split to preserve the enrichment distribution.
+    if int(split.hamming_distance) == 0:
+        labels = _assign_rows_stratified(
+            working.index,
+            working["_split_metric_for_strata"],
+            split,
+            rng,
+        )
+        working["split"] = labels
+        return working[[spec.sequence_col, "split", "cluster_id"]].rename(columns={spec.sequence_col: "split_key"})
+
     stats = (
         working.groupby("cluster_id", sort=True)["_split_metric_for_strata"]
         .agg(cluster_size="size", metric_mean="mean")
         .reset_index()
     )
-    rng = np.random.default_rng(int(split.seed))
     target_counts = _target_counts(len(working), split)
     current_counts = {name: 0 for name in SPLIT_NAMES}
-    working["split"] = pd.Series(index=working.index, dtype=object)
 
     # ED2 contains very large Hamming-connected components. Keeping those
     # components indivisible can make the configured fractions impossible, so
@@ -378,6 +391,13 @@ def ensure_dataset_splits(
     df = _read_validated(spec)
     if source_key == dataset_key:
         membership = _build_source_membership(df, spec, config.split)
+        split_values = membership["split"].astype(str).reset_index(drop=True)
+        if len(split_values) != len(df):
+            raise ValueError(
+                f"Split membership length mismatch for dataset {dataset_key}: "
+                f"{len(split_values)} memberships for {len(df)} rows."
+            )
+        df["_split"] = split_values
         key_col = spec.sequence_col
     else:
         source_paths = ensure_dataset_splits(source_key, config.path, force=force)
@@ -389,11 +409,11 @@ def ensure_dataset_splits(
             membership_parts.append(split_df)
         membership = pd.concat(membership_parts, ignore_index=True)
         key_col = spec.sequence_col
+        split_lookup = dict(zip(membership["split_key"].astype(str), membership["split"].astype(str)))
+        df["_split"] = df[key_col].astype(str).map(split_lookup)
 
     out_dir = config.split.output_dir / dataset_key
     out_dir.mkdir(parents=True, exist_ok=True)
-    split_lookup = dict(zip(membership["split_key"].astype(str), membership["split"].astype(str)))
-    df["_split"] = df[key_col].astype(str).map(split_lookup)
     for split_name, path in paths.items():
         split_df = df[df["_split"] == split_name].drop(columns=["_split"]).reset_index(drop=True)
         split_df.to_csv(path, index=False)

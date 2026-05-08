@@ -107,9 +107,9 @@ sampling:
       output_csv_path: "outputs/beam_search/distribution/{model_id}.csv"
       params:
         beam_size: 40
-        n_steps: 4
+        n_steps: 5
         snapshot_every: 1
-        temperature: 1.5
+        temperature: 0.5
         seed: 42
         start_mode: dms
         wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
@@ -124,9 +124,9 @@ sampling:
       output_csv_path: "outputs/beam_search/fitness/{model_id}.csv"
       params:
         beam_size: 40
-        n_steps: 4
+        n_steps: 5
         snapshot_every: 1
-        temperature: 1.5
+        temperature: 0.5
         seed: 42
         # start_mode options: wt | dms | top_dms
         start_mode: wt
@@ -185,16 +185,16 @@ plots:
   # NOTE: beam_pll_trajectory routes to the existing gibbs_diagnostics.py,
   # which already computes exact PLL trajectories. Setting this to true adds
   # an explicit per-strategy call in addition to the existing bulk call.
-  beam_pll_trajectory: false
+  beam_pll_trajectory: true
 
   # Overlaid histogram: PLL of SBS final-step sequences vs DMS test sequences.
-  beam_pll_vs_dms_histogram: false
+  beam_pll_vs_dms_histogram: true
 
   # Three-panel: pairwise Hamming, per-position Shannon entropy, n_mutations.
-  beam_diversity_diagnostics: false
+  beam_diversity_diagnostics: true
 
   # Scatter: PLL vs n_mutations (Spearman rho annotated).
-  beam_pll_vs_nmut: false
+  beam_pll_vs_nmut: true
 
   # Side-by-side 20×24 AA frequency heatmaps (SBS vs DMS).
-  beam_aa_heatmap: false
+  beam_aa_heatmap: true

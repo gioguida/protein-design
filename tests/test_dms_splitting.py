@@ -109,3 +109,24 @@ def test_hamming_distance_zero_splits_by_individual_sequence(tmp_path: Path) -> 
     assert split_aas["train"].isdisjoint(split_aas["test"])
     assert split_aas["val"].isdisjoint(split_aas["test"])
     assert len([split for split, values in split_aas.items() if values]) >= 2
+
+
+def test_hamming_distance_zero_handles_duplicate_sequences_row_wise(tmp_path: Path) -> None:
+    raw = tmp_path / "raw_dups.csv"
+    pd.DataFrame(
+        {
+            "aa": ["AAAA"] * 12 + ["BBBB"] * 12,
+            "M22_binding_enrichment_adj": list(range(12)) + list(range(-12, 0)),
+        }
+    ).to_csv(raw, index=False)
+    cfg = _write_config(tmp_path, raw, hamming_distance=0)
+
+    paths = ensure_dataset_splits("toy_m22", cfg, force=True)
+    split_counts = {
+        split: int((pd.read_csv(path)["aa"].astype(str) == "AAAA").sum())
+        for split, path in paths.items()
+    }
+
+    # With hamming_distance=0, duplicate sequence rows should be split row-wise;
+    # they must not all collapse into a single split.
+    assert sum(1 for count in split_counts.values() if count > 0) >= 2
