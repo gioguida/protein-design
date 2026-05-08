@@ -35,6 +35,11 @@ DATASET_PLOTS = {
 }
 OVERLAY_PLOTS = {"gibbs_per_model_pca", "beam_per_model_pca", "pll_vs_enrichment_overlays"}
 
+# New beam eval plots that need DMS data (triggered inside the dataset loop).
+BEAM_EVAL_DMS_PLOTS = {"beam_pll_vs_dms_histogram", "beam_aa_heatmap"}
+# New beam eval plots that do NOT need DMS data (triggered after dataset loop).
+BEAM_EVAL_NODMS_PLOTS = {"beam_diversity_diagnostics", "beam_pll_vs_nmut"}
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -406,6 +411,9 @@ def _resolve_strategies(cfg: dict[str, Any], repo_root: Path, models: list[Model
 def _validate_plots(cfg: dict[str, Any], datasets_catalog: dict[str, Any], selected_strategies: set[str]) -> None:
     plots = cfg.get("plots", {})
     for name, pcfg in plots.items():
+        # Flat boolean toggles (beam eval plots) have no sub-keys to validate.
+        if isinstance(pcfg, bool):
+            continue
         enabled = bool((pcfg or {}).get("enabled", False))
         if not enabled:
             continue
@@ -614,9 +622,18 @@ def main() -> int:
             else:
                 _run(cmd, dry_run, f"extract_oas:{model.model_id}")
 
+    def _beam_plot_enabled(name: str) -> bool:
+        """Return True for flat-boolean beam eval plot keys set to true."""
+        val = plots_cfg.get(name, False)
+        if isinstance(val, bool):
+            return val
+        return bool((val or {}).get("enabled", False))
+
     # 3) Dataset-driven stages.
     required_datasets: list[str] = []
     for plot_name, pcfg in plots_cfg.items():
+        if isinstance(pcfg, bool):
+            continue  # flat boolean toggles handled separately below
         if not bool((pcfg or {}).get("enabled", False)):
             continue
         if plot_name not in DATASET_PLOTS:
@@ -624,6 +641,14 @@ def main() -> int:
         for ds in list((pcfg or {}).get("datasets", []) or []):
             if ds not in required_datasets:
                 required_datasets.append(ds)
+
+    # DMS-dependent beam eval plots run for every active dataset.
+    # If any such plot is enabled, ensure all catalog datasets are processed.
+    datasets_catalog = ((cfg.get("datasets") or {}).get("catalog") or {})
+    if any(_beam_plot_enabled(p) for p in BEAM_EVAL_DMS_PLOTS):
+        for dkey in datasets_catalog:
+            if dkey not in required_datasets:
+                required_datasets.append(dkey)
 
     for ds in required_datasets:
         dms_arg = _dataset_arg(ds)
@@ -1034,6 +1059,87 @@ def main() -> int:
             for k, v in params.items():
                 _append_flag(cmd, k, v)
             _run(cmd, dry_run, f"plot_pll_vs_enrichment_overlays:{ds}")
+
+        # ----- New beam eval plots (DMS-dependent) -----
+        # These run per (model × beam strategy × dataset).
+        for model in models:
+            for sid in selected_strategy_ids:
+                sentry = selected_entries[sid]
+                if str(sentry.get("type", "")).lower() != "beam":
+                    continue
+                csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
+                if not csv_path.exists() and not dry_run:
+                    continue
+                beam_eval_dir = plots_root / "beam_eval" / sid / model.model_id
+                _mkdir(beam_eval_dir, dry_run, f"beam_eval:{ds}:{sid}:{model.model_id}")
+
+                if _beam_plot_enabled("beam_pll_vs_dms_histogram"):
+                    cmd = [
+                        "uv", "run", "python",
+                        "scripts/analysis/plot_beam_pll_vs_dms.py",
+                        "--beam-csv", str(csv_path),
+                        "--model-variant", model.display_name,
+                        "--dms-m22", dms_m22,
+                        "--dms-m22-col", dms_m22_col,
+                        "--max-dms", str(max_dms),
+                        "--output-dir", str(beam_eval_dir),
+                    ]
+                    if model.checkpoint_path:
+                        cmd.extend(["--checkpoint-path", model.checkpoint_path])
+                    if dms_si06:
+                        cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
+                    _run(cmd, dry_run, f"beam_pll_vs_dms_histogram:{ds}:{sid}:{model.model_id}")
+
+                if _beam_plot_enabled("beam_aa_heatmap"):
+                    cmd = [
+                        "uv", "run", "python",
+                        "scripts/analysis/plot_beam_aa_heatmap.py",
+                        "--beam-csv", str(csv_path),
+                        "--model-variant", model.display_name,
+                        "--dms-m22", dms_m22,
+                        "--dms-m22-col", dms_m22_col,
+                        "--max-dms", str(max_dms),
+                        "--output-dir", str(beam_eval_dir),
+                    ]
+                    if dms_si06:
+                        cmd.extend(["--dms-si06", dms_si06, "--dms-si06-col", dms_si06_col])
+                    _run(cmd, dry_run, f"beam_aa_heatmap:{ds}:{sid}:{model.model_id}")
+
+    # ----- New beam eval plots (no DMS dependency) -----
+    # These run once per (model × beam strategy), independent of active datasets.
+    if any(_beam_plot_enabled(p) for p in BEAM_EVAL_NODMS_PLOTS):
+        for model in models:
+            for sid in selected_strategy_ids:
+                sentry = selected_entries[sid]
+                if str(sentry.get("type", "")).lower() != "beam":
+                    continue
+                csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
+                if not csv_path.exists() and not dry_run:
+                    continue
+                nodata_dir = project_base / "plots" / "beam_eval" / sid / model.model_id
+                _mkdir(nodata_dir, dry_run, f"beam_eval_nodata:{sid}:{model.model_id}")
+
+                if _beam_plot_enabled("beam_diversity_diagnostics"):
+                    cmd = [
+                        "uv", "run", "python",
+                        "scripts/analysis/plot_beam_diversity.py",
+                        "--beam-csv", str(csv_path),
+                        "--model-variant", model.display_name,
+                        "--output-dir", str(nodata_dir),
+                    ]
+                    _run(cmd, dry_run, f"beam_diversity_diagnostics:{sid}:{model.model_id}")
+
+                if _beam_plot_enabled("beam_pll_vs_nmut"):
+                    cmd = [
+                        "uv", "run", "python",
+                        "scripts/analysis/plot_beam_pll_vs_nmut.py",
+                        "--beam-csv", str(csv_path),
+                        "--model-variant", model.display_name,
+                        "--output-dir", str(nodata_dir),
+                    ]
+                    if model.checkpoint_path:
+                        cmd.extend(["--checkpoint-path", model.checkpoint_path])
+                    _run(cmd, dry_run, f"beam_pll_vs_nmut:{sid}:{model.model_id}")
 
     # 4) OAS UMAP plots.
     if oas_enabled and oas_npz_paths:

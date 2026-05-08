@@ -10,24 +10,24 @@ split:
 
 datasets:
   ed2_m22:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED2_M22_binding_enrichment.csv
+    path: /cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_M22_binding_enrichment.csv
     sequence_col: aa
     key_metric_col: M22_binding_enrichment_adj
   ed2_si06:
-    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv
+    path: /cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_SI06_binding_enrichment.csv
     sequence_col: aa
     key_metric_col: SI06_binding_enrichment_adj
     split_source: ed2_m22
   ed5_m22:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED5_M22_binding_enrichment.csv
+    path: /cluster/project/infk/krause/${USER}/protein-design/data/raw/ED5_M22_binding_enrichment.csv
     sequence_col: aa
     key_metric_col: M22_binding_enrichment_adj
   ed5_si06:
-    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_SI06_binding_enrichment.csv
+    path: /cluster/project/infk/krause/${USER}/protein-design/data/raw/ED5_SI06_binding_enrichment.csv
     sequence_col: aa
     key_metric_col: SI06_binding_enrichment_adj
     split_source: ed5_m22
   ed811_m22:
-    path: /cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv
+    path: /cluster/project/infk/krause/${USER}/protein-design/data/raw/ED811_M22_enrichment_full.csv
     sequence_col: aa
     key_metric_col: M22_binding_enrichment_adj

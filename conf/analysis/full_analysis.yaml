@@ -128,9 +128,11 @@ sampling:
         snapshot_every: 1
         temperature: 1.5
         seed: 42
+        # start_mode options: wt | dms | top_dms
         start_mode: wt
         wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
         device: cuda
+        # top_k_dms: 10  # only used when start_mode: top_dms
 
 plots:
   per_model_pca:
@@ -171,3 +173,28 @@ plots:
       split_mode: full
       dpo_split_config: conf/data/dpo/default.yaml
       split_seed: 42
+
+  # ----- Beam search evaluation plots (new) -----
+  # These are flat boolean toggles (no enabled/datasets sub-keys).
+  # DMS-dependent plots (beam_pll_vs_dms_histogram, beam_aa_heatmap) run for
+  # every dataset already in the required_datasets set (those used by the
+  # enabled dataset-specific plots above).
+  # Non-DMS plots (beam_diversity_diagnostics, beam_pll_vs_nmut) run once per
+  # model × beam strategy regardless of active datasets.
+
+  # NOTE: beam_pll_trajectory routes to the existing gibbs_diagnostics.py,
+  # which already computes exact PLL trajectories. Setting this to true adds
+  # an explicit per-strategy call in addition to the existing bulk call.
+  beam_pll_trajectory: false
+
+  # Overlaid histogram: PLL of SBS final-step sequences vs DMS test sequences.
+  beam_pll_vs_dms_histogram: false
+
+  # Three-panel: pairwise Hamming, per-position Shannon entropy, n_mutations.
+  beam_diversity_diagnostics: false
+
+  # Scatter: PLL vs n_mutations (Spearman rho annotated).
+  beam_pll_vs_nmut: false
+
+  # Side-by-side 20×24 AA frequency heatmaps (SBS vs DMS).
+  beam_aa_heatmap: false

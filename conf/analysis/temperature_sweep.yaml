@@ -1,0 +1,50 @@
+# Temperature sweep configuration
+# Runs SBS at multiple temperatures, produces per-temperature plots and
+# cross-temperature summary comparisons.
+#
+# Usage:
+#   uv run python scripts/analysis/run_temperature_sweep.py \
+#     --config conf/analysis/temperature_sweep.yaml
+
+sweep:
+  temperatures: [0.5, 0.8, 1.0, 1.5, 2.0]
+  beam_size: 5
+  n_steps: 5          # max 5 mutations
+  snapshot_every: 1
+  start_mode: "wt"    # wt | dms | top_dms
+  n_chains: 10        # maps to beam_size for wt/dms; top-k seeds for top_dms
+
+models:
+  - name: "dpo_from_evo"
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__evo_base_20260425_190014"
+    model_variant: "DPO from evo"
+
+# DMS reference paths used for beam_pll_vs_dms_histogram and beam_aa_heatmap.
+# Leave null to skip DMS-dependent plots.
+dms:
+  m22_path: null      # path to D2_M22.csv (or equivalent)
+  si06_path: null     # path to D2_SI06.csv (optional)
+  m22_col: "M22_binding_enrichment_adj"
+  si06_col: "SI06_binding_enrichment_adj"
+  max_dms: 500
+
+# Which plots to produce per temperature point.
+# beam_pll_trajectory routes to the existing gibbs_diagnostics.py.
+# DMS-dependent plots (beam_pll_vs_dms_histogram, beam_aa_heatmap) require
+# dms.m22_path to be set.
+plots:
+  beam_pll_trajectory: true
+  beam_pll_vs_dms_histogram: true
+  beam_diversity_diagnostics: true
+  beam_pll_vs_nmut: true
+  beam_aa_heatmap: false
+
+# Summary comparison plots across temperatures.
+summary:
+  pll_vs_diversity_tradeoff: true   # mean PLL of top-k vs mean pairwise Hamming
+  pll_distribution_by_temp: true    # overlaid PLL histograms, one per temperature
+  top_k_for_pll: 50                 # top sequences used for mean PLL in tradeoff plot
+
+output:
+  base_dir: "outputs/temperature_sweep"
+  plots_dir: "reports/temperature_sweep"
