@@ -103,11 +103,21 @@ def main() -> int:
     plots_dir = _expand_path(str(out_cfg.get("plots_dir", "reports/temperature_sweep")), repo_root)
 
     dms_cfg = dict(cfg.get("dms", {}))
-    dms_m22 = dms_cfg.get("m22_path")
-    dms_si06 = dms_cfg.get("si06_path")
+    dms_m22 = _expand_path(dms_cfg["m22_path"], repo_root) if dms_cfg.get("m22_path") else None
+    dms_si06 = _expand_path(dms_cfg["si06_path"], repo_root) if dms_cfg.get("si06_path") else None
     dms_m22_col = str(dms_cfg.get("m22_col", "M22_binding_enrichment_adj"))
     dms_si06_col = str(dms_cfg.get("si06_col", "SI06_binding_enrichment_adj"))
     max_dms = int(dms_cfg.get("max_dms", 500))
+
+    if start_mode in ("dms", "top_dms") and dms_m22 is None:
+        print(
+            f"[config-error] start_mode={start_mode!r} requires dms.m22_path to be set",
+            file=sys.stderr,
+        )
+        return 2
+    if start_mode == "dms" and dms_si06 is None:
+        print("[config-error] start_mode='dms' requires dms.si06_path to be set", file=sys.stderr)
+        return 2
 
     for model_spec in models_cfg:
         model_name = str(model_spec.get("name", "model"))
