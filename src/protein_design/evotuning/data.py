@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import torch
 from Bio import SeqIO
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
 from protein_design.evotuning.splits import Split, SplitConfig, split_for
@@ -72,6 +72,37 @@ def _load_fasta_by_split(
     return arrays
 
 
+def build_train_loader(
+    train_dataset: Dataset,
+    collator: DataCollatorForLanguageModeling,
+    batch_size: int,
+    epoch_seed: int,
+    skip_samples: int = 0,
+) -> DataLoader:
+    """Build a train DataLoader whose order is a deterministic, seeded shuffle
+    of `train_dataset`, with the first `skip_samples` indices removed.
+
+    Resumption invariant: given the same `epoch_seed` and dataset, the produced
+    permutation is bit-identical across processes — so a resumed run that skips
+    `samples_seen` covers exactly the unseen samples of the original run.
+    """
+    g = torch.Generator()
+    g.manual_seed(int(epoch_seed))
+    indices = torch.randperm(len(train_dataset), generator=g).tolist()
+    if skip_samples > 0:
+        indices = indices[skip_samples:]
+    subset = Subset(train_dataset, indices)
+    return DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=collator,
+        drop_last=True,
+    )
+
+
 def make_dataloaders(
     fasta_path: str,
     max_seq_len: int,
@@ -80,10 +111,21 @@ def make_dataloaders(
     split_cfg: SplitConfig,
     tokenizer: Optional[AutoTokenizer] = None,
     tokenizer_name: Optional[str] = None,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+    skip_samples: int = 0,
+    epoch_seed: int = 0,
+) -> tuple[DataLoader, DataLoader, DataLoader, Dataset, DataCollatorForLanguageModeling, int]:
     """Build train / val / test DataLoaders from a single FASTA using
     hash-based split assignment. Splits are stable across runs given the
-    same salt and sequence IDs."""
+    same salt and sequence IDs.
+
+    Returns:
+        (train_loader, val_loader, test_loader, train_dataset, collator, full_train_len).
+        `train_dataset` and `collator` are returned so callers can rebuild the
+        train loader cheaply across epochs (via `build_train_loader`) without
+        rescanning the FASTA. `full_train_len` is `len(train_dataset)` and is
+        invariant under `skip_samples` — used to size the LR scheduler so the
+        schedule is unaffected by where we resume.
+    """
     if tokenizer is None:
         if tokenizer_name is None:
             raise ValueError("Pass either tokenizer or tokenizer_name to make_dataloaders.")
@@ -102,14 +144,13 @@ def make_dataloaders(
         pad_to_multiple_of=8,
     )
 
-    train_loader = DataLoader(
-        datasets["train"],
+    full_train_len = len(datasets["train"])
+    train_loader = build_train_loader(
+        train_dataset=datasets["train"],
+        collator=collator,
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=collator,
-        drop_last=True,
+        epoch_seed=epoch_seed,
+        skip_samples=skip_samples,
     )
     val_loader = DataLoader(
         datasets["val"],
@@ -127,4 +168,4 @@ def make_dataloaders(
         pin_memory=False,
         collate_fn=collator,
     )
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader, datasets["train"], collator, full_train_len

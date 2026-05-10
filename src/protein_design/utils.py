@@ -52,11 +52,16 @@ def init_wandb(
     logger: logging.Logger,
     run_name: str,
     group: Optional[str] = None,
+    resume_id: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[Any]]:
     """Initialize a W&B run from a config with wandb.* keys.
 
     Expects cfg.wandb to have: enabled, project, entity, init_timeout,
     fallback_mode, tags, notes.
+
+    If `resume_id` is provided, attaches to that existing W&B run via
+    `wandb.init(id=resume_id, resume="allow")` so logs land on the same run
+    after a SLURM kill + relaunch.
 
     Returns (wandb_module, wandb_run). Both are None when W&B is disabled,
     unavailable, or all fallback modes are exhausted.
@@ -89,8 +94,14 @@ def init_wandb(
         "config": OmegaConf.to_container(cfg, resolve=True),
         "settings": wandb_mod.Settings(init_timeout=init_timeout),
     }
+    if resume_id:
+        init_kwargs["id"] = str(resume_id)
+        init_kwargs["resume"] = "allow"
 
-    logger.info("W&B run: %s (project=%s, group=%s)", run_name, init_kwargs["project"], group)
+    logger.info(
+        "W&B run: %s (project=%s, group=%s, resume_id=%s)",
+        run_name, init_kwargs["project"], group, resume_id,
+    )
 
     try:
         run = wandb_mod.init(**init_kwargs)

@@ -6,6 +6,7 @@ live in their respective subpackages.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 import re
 from typing import List, Optional, Tuple, TypedDict
 
@@ -25,6 +26,15 @@ class ModelConfig:
 
 
 @dataclass
+class TestEvalConfig:
+    """ED5 test-set PLL/Spearman evaluation (added at end of training)."""
+
+    raw_ed5_path: Optional[str] = None
+    processed_dir: Optional[str] = None
+    pos_threshold: float = 0.0
+
+
+@dataclass
 class ScoringConfig:
     """Scoring / evaluation configuration."""
 
@@ -32,6 +42,9 @@ class ScoringConfig:
     batch_size: int = 512
     datasets: Optional[List[dict]] = None
     flank_ks: List[int] = field(default_factory=lambda: [1, 3, 5])
+    persist_test_scores: bool = True
+    persist_live_scores: bool = False
+    test_eval: Optional[TestEvalConfig] = None
 
 
 @dataclass
@@ -81,11 +94,22 @@ def build_scoring_config(cfg: DictConfig) -> ScoringConfig:
     )
     flank_ks_cfg = cfg.scoring.get("flank_ks", [1, 3, 5])
     flank_ks = [int(k) for k in flank_ks_cfg]
+    test_eval_cfg = cfg.scoring.get("test_eval", None)
+    test_eval: Optional[TestEvalConfig] = None
+    if test_eval_cfg is not None:
+        test_eval = TestEvalConfig(
+            raw_ed5_path=test_eval_cfg.get("raw_ed5_path"),
+            processed_dir=test_eval_cfg.get("processed_dir"),
+            pos_threshold=float(test_eval_cfg.get("pos_threshold", 0.0)),
+        )
     return ScoringConfig(
         n_samples=int(cfg.scoring.n_samples),
         batch_size=int(cfg.scoring.batch_size),
         datasets=datasets or None,
         flank_ks=flank_ks,
+        persist_test_scores=bool(cfg.scoring.get("persist_test_scores", True)),
+        persist_live_scores=bool(cfg.scoring.get("persist_live_scores", False)),
+        test_eval=test_eval,
     )
 
 
@@ -119,6 +143,13 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
 
 def generate_run_name(cfg: DictConfig) -> str:
     """Generate a timestamped run name from config or auto-generate one."""
+    # When resuming, reuse the existing run directory derived from the checkpoint path
+    # so logs, wandb_id.txt, and history.csv are all written to the same place.
+    training = cfg.get("training", {})
+    resume_ckpt = training.get("resume_checkpoint", None) if training else None
+    if resume_ckpt:
+        return Path(resume_ckpt).parent.parent.name
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if cfg.run_name:
         return f"{cfg.run_name}_{timestamp}"

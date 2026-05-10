@@ -34,6 +34,7 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
     save_every_n_steps: Optional[int] = None
     fp16: bool = False
+    resume_checkpoint: Optional[str] = None
 
 
 def build_data_config(cfg: DictConfig) -> DataConfig:
@@ -66,4 +67,5 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
         gradient_accumulation_steps=int(t.gradient_accumulation_steps),
         save_every_n_steps=t.save_every_n_steps if t.save_every_n_steps is not None else None,
         fp16=bool(t.fp16),
+        resume_checkpoint=t.get("resume_checkpoint", None),
     )

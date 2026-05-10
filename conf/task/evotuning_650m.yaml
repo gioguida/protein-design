@@ -1,5 +1,6 @@
 # @package _global_
 defaults:
+  - override /model: esm2_650m
   - override /data: evo/oas_full
   - override /scoring: d2
   - _self_
@@ -14,8 +15,10 @@ training:
   warmup_steps: 500
   max_epochs: 1
   max_steps: null
-  batch_size: 128
-  gradient_accumulation_steps: 4
-  save_every_n_steps: 5000
+  # batch 64 × accum 8 = effective batch 512
+  # 650M weights ~1.3 GB FP16; Adam states ~7.8 GB FP32; batch 64 activations → needs 80 GB GPU
+  batch_size: 64
+  gradient_accumulation_steps: 8
+  save_every_n_steps: 4992
   fp16: true
   resume_checkpoint: null

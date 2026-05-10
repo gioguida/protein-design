@@ -7,6 +7,6 @@ model:
     source: huggingface  # huggingface | checkpoint
     checkpoint: null
   use_context: true
-  pll_mask_chunk_size: 32
+  pll_mask_chunk_size: 16
   freeze_embeddings: true
   freeze_first_n_layers: 0

@@ -12,7 +12,7 @@ sweep:
   n_steps: 5          # max 5 mutations
   snapshot_every: 1
   start_mode: "top_dms"    # wt | dms | top_dms
-  n_chains: 40        # maps to beam_size for wt/dms; top-k seeds for top_dms
+  n_chains: 10        # maps to beam_size for wt/dms; top-k seeds for top_dms
 
 models:
   - name: "dpo_from_evo"
