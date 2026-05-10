@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-TARGET_NUM_MUT = (2, 3, 4, 5)
+TARGET_NUM_MUT = (2, 3, 4, 5, 8)
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("../data/raw/ED5_M22_enrichment.csv"),
-        help="Path to ED5_M22_enrichment.csv",
+        default=Path("../data/raw/ED5_M22_binding_enrichment.csv"),
+        help="Path to ED5_M22_binding_enrichment.csv",
     )
     return parser.parse_args()
 

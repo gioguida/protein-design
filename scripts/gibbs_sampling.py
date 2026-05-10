@@ -155,9 +155,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_checkpoint(args: argparse.Namespace) -> str:
-    if args.checkpoint_path:
-        return args.checkpoint_path
-    return DEFAULT_HF_IDS.get(args.model_variant, args.model_variant)
+    raw = args.checkpoint_path or DEFAULT_HF_IDS.get(args.model_variant, args.model_variant)
+    return os.path.expandvars(os.path.expanduser(raw))
 
 
 def tokenize_full_vh(tokenizer: AutoTokenizer, vh: str) -> torch.Tensor:

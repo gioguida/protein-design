@@ -1,0 +1,160 @@
+version: 1
+
+run:
+  force: false
+  dry_run: false
+  cka_threshold: 0.5
+  max_dms: 500
+  max_oas: 2000
+  max_gibbs: 200
+  scratch_base: "/cluster/scratch/${USER}/protein-design/embedding_analysis"
+  project_base: "/cluster/project/infk/krause/${USER}/protein-design/reports/embedding_analysis"
+
+models:
+  catalog:
+    vanilla:
+      display_name: "Vanilla ESM2"
+      checkpoint_path: ""
+    evotuned:
+      display_name: "Evo-tuned"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_dedup___esm2_t12_35M_UR50D__lr2e-05__ep3_48h_20260414_101859"
+    c05_finetuned:
+      display_name: "C05 finetuned"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/c05_c05_cdrh3_blosum25__evo_seed_20260424_191020"
+    dpo_from_evo:
+      display_name: "DPO from evo"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__evo_base_20260425_190014"
+    dpo_from_c05:
+      display_name: "DPO from C05"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__c05_ft_20260425_190143"
+    dpo_from_c05_ep6:
+      display_name: "DPO from C05 ep6"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__c05_ft_20260425_190143_ep6"
+    giovanni_dpo:
+      display_name: "Giovanni DPO"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/giovanni-dpo"
+    giovanni_dpo_less:
+      display_name: "Giovanni DPO (less)"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/giovanni-dpo-trained-less"
+    unlikelihood:
+      display_name: "Unlikelihood"
+      checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/unlikelihood-experiment"
+  selected_models: [vanilla, evotuned, c05_finetuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
+
+datasets:
+  catalog:
+    ed2:
+      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
+      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+    ed5:
+      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_M22_binding_enrichment.csv"
+      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_SI06_binding_enrichment.csv"
+    ed811:
+      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv"
+      si06_csv: null
+  oas:
+    fasta_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_dedup_rep_seq.fasta"
+    meta_csv_gz_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_filtered.csv.gz"
+
+sampling:
+  selected_sampling_strategies: [gibbs_dist, gibbs_fit, beam_dist, beam_fit]
+  strategies:
+    gibbs_dist:
+      type: gibbs
+      role: distribution
+      generate: true
+      output_csv_path: "outputs/gibbs/distribution/{model_id}.csv"
+      params:
+        n_chains: 15
+        n_steps: 2000
+        snapshot_every: 200
+        temperature: 1.0
+        seed: 42
+        start_mode: dms
+        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
+        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        max_dms_seeds: 500
+        device: cuda
+    gibbs_fit:
+      type: gibbs
+      role: fitness
+      generate: true
+      output_csv_path: "outputs/gibbs/fitness/{model_id}.csv"
+      params:
+        n_chains: 15
+        n_steps: 1000
+        snapshot_every: 50
+        temperature: 1.0
+        seed: 42
+        start_mode: wt
+        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        device: cuda
+    beam_dist:
+      type: beam
+      role: distribution
+      generate: true
+      output_csv_path: "outputs/beam_search/distribution/{model_id}.csv"
+      params:
+        beam_size: 15
+        n_steps: 2
+        snapshot_every: 1
+        temperature: 1.0
+        seed: 42
+        start_mode: dms
+        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
+        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        max_dms_seeds: 500
+        device: cuda
+    beam_fit:
+      type: beam
+      role: fitness
+      generate: true
+      output_csv_path: "outputs/beam_search/fitness/{model_id}.csv"
+      params:
+        beam_size: 15
+        n_steps: 2
+        snapshot_every: 1
+        temperature: 1.0
+        seed: 42
+        start_mode: wt
+        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        device: cuda
+
+plots:
+  per_model_pca:
+    enabled: true
+    datasets: [ed2]
+    overlay_sampling: []
+  gibbs_per_model_pca:
+    enabled: true
+    datasets: [ed2]
+    overlay_sampling: [gibbs_dist, gibbs_fit]
+  beam_per_model_pca:
+    enabled: true
+    datasets: [ed2]
+    overlay_sampling: [beam_dist, beam_fit]
+  diff_vectors_pca:
+    enabled: true
+    datasets: [ed2]
+    overlay_sampling: []
+  oas_umap:
+    enabled: false
+    datasets: []
+    overlay_sampling: []
+    color_modes: [germline_family, j_gene, vgene_within_family, shm_within_family, cdr3_length]
+    filter_family:
+      vgene_within_family: IGHV3
+      shm_within_family: IGHV3
+  pll_pca:
+    enabled: true
+    datasets: [ed2]
+    overlay_sampling: []
+  pll_vs_enrichment_overlays:
+    enabled: true
+    datasets: [ed2, ed5, ed811]
+    overlay_sampling: [gibbs_dist, gibbs_fit, beam_dist, beam_fit]
+    params:
+      batch_size: 32
+      max_overlay: 4000

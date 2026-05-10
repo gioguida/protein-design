@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 import sys
 from pathlib import Path
@@ -255,6 +256,7 @@ def load_esm_encoder(checkpoint_path: Optional[str]) -> EsmModel:
         log.info("Loading vanilla ESM2 from %s", ESM2_MODEL_ID)
         return EsmModel.from_pretrained(ESM2_MODEL_ID)
 
+    checkpoint_path = os.path.expandvars(os.path.expanduser(checkpoint_path))
     p = Path(checkpoint_path)
     if p.is_dir() and ((p / "model.safetensors").exists() or (p / "pytorch_model.bin").exists()):
         log.info("Loading HF-format checkpoint from %s", p)

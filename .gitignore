@@ -32,6 +32,7 @@ uv.lock
 *.egg-info/
 dist/
 build/
+.python-version
 
 # Large data files
 *.fasta

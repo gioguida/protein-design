@@ -84,6 +84,13 @@ def _default_wandb_run_name(cfg: Any) -> str:
     batch_size = int(cfg.training.batch_size)
     lr = float(cfg.training.lr)
     beta = float(cfg.training.beta)
+    scheduler_cfg = getattr(cfg.training, "scheduler", None)
+    scheduler_enabled = bool(getattr(scheduler_cfg, "enabled", False))
+    if scheduler_enabled:
+        scheduler_name = str(getattr(scheduler_cfg, "name", "step")).strip().lower()
+        scheduler_tag = re.sub(r"[^a-z0-9._-]+", "-", scheduler_name)
+    else:
+        scheduler_tag = "none"
     temp_part = ""
     if loss_name == "weighted_dpo":
         temp_part = f"__loss-{float(cfg.training.temperature):g}"
@@ -96,6 +103,7 @@ def _default_wandb_run_name(cfg: Any) -> str:
         f"__ep-{epochs}"
         f"__bs-{batch_size}"
         f"__lr-{lr:g}"
+        f"__sched-{scheduler_tag}"
         f"__beta-{beta:g}"
     )
 

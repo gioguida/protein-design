@@ -16,7 +16,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, Union
 
 import pandas as pd
 import torch
@@ -54,6 +54,10 @@ class PairMember(TypedDict):
 
 
 PairTuple = Tuple[PairMember, PairMember]
+SchedulerType = Union[
+    torch.optim.lr_scheduler._LRScheduler,
+    torch.optim.lr_scheduler.ReduceLROnPlateau,
+]
 
 
 class PairDataset(Dataset):
@@ -245,7 +249,9 @@ def _build_scorers(cfg: Any, logger: logging.Logger) -> Tuple[ESM2Model, ESM2Mod
 def _build_optimizer_and_scheduler(
     cfg: Any,
     policy: ESM2Model,
-) -> Tuple[torch.optim.Optimizer, Optional[torch.optim.lr_scheduler._LRScheduler]]:
+    num_training_steps: int,
+    num_training_epochs: int,
+) -> Tuple[torch.optim.Optimizer, Optional[SchedulerType]]:
     trainable_params = [p for p in policy.model.parameters() if p.requires_grad]
     if not trainable_params:
         raise ValueError("No trainable policy parameters found.")
@@ -257,12 +263,86 @@ def _build_optimizer_and_scheduler(
     )
 
     scheduler = None
-    if bool(cfg.training.scheduler.enabled):
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=int(cfg.training.scheduler.step_size),
-            gamma=float(cfg.training.scheduler.gamma),
-        )
+    scheduler_cfg = getattr(cfg.training, "scheduler", None)
+    scheduler_enabled = bool(getattr(scheduler_cfg, "enabled", False))
+    if scheduler_enabled:
+        scheduler_name = str(getattr(scheduler_cfg, "name", "step")).strip().lower()
+        scheduler_interval = str(getattr(scheduler_cfg, "interval", "epoch")).strip().lower()
+        if scheduler_interval not in {"epoch", "step"}:
+            raise ValueError(
+                "training.scheduler.interval must be 'epoch' or 'step'. "
+                f"Got: {scheduler_interval!r}"
+            )
+
+        if scheduler_name == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=int(getattr(scheduler_cfg, "step_size", 100)),
+                gamma=float(getattr(scheduler_cfg, "gamma", 0.95)),
+            )
+        elif scheduler_name == "cosine":
+            t_max = (
+                max(1, int(num_training_epochs))
+                if scheduler_interval == "epoch"
+                else max(1, int(num_training_steps))
+            )
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=t_max,
+                eta_min=float(getattr(scheduler_cfg, "min_lr", 0.0)),
+            )
+        elif scheduler_name in {"linear_warmup", "linear_warmup_cosine"}:
+            if scheduler_interval != "step":
+                raise ValueError(
+                    f"training.scheduler.name='{scheduler_name}' requires "
+                    "training.scheduler.interval='step'."
+                )
+            warmup_steps = max(0, int(getattr(scheduler_cfg, "warmup_steps", 0)))
+            total_steps = max(1, int(num_training_steps))
+            if warmup_steps >= total_steps:
+                raise ValueError(
+                    "training.scheduler.warmup_steps must be smaller than total training steps "
+                    f"({total_steps}). Got: {warmup_steps}."
+                )
+
+            if scheduler_name == "linear_warmup":
+                def _lr_lambda(step_idx: int) -> float:
+                    step_num = max(0, int(step_idx) + 1)
+                    if warmup_steps > 0 and step_num <= warmup_steps:
+                        return float(step_num) / float(warmup_steps)
+                    progress = float(step_num - warmup_steps) / float(total_steps - warmup_steps)
+                    return max(0.0, 1.0 - progress)
+            else:
+                # Cosine decay after optional linear warmup.
+                def _lr_lambda(step_idx: int) -> float:
+                    step_num = max(0, int(step_idx) + 1)
+                    if warmup_steps > 0 and step_num <= warmup_steps:
+                        return float(step_num) / float(warmup_steps)
+                    progress = float(step_num - warmup_steps) / float(total_steps - warmup_steps)
+                    progress = min(max(progress, 0.0), 1.0)
+                    return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+        elif scheduler_name == "reduce_on_plateau":
+            if scheduler_interval != "epoch":
+                raise ValueError(
+                    "training.scheduler.name='reduce_on_plateau' requires "
+                    "training.scheduler.interval='epoch'."
+                )
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=str(getattr(scheduler_cfg, "plateau_mode", "max")).strip().lower(),
+                factor=float(getattr(scheduler_cfg, "plateau_factor", 0.5)),
+                patience=int(getattr(scheduler_cfg, "plateau_patience", 2)),
+                threshold=float(getattr(scheduler_cfg, "plateau_threshold", 1e-4)),
+                min_lr=float(getattr(scheduler_cfg, "min_lr", 0.0)),
+            )
+        else:
+            raise ValueError(
+                "Unsupported training.scheduler.name. "
+                "Expected one of: step, cosine, linear_warmup, linear_warmup_cosine, reduce_on_plateau. "
+                f"Got: {scheduler_name!r}"
+            )
 
     return optimizer, scheduler
 
@@ -272,7 +352,7 @@ def _save_checkpoint(
     epoch: int,
     policy: ESM2Model,
     optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scheduler: Optional[SchedulerType],
     best_val_loss: float,
 ) -> None:
     state = {
@@ -289,15 +369,28 @@ def _load_checkpoint(
     checkpoint_path: Path,
     policy: ESM2Model,
     optimizer: Optional[torch.optim.Optimizer],
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scheduler: Optional[SchedulerType],
 ) -> Tuple[int, float]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     policy.load_state_dict(ckpt["model_state_dict"])
 
+    cross_task = False
     if optimizer is not None and "optimizer_state_dict" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    if scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except (ValueError, KeyError) as exc:
+            cross_task = True
+            logging.getLogger(__name__).warning(
+                "Skipping optimizer state (incompatible with current optimizer, "
+                "likely a cross-task checkpoint): %s",
+                exc,
+            )
+    if not cross_task and scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+    if cross_task:
+        # Cross-task resume: only model weights transfer; training starts fresh.
+        return 1, float("inf")
 
     next_epoch = int(ckpt.get("epoch", 0)) + 1
     best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
@@ -348,6 +441,8 @@ def _run_epoch(
     beta: float,
     temperature: float,
     optimizer: Optional[torch.optim.Optimizer],
+    scheduler: Optional[SchedulerType],
+    scheduler_step_on_batch: bool,
     grad_clip_norm: float,
     logger: logging.Logger,
     log_every_n_steps: int,
@@ -415,6 +510,8 @@ def _run_epoch(
             if grad_clip_norm > 0:
                 clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
+            if scheduler is not None and scheduler_step_on_batch:
+                scheduler.step()
 
         total_loss += float(batch_loss.item())
         num_batches += 1
@@ -534,7 +631,7 @@ def _resolve_raw_csv_path(cfg: Any) -> Path:
 
 def _resolve_ed5_raw_csv_path(cfg: Any) -> Path:
     defaults = default_data_paths()
-    fallback = defaults["raw_m22"].parent / "ED5_M22_enrichment.csv"
+    fallback = defaults["raw_m22"].parent / "ED5_M22_binding_enrichment.csv"
     test_cfg = getattr(cfg.data, "test", None)
     ed5_csv = None if test_cfg is None else getattr(test_cfg, "ed5_csv", None)
     return fallback if ed5_csv is None else Path(to_absolute_path(str(ed5_csv)))
@@ -805,7 +902,42 @@ def run_dpo(cfg: Any) -> Path:
     )
 
     policy, reference = _build_scorers(cfg, logger)
-    optimizer, scheduler = _build_optimizer_and_scheduler(cfg, policy)
+    total_epochs = int(cfg.training.num_epochs)
+    total_training_steps = len(train_loader) * total_epochs
+    optimizer, scheduler = _build_optimizer_and_scheduler(
+        cfg,
+        policy,
+        num_training_steps=total_training_steps,
+        num_training_epochs=total_epochs,
+    )
+    scheduler_cfg = getattr(cfg.training, "scheduler", None)
+    scheduler_name = str(getattr(scheduler_cfg, "name", "step")).strip().lower()
+    scheduler_interval = str(getattr(scheduler_cfg, "interval", "epoch")).strip().lower()
+    scheduler_plateau_monitor = str(
+        getattr(scheduler_cfg, "plateau_monitor", "val_spearman_avg")
+    ).strip()
+    scheduler_step_on_batch = scheduler is not None and scheduler_interval == "step"
+    if scheduler is None:
+        logger.info("LR scheduler: disabled")
+    else:
+        if scheduler_name == "reduce_on_plateau":
+            logger.info(
+                "LR scheduler: %s (interval=%s, monitor=%s, mode=%s, total_epochs=%d, total_steps=%d)",
+                scheduler_name,
+                scheduler_interval,
+                scheduler_plateau_monitor,
+                str(getattr(scheduler_cfg, "plateau_mode", "max")).strip().lower(),
+                total_epochs,
+                total_training_steps,
+            )
+        else:
+            logger.info(
+                "LR scheduler: %s (interval=%s, total_epochs=%d, total_steps=%d)",
+                scheduler_name,
+                scheduler_interval,
+                total_epochs,
+                total_training_steps,
+            )
 
     ckpt_dir = output_dir / str(cfg.checkpointing.dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -836,6 +968,17 @@ def run_dpo(cfg: Any) -> Path:
     val_spearman_df = _load_validation_spearman_df(cfg, logger)
     test_spearman_df = _load_test_spearman_df(cfg, logger)
     val_spearman_batch_size = int(getattr(cfg.model, "pll_mask_chunk_size", 64))
+    if (
+        scheduler is not None
+        and isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)
+        and scheduler_plateau_monitor == "val_spearman_avg"
+        and val_spearman_df is None
+    ):
+        raise ValueError(
+            "training.scheduler.name='reduce_on_plateau' with "
+            "training.scheduler.plateau_monitor='val_spearman_avg' requires "
+            "a valid validation Spearman dataset."
+        )
 
     if start_epoch <= 1 and global_step == 0:
         val_metrics_step0, _ = _run_epoch(
@@ -846,6 +989,8 @@ def run_dpo(cfg: Any) -> Path:
             beta=float(cfg.training.beta),
             temperature=float(cfg.training.temperature),
             optimizer=None,
+            scheduler=None,
+            scheduler_step_on_batch=False,
             grad_clip_norm=0.0,
             logger=logger,
             log_every_n_steps=0,
@@ -964,6 +1109,8 @@ def run_dpo(cfg: Any) -> Path:
             beta=float(cfg.training.beta),
             temperature=float(cfg.training.temperature),
             optimizer=optimizer,
+            scheduler=scheduler,
+            scheduler_step_on_batch=scheduler_step_on_batch,
             grad_clip_norm=float(cfg.training.grad_clip_norm),
             logger=logger,
             log_every_n_steps=int(cfg.logging.log_every_n_steps),
@@ -981,6 +1128,8 @@ def run_dpo(cfg: Any) -> Path:
             beta=float(cfg.training.beta),
             temperature=float(cfg.training.temperature),
             optimizer=None,
+            scheduler=None,
+            scheduler_step_on_batch=False,
             grad_clip_norm=0.0,
             logger=logger,
             log_every_n_steps=0,
@@ -989,9 +1138,6 @@ def run_dpo(cfg: Any) -> Path:
             wandb_mod=None, # Typically don't log step-level val metrics online this way
             epoch=epoch,
         )
-
-        if scheduler is not None:
-            scheduler.step()
 
         val_perplexity = _compute_chosen_perplexity(val_loader, policy)
 
@@ -1043,6 +1189,22 @@ def run_dpo(cfg: Any) -> Path:
                 )
             except Exception as exc:
                 logger.warning("Validation Spearman evaluation failed (%s). Skipping this metric.", exc)
+
+        if scheduler is not None and not scheduler_step_on_batch:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                plateau_value = epoch_record.get(scheduler_plateau_monitor)
+                if plateau_value is None or (
+                    isinstance(plateau_value, float) and math.isnan(plateau_value)
+                ):
+                    logger.warning(
+                        "ReduceLROnPlateau monitor '%s' unavailable at epoch %d. Skipping scheduler step.",
+                        scheduler_plateau_monitor,
+                        epoch,
+                    )
+                else:
+                    scheduler.step(float(plateau_value))
+            else:
+                scheduler.step()
 
         history.append(epoch_record)
 
@@ -1130,6 +1292,8 @@ def run_dpo(cfg: Any) -> Path:
         temperature=float(cfg.training.temperature),
         loss=str(cfg.training.loss),
         optimizer=None,
+        scheduler=None,
+        scheduler_step_on_batch=False,
         grad_clip_norm=0.0,
         logger=logger,
         log_every_n_steps=0,

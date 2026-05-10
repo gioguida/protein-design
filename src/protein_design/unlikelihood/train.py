@@ -80,7 +80,7 @@ def _resolve_unwanted_json_path(cfg: Any) -> Path:
 
 def _resolve_ed5_raw_csv_path(cfg: Any) -> Path:
     defaults = default_data_paths()
-    fallback = defaults["raw_m22"].parent / "ED5_M22_enrichment.csv"
+    fallback = defaults["raw_m22"].parent / "ED5_M22_binding_enrichment.csv"
     test_cfg = getattr(cfg.data, "test", None)
     ed5_csv = None if test_cfg is None else getattr(test_cfg, "ed5_csv", None)
     return fallback if ed5_csv is None else Path(to_absolute_path(str(ed5_csv)))
