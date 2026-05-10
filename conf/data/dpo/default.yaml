@@ -1,30 +1,23 @@
 # @package _global_
 data:
-  raw_csv: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED2_M22_binding_enrichment.csv
+  dms_config: conf/data/dms/default.yaml
+  dpo_dataset_key: ed2_m22
   processed_dir: data/processed
   force_rebuild: false
-  pairing_strategy: delta_based   # positive_vs_tail | positive_only_extremes | both_structured | delta_based
+  pairing_strategy: delta_based
   min_positive_delta: 3.0
   min_delta_margin: 5.0
   delta_based:
-    components: [cross, wt_anchors] # [cross, wt_anchors, within_pos, within_neg]
-    gap: 0.5            # expected in [0.0, 1.0]
-    wt_pairs_frac: 0.1  # expected in [0.0, 1.0]
-    cross_pairs_frac: 0.03      # expected in [0.0, 1.0]
-    strong_pos_threshold: 1.0  # for winner>WT anchors
-    strong_neg_threshold: -5.0 # for WT>loser anchors
-    min_score_margin: 0.1      # filter near-tie pairs
-  include_views: [mut1, mut2]
-  deduplicate_across_views: true
-  train_frac: 0.8
-  val_frac: 0.1
-  test_frac: 0.1
-  split:
-    hamming_distance: 1
-    stratify_bins: 10
+    components: [cross, wt_anchors]
+    gap: 0.5
+    wt_pairs_frac: 0.1
+    cross_pairs_frac: 0.03
+    strong_pos_threshold: 1.0
+    strong_neg_threshold: -5.0
+    min_score_margin: 0.1
   val:
     n_val_pos: 200
     n_val_neg: 400
   test:
-    ed5_csv: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED5_M22_binding_enrichment.csv
+    dataset_key: ed5_m22
     pos_threshold: 0.0

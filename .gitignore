@@ -64,3 +64,40 @@ plots/
 # Agents
 .claude
 .codex
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+
+# Extra Python/tooling clutter
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.pyre/
+.pytype/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.eggs/
+pip-wheel-metadata/
+site/
+
+# Local env/version managers
+.uv/
+env/
+.envrc
+.direnv/
+.tool-versions
+
+# Extra lockfiles and local scratch
+poetry.lock
+Pipfile.lock
+*.tmp
+*.temp
+*.bak
+
+# Known accidental local files
+ion.python-versionq

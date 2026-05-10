@@ -71,11 +71,21 @@ log = logging.getLogger("compute_pll_pca")
 # --------------------------------------------------------------------------- I/O
 
 
-def load_dms(m22_path: Path, si06_path: Path, max_n: int) -> pd.DataFrame:
+def load_dms(
+    m22_path: Path,
+    si06_path: Path | None,
+    max_n: int,
+    m22_col: str = "M22_binding_enrichment_adj",
+    si06_col: str = "SI06_binding_enrichment_adj",
+) -> pd.DataFrame:
     """Outer-merge M22 + SI06 on `aa` (24-aa CDRH3), sample up to max_n rows."""
-    m22 = pd.read_csv(m22_path)[["aa", "M22_binding_enrichment_adj"]]
-    si06 = pd.read_csv(si06_path)[["aa", "SI06_binding_enrichment_adj"]]
-    merged = m22.merge(si06, on="aa", how="outer")
+    m22 = pd.read_csv(m22_path)[["aa", m22_col]].rename(columns={m22_col: "M22_binding_enrichment_adj"})
+    if si06_path is None:
+        merged = m22
+        merged["SI06_binding_enrichment_adj"] = np.nan
+    else:
+        si06 = pd.read_csv(si06_path)[["aa", si06_col]].rename(columns={si06_col: "SI06_binding_enrichment_adj"})
+        merged = m22.merge(si06, on="aa", how="outer")
     if len(merged) > max_n:
         merged = merged.sample(n=max_n, random_state=SEED).reset_index(drop=True)
     return merged.reset_index(drop=True)
@@ -243,7 +253,9 @@ def parse_args() -> argparse.Namespace:
              "(vanilla), an HF model ID, an HF dir, or a .pt file.",
     )
     p.add_argument("--dms-m22", default=DEFAULT_DMS_M22)
-    p.add_argument("--dms-si06", default=DEFAULT_DMS_SI06)
+    p.add_argument("--dms-si06", default=None)
+    p.add_argument("--dms-m22-col", default="M22_binding_enrichment_adj")
+    p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--output-path", type=Path, required=True,
@@ -262,7 +274,13 @@ def main() -> int:
     log.info("Device: %s", device)
 
     log.info("Loading DMS …")
-    dms = load_dms(Path(args.dms_m22), Path(args.dms_si06), args.max_dms)
+    dms = load_dms(
+        Path(args.dms_m22),
+        Path(args.dms_si06) if args.dms_si06 else None,
+        args.max_dms,
+        m22_col=args.dms_m22_col,
+        si06_col=args.dms_si06_col,
+    )
     log.info("DMS: %d sequences", len(dms))
 
     cdr_strings = dms["aa"].astype(str).tolist()

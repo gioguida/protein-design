@@ -2,6 +2,8 @@ version: 1
 
 run:
   force: false
+  reuse_existing_artifacts: true
+  plots_only: false
   dry_run: false
   cka_threshold: 0.5
   max_dms: 500
@@ -39,19 +41,27 @@ models:
     unlikelihood:
       display_name: "Unlikelihood"
       checkpoint_path: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/unlikelihood-experiment"
-  selected_models: [vanilla, evotuned, c05_finetuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
+  selected_models: [vanilla, evotuned, dpo_from_evo, dpo_from_c05, dpo_from_c05_ep6, giovanni_dpo_less]
 
 datasets:
+  dms_config: conf/data/dms/default.yaml
+  split_name: test
+  subsample:
+    enabled: true
+    max_rows: 5000
+    seed: 42
+    output_dir: data/processed/analysis_subsamples
+    stratify_bins: 10
   catalog:
     ed2:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+      m22_dataset: ed2_m22
+      si06_dataset: ed2_si06
     ed5:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_M22_binding_enrichment.csv"
-      si06_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED5_SI06_binding_enrichment.csv"
+      m22_dataset: ed5_m22
+      si06_dataset: ed5_si06
     ed811:
-      m22_csv: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/ED811_M22_enrichment_full.csv"
-      si06_csv: null
+      m22_dataset: ed811_m22
+      si06_dataset: null
   oas:
     fasta_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_dedup_rep_seq.fasta"
     meta_csv_gz_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/oas_filtered.csv.gz"
@@ -71,9 +81,9 @@ sampling:
         temperature: 1.0
         seed: 42
         start_mode: dms
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
-        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
+        dms_m22_path: "dms_split:ed2_m22:test"
+        dms_si06_path: "dms_split:ed2_si06:test"
         max_dms_seeds: 500
         device: cuda
     gibbs_fit:
@@ -88,7 +98,7 @@ sampling:
         temperature: 1.0
         seed: 42
         start_mode: wt
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
         device: cuda
     beam_dist:
       type: beam
@@ -96,15 +106,15 @@ sampling:
       generate: true
       output_csv_path: "outputs/beam_search/distribution/{model_id}.csv"
       params:
-        beam_size: 15
-        n_steps: 2
+        beam_size: 40
+        n_steps: 5
         snapshot_every: 1
-        temperature: 1.0
+        temperature: 0.5
         seed: 42
         start_mode: dms
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
-        dms_m22_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-        dms_si06_path: "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
+        dms_m22_path: "dms_split:ed2_m22:test"
+        dms_si06_path: "dms_split:ed2_si06:test"
         max_dms_seeds: 500
         device: cuda
     beam_fit:
@@ -113,31 +123,33 @@ sampling:
       generate: true
       output_csv_path: "outputs/beam_search/fitness/{model_id}.csv"
       params:
-        beam_size: 15
-        n_steps: 2
+        beam_size: 40
+        n_steps: 5
         snapshot_every: 1
-        temperature: 1.0
+        temperature: 0.5
         seed: 42
+        # start_mode options: wt | dms | top_dms
         start_mode: wt
-        wt_cdrh3: "ARDYTRGAWFGESLIGGFDNYYYY"
+        wt_cdrh3: "HMSMQQVVSAGWERADLVGDAFDV"
         device: cuda
+        # top_k_dms: 10  # only used when start_mode: top_dms
 
 plots:
   per_model_pca:
-    enabled: true
-    datasets: [ed2]
+    enabled: false
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   gibbs_per_model_pca:
-    enabled: true
-    datasets: [ed2]
+    enabled: false
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: [gibbs_dist, gibbs_fit]
   beam_per_model_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: [beam_dist, beam_fit]
   diff_vectors_pca:
-    enabled: true
-    datasets: [ed2]
+    enabled: false
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   oas_umap:
     enabled: false
@@ -149,7 +161,7 @@ plots:
       shm_within_family: IGHV3
   pll_pca:
     enabled: true
-    datasets: [ed2]
+    datasets: [ed2, ed5, ed811]
     overlay_sampling: []
   pll_vs_enrichment_overlays:
     enabled: true
@@ -157,4 +169,32 @@ plots:
     overlay_sampling: [gibbs_dist, gibbs_fit, beam_dist, beam_fit]
     params:
       batch_size: 32
-      max_overlay: 4000
+      max_overlay: 12000
+      split_mode: full
+      dpo_split_config: conf/data/dpo/default.yaml
+      split_seed: 42
+
+  # ----- Beam search evaluation plots (new) -----
+  # These are flat boolean toggles (no enabled/datasets sub-keys).
+  # DMS-dependent plots (beam_pll_vs_dms_histogram, beam_aa_heatmap) run for
+  # every dataset already in the required_datasets set (those used by the
+  # enabled dataset-specific plots above).
+  # Non-DMS plots (beam_diversity_diagnostics, beam_pll_vs_nmut) run once per
+  # model × beam strategy regardless of active datasets.
+
+  # NOTE: beam_pll_trajectory routes to the existing gibbs_diagnostics.py,
+  # which already computes exact PLL trajectories. Setting this to true adds
+  # an explicit per-strategy call in addition to the existing bulk call.
+  beam_pll_trajectory: true
+
+  # Overlaid histogram: PLL of SBS final-step sequences vs DMS test sequences.
+  beam_pll_vs_dms_histogram: true
+
+  # Three-panel: pairwise Hamming, per-position Shannon entropy, n_mutations.
+  beam_diversity_diagnostics: true
+
+  # Scatter: PLL vs n_mutations (Spearman rho annotated).
+  beam_pll_vs_nmut: true
+
+  # Side-by-side 20×24 AA frequency heatmaps (SBS vs DMS).
+  beam_aa_heatmap: true

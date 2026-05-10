@@ -24,7 +24,12 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 
 
-from protein_design import eval as eval_module
+from protein_design.dms_splitting import (
+    DEFAULT_CONFIG_PATH,
+    dataset_spec,
+    project_root,
+    resolve_dataset_split,
+)
 from protein_design.eval import run_scoring_evaluation
 from protein_design.utils import init_wandb, setup_train_logger
 from .dataset import (
@@ -89,44 +94,23 @@ def _pair_collate(batch: Sequence[PairTuple]) -> List[PairTuple]:
 
 
 def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    defaults = default_data_paths()
-
-    raw_csv_path = (
-        defaults["raw_m22"]
-        if cfg.data.raw_csv is None
-        else Path(to_absolute_path(str(cfg.data.raw_csv)))
-    )
-    processed_dir = (
-        defaults["processed_dir"]
-        if cfg.data.processed_dir is None
-        else Path(to_absolute_path(str(cfg.data.processed_dir)))
-    )
-
     pairing_strategy = str(cfg.data.pairing_strategy)
+    if pairing_strategy != "delta_based":
+        raise ValueError("DPO only supports data.pairing_strategy='delta_based'.")
     delta_cfg = getattr(cfg.data, "delta_based", None)
-    split_cfg = getattr(cfg.data, "split", None)
 
     def _delta_value(name: str, default: float) -> float:
         if delta_cfg is not None and getattr(delta_cfg, name, None) is not None:
             return float(getattr(delta_cfg, name))
         return float(getattr(cfg.data, name, default))
 
-    if pairing_strategy == "delta_based":
-        if delta_cfg is None:
-            raise ValueError(
-                "data.delta_based is required when data.pairing_strategy='delta_based'."
-            )
-        components = validate_delta_based_components(
-            [str(component) for component in delta_cfg.components]
-        )
-    else:
-        components = DELTA_BASED_COMPONENTS
+    if delta_cfg is None:
+        raise ValueError("data.delta_based is required when data.pairing_strategy='delta_based'.")
+    components = validate_delta_based_components([str(component) for component in delta_cfg.components])
 
     return build_split_pair_dataframes_from_raw(
         pairing_strategy=pairing_strategy,
-        include_views=[str(v) for v in cfg.data.include_views],
-        raw_csv_path=raw_csv_path,
-        processed_dir=processed_dir,
+        include_views=[],
         force_rebuild=bool(cfg.data.force_rebuild),
         min_positive_delta=float(cfg.data.min_positive_delta),
         min_delta_margin=float(cfg.data.min_delta_margin),
@@ -137,13 +121,9 @@ def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, 
         strong_pos_threshold=_delta_value("strong_pos_threshold", 1.0),
         strong_neg_threshold=_delta_value("strong_neg_threshold", -5.0),
         min_score_margin=_delta_value("min_score_margin", 0.1),
-        deduplicate_across_views=bool(cfg.data.deduplicate_across_views),
-        train_frac=float(cfg.data.train_frac),
-        val_frac=float(cfg.data.val_frac),
-        test_frac=float(cfg.data.test_frac),
-        split_hamming_distance=int(getattr(split_cfg, "hamming_distance", 1)),
-        split_stratify_bins=int(getattr(split_cfg, "stratify_bins", 10)),
         seed=int(cfg.seed),
+        dms_config_path=_resolve_dms_config_path(cfg),
+        dataset_key=str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")),
     )
 
 
@@ -621,20 +601,14 @@ def _resolve_processed_dir(cfg: Any) -> Path:
 
 
 def _resolve_raw_csv_path(cfg: Any) -> Path:
-    defaults = default_data_paths()
-    return (
-        defaults["raw_m22"]
-        if cfg.data.raw_csv is None
-        else Path(to_absolute_path(str(cfg.data.raw_csv)))
-    )
+    spec = dataset_spec(str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")), _resolve_dms_config_path(cfg))
+    return spec.path
 
 
 def _resolve_ed5_raw_csv_path(cfg: Any) -> Path:
-    defaults = default_data_paths()
-    fallback = defaults["raw_m22"].parent / "ED5_M22_binding_enrichment.csv"
     test_cfg = getattr(cfg.data, "test", None)
-    ed5_csv = None if test_cfg is None else getattr(test_cfg, "ed5_csv", None)
-    return fallback if ed5_csv is None else Path(to_absolute_path(str(ed5_csv)))
+    dataset_key = str(getattr(test_cfg, "dataset_key", "ed5_m22"))
+    return dataset_spec(dataset_key, _resolve_dms_config_path(cfg)).path
 
 
 def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
@@ -703,13 +677,32 @@ def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
 
 
 def _ensure_test_eval_csv(cfg: Any, logger: logging.Logger) -> Optional[Path]:
-    """Ensure processed ED5 CSV exists for test perplexity logging."""
-    return eval_module.ensure_test_eval_csv(
-        raw_ed5_path=_resolve_ed5_raw_csv_path(cfg),
-        processed_dir=_resolve_processed_dir(cfg),
-        log=logger,
-        force=bool(getattr(cfg.data, "force_rebuild", False)),
-    )
+    """Ensure the configured independent test split exists."""
+    test_cfg = getattr(cfg.data, "test", None)
+    dataset_key = str(getattr(test_cfg, "dataset_key", "ed5_m22"))
+    try:
+        output_path = resolve_dataset_split(
+            dataset_key,
+            "test",
+            _resolve_dms_config_path(cfg),
+            force=bool(getattr(cfg.data, "force_rebuild", False)),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve %s test split (%s). Skipping test perplexity logging.",
+            dataset_key,
+            exc,
+        )
+        return None
+
+    if not output_path.exists():
+        logger.warning(
+            "Configured test split is still missing at %s. Skipping test perplexity logging.",
+            output_path,
+        )
+        return None
+
+    return output_path
 
 
 def _load_sequences_from_csv(csv_path: Path, logger: logging.Logger) -> List[str]:
@@ -801,14 +794,125 @@ def _load_validation_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[p
 
 def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[str, List[str]]]:
     d5_path = _ensure_test_eval_csv(cfg, logger)
+    if d5_path is None:
+        return None
+
+    try:
+        d5_df = pd.read_csv(d5_path)
+    except pd.errors.ParserError as exc:
+        logger.warning("Could not parse %s (%s). Skipping test perplexity logging.", d5_path, exc)
+        return None
+
+    test_cfg = getattr(cfg.data, "test", None)
+    test_spec = dataset_spec(str(getattr(test_cfg, "dataset_key", "ed5_m22")), _resolve_dms_config_path(cfg))
+    if test_spec.key_metric_col != "M22_binding_enrichment_adj" and test_spec.key_metric_col in d5_df.columns:
+        d5_df["M22_binding_enrichment_adj"] = d5_df[test_spec.key_metric_col]
+    required_cols = {"aa", "M22_binding_enrichment_adj"}
+    missing_cols = required_cols.difference(d5_df.columns)
+    if missing_cols:
+        logger.warning(
+            "%s missing required columns (%s). Skipping test perplexity logging.",
+            d5_path,
+            ", ".join(sorted(missing_cols)),
+        )
+        return None
+
     pos_threshold = float(getattr(getattr(cfg.data, "test", None), "pos_threshold", 0.0))
-    return eval_module.load_test_pll_eval_sets(d5_path, logger, pos_threshold=pos_threshold)
+    clean_scores = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
+    clean_df = d5_df.loc[clean_scores.notna()].copy()
+    clean_df["M22_binding_enrichment_adj"] = clean_scores.loc[clean_scores.notna()].astype(float)
+    clean_df["aa"] = clean_df["aa"].astype(str).str.strip()
+    clean_df = clean_df[clean_df["aa"] != ""].copy()
+
+    test_pos = clean_df[clean_df["M22_binding_enrichment_adj"] > pos_threshold]["aa"].tolist()
+    test_neg = clean_df[clean_df["M22_binding_enrichment_adj"] < 0.0]["aa"].tolist()
+
+    return {
+        "ppl/test_pos": test_pos,
+        "ppl/test_neg": test_neg,
+        "ppl/test_wt": [WILD_TYPE],
+    }
 
 
 def _load_test_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[pd.DataFrame]:
     """Load test scoring rows used for test Spearman tracking."""
     d5_path = _ensure_test_eval_csv(cfg, logger)
-    return eval_module.load_test_spearman_df(d5_path, logger)
+    if d5_path is None:
+        return None
+
+    try:
+        d5_df = pd.read_csv(d5_path)
+    except pd.errors.ParserError as exc:
+        logger.warning("Could not parse %s (%s). Skipping test Spearman logging.", d5_path, exc)
+        return None
+
+    test_cfg = getattr(cfg.data, "test", None)
+    test_spec = dataset_spec(str(getattr(test_cfg, "dataset_key", "ed5_m22")), _resolve_dms_config_path(cfg))
+    if test_spec.key_metric_col != "M22_binding_enrichment_adj" and test_spec.key_metric_col in d5_df.columns:
+        d5_df["M22_binding_enrichment_adj"] = d5_df[test_spec.key_metric_col]
+    required_cols = {"mut", "M22_binding_enrichment_adj"}
+    missing_cols = required_cols.difference(d5_df.columns)
+    if missing_cols:
+        logger.warning(
+            "%s missing required columns (%s). Skipping test Spearman logging.",
+            d5_path,
+            ", ".join(sorted(missing_cols)),
+        )
+        return None
+
+    enrichment = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
+    d5_df = d5_df.loc[enrichment.notna()].copy()
+    d5_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
+    d5_df["mut"] = d5_df["mut"].astype(str).str.strip()
+    d5_df = d5_df[d5_df["mut"] != ""].copy()
+
+    if len(d5_df) < 3:
+        logger.warning("Test Spearman set too small (%d rows). Skipping test Spearman logging.", len(d5_df))
+        return None
+
+    return d5_df.reset_index(drop=True)
+
+
+def _corpus_perplexity_for_sequences(
+    scorer: ESM2Model,
+    sequences: Sequence[str],
+    batch_size: int,
+) -> float:
+    valid_sequences = [str(seq).strip() for seq in sequences if str(seq).strip()]
+    if not valid_sequences:
+        return float("nan")
+
+    grouped_by_len: Dict[int, List[str]] = {}
+    for seq in valid_sequences:
+        if len(seq) <= 0:
+            continue
+        grouped_by_len.setdefault(len(seq), []).append(seq)
+
+    if not grouped_by_len:
+        return float("nan")
+
+    scorer.model.eval()
+    total_pll = 0.0
+    total_scored_tokens = 0
+    batch_size = max(1, int(batch_size))
+
+    with torch.no_grad():
+        for cdr_len, seq_group in grouped_by_len.items():
+            for start in range(0, len(seq_group), batch_size):
+                batch = seq_group[start : start + batch_size]
+                pll_scores = scorer.pseudo_log_likelihood(
+                    batch,
+                    cdr_only=True,
+                    use_grad=False,
+                )
+                total_pll += float(pll_scores.sum().item())
+                total_scored_tokens += int(cdr_len) * len(batch)
+
+    if total_scored_tokens <= 0:
+        return float("nan")
+
+    avg_nll = -total_pll / float(total_scored_tokens)
+    return float(math.exp(avg_nll))
 
 
 def evaluate_perplexity(
@@ -817,7 +921,23 @@ def evaluate_perplexity(
     device: str,
 ) -> Dict[str, float]:
     del device  # Device is already configured inside the ESM2Model wrapper.
-    return eval_module.evaluate_pll_eval_sets(model=model, eval_sets=eval_sets)
+    sequence_batch_size = int(getattr(model, "pll_mask_chunk_size", 64))
+    metrics: Dict[str, float] = {}
+    for metric_name, sequences in eval_sets.items():
+        metrics[metric_name] = _corpus_perplexity_for_sequences(
+            scorer=model,
+            sequences=sequences,
+            batch_size=sequence_batch_size,
+        )
+    return metrics
+
+
+def _resolve_dms_config_path(cfg: Any) -> Path:
+    raw = getattr(cfg.data, "dms_config", None)
+    path = Path(str(raw)) if raw is not None else project_root() / DEFAULT_CONFIG_PATH
+    if not path.is_absolute():
+        path = project_root() / path
+    return path
 
 
 def run_dpo(cfg: Any) -> Path:

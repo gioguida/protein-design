@@ -56,6 +56,41 @@ def load_dms_seed_pool(m22_path: Path, si06_path: Path, max_n: int, seed: int) -
     return merged["aa"].astype(str).tolist()
 
 
+def load_top_dms_seeds(
+    m22_path: Path,
+    si06_path: "Path | None",
+    top_k: int,
+    max_n: int,
+    enrichment_col: str = "M22_binding_enrichment_adj",
+) -> List[str]:
+    """Return the top-k CDR-H3 sequences ranked by M22 enrichment score.
+
+    Sequences are loaded from D2_M22 (enrichment column required).  D2_SI06
+    is optional and merged only for sequence-level deduplication — its rows
+    receive NaN enrichment and therefore always rank below M22 sequences.
+    After dedup and length filtering, sequences are sorted descending by
+    enrichment and the top-k are returned.
+    """
+    m22 = pd.read_csv(m22_path)
+    if enrichment_col not in m22.columns:
+        raise ValueError(
+            f"Column {enrichment_col!r} not found in {m22_path}. "
+            f"Available columns: {list(m22.columns)}"
+        )
+    m22 = m22[["aa", enrichment_col]].copy()
+
+    if si06_path is not None:
+        si06_seqs = pd.read_csv(si06_path)[["aa"]]
+        combined = pd.concat([m22[["aa"]], si06_seqs], ignore_index=True).drop_duplicates(subset=["aa"])
+        m22 = combined.merge(m22, on="aa", how="left")
+
+    m22 = m22[m22["aa"].astype(str).str.len() == CDRH3_LEN].copy()
+    m22 = m22.sort_values(enrichment_col, ascending=False, na_position="last")
+    if len(m22) > max_n:
+        m22 = m22.head(max_n)
+    return m22["aa"].astype(str).tolist()[:top_k]
+
+
 def _extract_state_dict(raw) -> dict:
     """Pull model weights out of known checkpoint wrappers."""
     if isinstance(raw, dict):
@@ -128,16 +163,24 @@ def parse_args() -> argparse.Namespace:
                    help="Path to output CSV; companion .meta.json is written alongside.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--start-mode", choices=["wt", "dms"], default="wt",
+    p.add_argument("--start-mode", choices=["wt", "dms", "top_dms"], default="wt",
                    help="wt: start from --wt-cdrh3. "
                         "dms: start from a random CDR-H3 sampled from "
-                        "D2_M22 U D2_SI06 (deterministic given --seed).")
+                        "D2_M22 U D2_SI06 (deterministic given --seed). "
+                        "top_dms: run one independent chain per top-k "
+                        "DMS sequence by enrichment score.")
     p.add_argument("--dms-m22-path", type=Path, default=None,
-                   help="Path to D2_M22.csv (required when --start-mode=dms).")
+                   help="Path to D2_M22.csv (required when --start-mode=dms or top_dms).")
     p.add_argument("--dms-si06-path", type=Path, default=None,
-                   help="Path to D2_SI06.csv (required when --start-mode=dms).")
+                   help="Path to D2_SI06.csv (optional for dms/top_dms modes).")
     p.add_argument("--max-dms-seeds", type=int, default=500,
-                   help="Cap on the DMS pool size before selecting a start sequence.")
+                   help="Cap on the DMS pool size before selecting start sequence(s).")
+    p.add_argument("--top-k-dms", type=int, default=10,
+                   help="Number of top-enrichment DMS sequences to use as seeds "
+                        "(--start-mode=top_dms only).")
+    p.add_argument("--dms-enrichment-col", default="M22_binding_enrichment_adj",
+                   help="Enrichment column in the M22 CSV used to rank seeds "
+                        "(--start-mode=top_dms only).")
     return p.parse_args()
 
 
@@ -344,6 +387,21 @@ def main() -> None:
             raise ValueError(f"DMS seed pool is empty (after length-{CDRH3_LEN} filter)")
         start_cdrh3 = random.choice(pool)
         print(f"[seeds] start_mode=dms pool_size={len(pool)} selected={start_cdrh3}")
+    elif args.start_mode == "top_dms":
+        if args.dms_m22_path is None:
+            raise ValueError("--start-mode=top_dms requires --dms-m22-path")
+        top_seeds = load_top_dms_seeds(
+            args.dms_m22_path,
+            args.dms_si06_path,
+            args.top_k_dms,
+            args.max_dms_seeds,
+            args.dms_enrichment_col,
+        )
+        if not top_seeds:
+            raise ValueError(f"Top-DMS seed pool is empty (after length-{CDRH3_LEN} filter)")
+        print(f"[seeds] start_mode=top_dms top_k={args.top_k_dms} "
+              f"seeds={top_seeds}")
+        start_cdrh3 = top_seeds[0]  # used for single-chain fallback path
     else:
         start_cdrh3 = args.wt_cdrh3
         print(f"[seeds] start_mode=wt start={start_cdrh3}")
@@ -393,39 +451,51 @@ def main() -> None:
     print(f"[sanity]   WT  CDRH3 pos 0 = {args.wt_cdrh3[0]!r}")
     print(f"[sanity]   top5            = {top5}")
 
-    start_full_vh = add_context(start_cdrh3)
-    seed_tokens = tokenize_full_vh(tokenizer, start_full_vh).to(device)
-
     print(f"\n[run] beam_size={args.beam_size}  n_steps={args.n_steps}  "
           f"snapshot_every={args.snapshot_every}  temperature={args.temperature}")
-    t_run = time.time()
-    beam_history, all_seen = stochastic_beam_search(
-        seed_tokens,
-        mutable_token_positions,
-        model=model,
-        aa_token_ids=aa_token_ids,
-        aa_index_by_token=aa_index_by_token,
-        mask_id=mask_id,
-        temperature=args.temperature,
-        beam_size=args.beam_size,
-        n_steps=args.n_steps,
-    )
-    print(f"[run] completed in {time.time() - t_run:.1f}s  unique_seen={len(all_seen)}")
+
+    def _run_one_seed(start: str, chain_id_offset: int) -> List[dict]:
+        """Run SBS from a single CDR-H3 seed and return snapshot records."""
+        start_full_vh = add_context(start)
+        seed_tok = tokenize_full_vh(tokenizer, start_full_vh).to(device)
+        t0 = time.time()
+        beam_hist, all_s = stochastic_beam_search(
+            seed_tok,
+            mutable_token_positions,
+            model=model,
+            aa_token_ids=aa_token_ids,
+            aa_index_by_token=aa_index_by_token,
+            mask_id=mask_id,
+            temperature=args.temperature,
+            beam_size=args.beam_size,
+            n_steps=args.n_steps,
+        )
+        print(f"[run] seed={start!r} offset={chain_id_offset} "
+              f"completed in {time.time() - t0:.1f}s  unique_seen={len(all_s)}")
+        recs: List[dict] = []
+        for step, beam_members in enumerate(beam_hist):
+            should_snap = (step == 0) or (step % args.snapshot_every == 0) or (step == args.n_steps)
+            if not should_snap:
+                continue
+            for member_idx, (seq_tokens, _) in enumerate(beam_members):
+                seq = decode_full_vh(tokenizer, seq_tokens)
+                recs.append(make_record(
+                    chain_id_offset + member_idx, step, seq,
+                    args.wt_cdrh3, args.model_variant,
+                ))
+            print(f"[snapshot] step={step} beam_members={len(beam_members)}")
+        return recs
 
     snapshots: List[dict] = []
-    for step, beam_members in enumerate(beam_history):
-        if step == 0:
-            should_snapshot = True
-        else:
-            should_snapshot = (step % args.snapshot_every == 0) or (step == args.n_steps)
-        if not should_snapshot:
-            continue
-        for chain_id, (seq_tokens, _) in enumerate(beam_members):
-            seq = decode_full_vh(tokenizer, seq_tokens)
-            snapshots.append(
-                make_record(chain_id, step, seq, args.wt_cdrh3, args.model_variant)
-            )
-        print(f"[snapshot] step={step} beam_members={len(beam_members)}")
+    if args.start_mode == "top_dms":
+        # One independent SBS run per top-k DMS seed; chain IDs are offset so
+        # every seed × beam-member combination gets a unique chain_id.
+        all_chain_starts: List[str] = top_seeds  # type: ignore[name-defined]
+        for seed_idx, seed_seq in enumerate(all_chain_starts):
+            print(f"\n[top_dms] seed {seed_idx + 1}/{len(all_chain_starts)}: {seed_seq!r}")
+            snapshots.extend(_run_one_seed(seed_seq, chain_id_offset=seed_idx * args.beam_size))
+    else:
+        snapshots = _run_one_seed(start_cdrh3, chain_id_offset=0)
 
     out_dir = os.path.dirname(args.output_path)
     if out_dir:
@@ -437,6 +507,10 @@ def main() -> None:
     df.to_csv(args.output_path, index=False)
     print(f"\n[done] wrote {len(df)} snapshot rows to {args.output_path}")
 
+    if args.start_mode == "top_dms":
+        chain_starts_list = top_seeds  # type: ignore[name-defined]
+    else:
+        chain_starts_list = [start_cdrh3]
     meta = {
         "model_variant": args.model_variant,
         "checkpoint_path": checkpoint,
@@ -447,7 +521,8 @@ def main() -> None:
         "temperature": args.temperature,
         "seed": args.seed,
         "start_mode": args.start_mode,
-        "chain_starts": [start_cdrh3],
+        "chain_starts": chain_starts_list,
+        "top_k_dms": args.top_k_dms if args.start_mode == "top_dms" else None,
     }
     meta_path = f"{args.output_path}.meta.json"
     with open(meta_path, "w") as f:

@@ -11,12 +11,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 
-from protein_design.dpo.data_processing import build_processed_views
-from protein_design.dpo.dataset import default_data_paths
-from protein_design.dpo.splitting import (
-    build_or_load_cluster_split_membership,
-    split_membership_keys,
-)
+from protein_design.dms_splitting import DEFAULT_CONFIG_PATH, dataset_spec, project_root, resolve_dataset_split
 
 
 class EnrichmentSequenceDataset(Dataset):
@@ -115,35 +110,12 @@ class CDRMaskingCollator:
         }
 
 
-def _resolve_raw_and_processed_paths(cfg: object, to_absolute_path) -> Tuple[Path, Path]:
-    defaults = default_data_paths()
-    raw_csv = (
-        defaults["raw_m22"]
-        if getattr(cfg.data, "raw_csv", None) is None
-        else Path(to_absolute_path(str(cfg.data.raw_csv)))
-    )
-    processed_dir = (
-        defaults["processed_dir"]
-        if getattr(cfg.data, "processed_dir", None) is None
-        else Path(to_absolute_path(str(cfg.data.processed_dir)))
-    )
-    return raw_csv, processed_dir
-
-
-def _prepare_base_dataframe(
-    cfg: object,
-    to_absolute_path,
-) -> Tuple[pd.DataFrame, Path, Path]:
-    raw_csv_path, processed_dir = _resolve_raw_and_processed_paths(cfg, to_absolute_path)
-    paths = build_processed_views(
-        raw_csv_path=raw_csv_path,
-        processed_dir=processed_dir,
-        force=bool(getattr(cfg.data, "force_rebuild", False)),
-        verbose=False,
-    )
-    base_csv_path = Path(paths["ed2_all"])
-    base_df = pd.read_csv(base_csv_path)
-    return base_df, base_csv_path, processed_dir
+def _resolve_dms_config_path(cfg: object) -> Path:
+    raw = getattr(cfg.data, "dms_config", None)
+    path = Path(str(raw)) if raw is not None else project_root() / DEFAULT_CONFIG_PATH
+    if not path.is_absolute():
+        path = project_root() / path
+    return path
 
 
 def build_good_split_sequences(
@@ -151,49 +123,29 @@ def build_good_split_sequences(
     to_absolute_path,
 ) -> Dict[str, List[str]]:
     """Build train/val/test sequence lists above enrichment threshold."""
-    base_df, base_csv_path, processed_dir = _prepare_base_dataframe(cfg, to_absolute_path)
-    split_cfg = getattr(cfg.data, "split", None)
-
-    split_membership = build_or_load_cluster_split_membership(
-        base_df=base_df,
-        base_csv_path=base_csv_path,
-        processed_dir=processed_dir,
-        train_frac=float(cfg.data.train_frac),
-        val_frac=float(cfg.data.val_frac),
-        test_frac=float(cfg.data.test_frac),
-        seed=int(cfg.seed),
-        force_rebuild=bool(getattr(cfg.data, "force_rebuild", False)),
-        positive_threshold=0.0,
-        stratify_bins=int(getattr(split_cfg, "stratify_bins", 10)),
-        hamming_distance=int(getattr(split_cfg, "hamming_distance", 1)),
-    )
-
-    split_map = dict(
-        zip(
-            split_membership["split_key"].astype(str),
-            split_membership["split"].astype(str),
-        )
-    )
-    row_keys = split_membership_keys(base_df).astype(str)
-    working = base_df.copy()
-    working["split"] = row_keys.map(split_map)
-
-    enrichment_col = "M22_binding_enrichment_adj"
-    if enrichment_col not in working.columns:
-        raise ValueError(f"Missing required column {enrichment_col!r} in ED2 base dataframe.")
-
-    working[enrichment_col] = pd.to_numeric(working[enrichment_col], errors="coerce").astype(float)
-    working["aa"] = working["aa"].astype(str).str.strip()
-    working = working.dropna(subset=[enrichment_col, "split"]).copy()
-    working = working[working["aa"] != ""].copy()
-
     threshold = float(getattr(cfg.data, "enrichment_threshold", 5.19))
-    working = working[working[enrichment_col] > threshold].copy()
-
-    return {
-        split: working.loc[working["split"] == split, "aa"].astype(str).tolist()
-        for split in ("train", "val", "test")
-    }
+    dms_config_path = _resolve_dms_config_path(cfg)
+    dataset_key = str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22"))
+    spec = dataset_spec(dataset_key, dms_config_path)
+    out: Dict[str, List[str]] = {}
+    for split in ("train", "val", "test"):
+        path = resolve_dataset_split(
+            dataset_key,
+            split,
+            dms_config_path,
+            force=bool(getattr(cfg.data, "force_rebuild", False)),
+        )
+        working = pd.read_csv(path)
+        enrichment_col = spec.key_metric_col
+        if enrichment_col not in working.columns:
+            raise ValueError(f"Missing required column {enrichment_col!r} in {path}.")
+        working[enrichment_col] = pd.to_numeric(working[enrichment_col], errors="coerce").astype(float)
+        working[spec.sequence_col] = working[spec.sequence_col].astype(str).str.strip()
+        working = working.dropna(subset=[enrichment_col]).copy()
+        working = working[working[spec.sequence_col] != ""].copy()
+        working = working[working[enrichment_col] > threshold].copy()
+        out[split] = working[spec.sequence_col].astype(str).tolist()
+    return out
 
 
 def make_unlikelihood_dataloaders(
