@@ -22,8 +22,8 @@ models:
 # DMS reference paths used for beam_pll_vs_dms_histogram and beam_aa_heatmap.
 # Leave null to skip DMS-dependent plots.
 dms:
-  m22_path: null      # path to D2_M22.csv (or equivalent)
-  si06_path: null     # path to D2_SI06.csv (optional)
+  m22_path: "/cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_M22_binding_enrichment.csv"      # path to D2_M22.csv (or equivalent)
+  si06_path: "/cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_SI06_binding_enrichment.csv"      # path to D2_SI06.csv (optional)
   m22_col: "M22_binding_enrichment_adj"
   si06_col: "SI06_binding_enrichment_adj"
   max_dms: 500
