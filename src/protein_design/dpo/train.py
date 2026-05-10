@@ -24,6 +24,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 
 
+from protein_design import eval as eval_module
 from protein_design.eval import run_scoring_evaluation
 from protein_design.utils import init_wandb, setup_train_logger
 from .dataset import (
@@ -606,34 +607,12 @@ def _ensure_validation_eval_csvs(cfg: Any, logger: logging.Logger) -> bool:
 
 def _ensure_test_eval_csv(cfg: Any, logger: logging.Logger) -> Optional[Path]:
     """Ensure processed ED5 CSV exists for test perplexity logging."""
-    processed_dir = _resolve_processed_dir(cfg)
-    d5_path = processed_dir / "D5.csv"
-    raw_ed5_path = _resolve_ed5_raw_csv_path(cfg)
-
-    try:
-        output_path = build_clean_ed5_csv(
-            raw_csv_path=raw_ed5_path,
-            processed_dir=processed_dir,
-            force=bool(getattr(cfg.data, "force_rebuild", False)),
-            verbose=False,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not build ED5 processed CSV at %s from %s (%s). Skipping test perplexity logging.",
-            d5_path,
-            raw_ed5_path,
-            exc,
-        )
-        return None
-
-    if not output_path.exists():
-        logger.warning(
-            "ED5 processed CSV build finished but file is still missing at %s. Skipping test perplexity logging.",
-            output_path,
-        )
-        return None
-
-    return output_path
+    return eval_module.ensure_test_eval_csv(
+        raw_ed5_path=_resolve_ed5_raw_csv_path(cfg),
+        processed_dir=_resolve_processed_dir(cfg),
+        log=logger,
+        force=bool(getattr(cfg.data, "force_rebuild", False)),
+    )
 
 
 def _load_sequences_from_csv(csv_path: Path, logger: logging.Logger) -> List[str]:
@@ -725,120 +704,14 @@ def _load_validation_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[p
 
 def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[str, List[str]]]:
     d5_path = _ensure_test_eval_csv(cfg, logger)
-    if d5_path is None:
-        return None
-
-    try:
-        d5_df = pd.read_csv(d5_path)
-    except pd.errors.ParserError as exc:
-        logger.warning("Could not parse %s (%s). Skipping test perplexity logging.", d5_path, exc)
-        return None
-
-    required_cols = {"aa", "M22_binding_enrichment_adj"}
-    missing_cols = required_cols.difference(d5_df.columns)
-    if missing_cols:
-        logger.warning(
-            "%s missing required columns (%s). Skipping test perplexity logging.",
-            d5_path,
-            ", ".join(sorted(missing_cols)),
-        )
-        return None
-
     pos_threshold = float(getattr(getattr(cfg.data, "test", None), "pos_threshold", 0.0))
-    clean_scores = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
-    clean_df = d5_df.loc[clean_scores.notna()].copy()
-    clean_df["M22_binding_enrichment_adj"] = clean_scores.loc[clean_scores.notna()].astype(float)
-    clean_df["aa"] = clean_df["aa"].astype(str).str.strip()
-    clean_df = clean_df[clean_df["aa"] != ""].copy()
-
-    test_pos = clean_df[clean_df["M22_binding_enrichment_adj"] > pos_threshold]["aa"].tolist()
-    test_neg = clean_df[clean_df["M22_binding_enrichment_adj"] < 0.0]["aa"].tolist()
-
-    return {
-        "ppl/test_pos": test_pos,
-        "ppl/test_neg": test_neg,
-        "ppl/test_wt": [WILD_TYPE],
-    }
+    return eval_module.load_test_pll_eval_sets(d5_path, logger, pos_threshold=pos_threshold)
 
 
 def _load_test_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[pd.DataFrame]:
     """Load test scoring rows used for test Spearman tracking."""
     d5_path = _ensure_test_eval_csv(cfg, logger)
-    if d5_path is None:
-        return None
-
-    try:
-        d5_df = pd.read_csv(d5_path)
-    except pd.errors.ParserError as exc:
-        logger.warning("Could not parse %s (%s). Skipping test Spearman logging.", d5_path, exc)
-        return None
-
-    required_cols = {"mut", "M22_binding_enrichment_adj"}
-    missing_cols = required_cols.difference(d5_df.columns)
-    if missing_cols:
-        logger.warning(
-            "%s missing required columns (%s). Skipping test Spearman logging.",
-            d5_path,
-            ", ".join(sorted(missing_cols)),
-        )
-        return None
-
-    if "num_mut" in d5_df.columns:
-        d5_df = d5_df[d5_df["num_mut"] == 2].copy()
-
-    enrichment = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
-    d5_df = d5_df.loc[enrichment.notna()].copy()
-    d5_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
-    d5_df["mut"] = d5_df["mut"].astype(str).str.strip()
-    d5_df = d5_df[d5_df["mut"] != ""].copy()
-
-    if len(d5_df) < 3:
-        logger.warning("Test Spearman set too small (%d rows). Skipping test Spearman logging.", len(d5_df))
-        return None
-
-    return d5_df.reset_index(drop=True)
-
-
-def _corpus_perplexity_for_sequences(
-    scorer: ESM2Model,
-    sequences: Sequence[str],
-    batch_size: int,
-) -> float:
-    valid_sequences = [str(seq).strip() for seq in sequences if str(seq).strip()]
-    if not valid_sequences:
-        return float("nan")
-
-    grouped_by_len: Dict[int, List[str]] = {}
-    for seq in valid_sequences:
-        if len(seq) <= 0:
-            continue
-        grouped_by_len.setdefault(len(seq), []).append(seq)
-
-    if not grouped_by_len:
-        return float("nan")
-
-    scorer.model.eval()
-    total_pll = 0.0
-    total_scored_tokens = 0
-    batch_size = max(1, int(batch_size))
-
-    with torch.no_grad():
-        for cdr_len, seq_group in grouped_by_len.items():
-            for start in range(0, len(seq_group), batch_size):
-                batch = seq_group[start : start + batch_size]
-                pll_scores = scorer.pseudo_log_likelihood(
-                    batch,
-                    cdr_only=True,
-                    use_grad=False,
-                )
-                total_pll += float(pll_scores.sum().item())
-                total_scored_tokens += int(cdr_len) * len(batch)
-
-    if total_scored_tokens <= 0:
-        return float("nan")
-
-    avg_nll = -total_pll / float(total_scored_tokens)
-    return float(math.exp(avg_nll))
+    return eval_module.load_test_spearman_df(d5_path, logger)
 
 
 def evaluate_perplexity(
@@ -847,15 +720,7 @@ def evaluate_perplexity(
     device: str,
 ) -> Dict[str, float]:
     del device  # Device is already configured inside the ESM2Model wrapper.
-    sequence_batch_size = int(getattr(model, "pll_mask_chunk_size", 64))
-    metrics: Dict[str, float] = {}
-    for metric_name, sequences in eval_sets.items():
-        metrics[metric_name] = _corpus_perplexity_for_sequences(
-            scorer=model,
-            sequences=sequences,
-            batch_size=sequence_batch_size,
-        )
-    return metrics
+    return eval_module.evaluate_pll_eval_sets(model=model, eval_sets=eval_sets)
 
 
 def run_dpo(cfg: Any) -> Path:

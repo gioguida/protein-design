@@ -4,6 +4,8 @@ scoring:
   batch_size: 512
   max_ppl_batches: 100
   flank_ks: [1, 3, 5]
+  persist_test_scores: true
+  persist_live_scores: false
   datasets:
     - name: M22
       path: ${paths.project_dir}/datasets/scoring/D2_M22.csv
@@ -14,3 +16,9 @@ scoring:
     - name: exp
       path: ${paths.project_dir}/datasets/scoring/D2_exp.csv
       enrichment_col: exp_enrichment_adj
+  # Optional end-of-training ED5 (D5) PLL pos/neg/wt + Spearman.
+  # Set raw_ed5_path to enable; leave null to skip cleanly.
+  test_eval:
+    raw_ed5_path: ${paths.project_dir}/datasets/raw/ED5_M22_enrichment.csv
+    processed_dir: ${paths.scratch_dir}/processed/d5
+    pos_threshold: 0.0

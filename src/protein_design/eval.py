@@ -23,6 +23,7 @@ from protein_design.constants import (
     C05_VH,
     LEFT_CONTEXT,
     RIGHT_CONTEXT,
+    WILD_TYPE,
 )
 
 logger = logging.getLogger(__name__)
@@ -574,40 +575,57 @@ def run_multi_scoring_evaluation(
     flank_ks: Sequence[int] = (),
     scorer: Optional[ESM2Model] = None,
     scoring_mode: str = "mutation_path",
+    live_only: bool = False,
+    return_payload: bool = False,
 ) -> dict:
     """Run scoring evaluation across multiple datasets.
 
     If `scores_csv_dir` is set, write `<dataset>_scores.csv` with per-pair
     scores (both strategies) alongside the metrics.
+
+    If `live_only=True`, returns only `spearman_avg_<name>` per dataset plus
+    `spearman_mean` (the mean across datasets). All p-values, the random-
+    ordering metrics, and the flank breakdown are omitted — useful for
+    cluttering-free training-time logging.
+
+    If `return_payload=True`, additionally returns under the key `_payload`
+    a per-dataset dict with raw `scores`, `enrichment`, and (when
+    available) `num_mut` arrays. The plotting helpers in `wandb_plots`
+    consume this shape directly.
     """
-    results = {}
+    results: dict = {}
+    payload: dict = {}
     csv_dir = Path(scores_csv_dir) if scores_csv_dir else None
     if csv_dir is not None:
         csv_dir.mkdir(parents=True, exist_ok=True)
+    # Live mode skips flank computation entirely (it's expensive and unused).
+    effective_flank_ks: Sequence[int] = () if live_only else flank_ks
 
     for name, df, enrichment_col in datasets:
         logger.info("Scoring dataset: %s", name)
         ds_results = run_scoring_evaluation(
             model, tokenizer, df, enrichment_col, device, batch_size, seed,
-            flank_ks=flank_ks,
+            flank_ks=effective_flank_ks,
             scorer=scorer,
             scoring_mode=scoring_mode,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
-        results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
-        results[f"spearman_random_{name}"] = ds_results["spearman_random"]
-        results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
 
-        for k in flank_ks:
-            for side in ("left", "right"):
-                for metric in (
-                    f"spearman_avg_{side}{k}",
-                    f"spearman_avg_pval_{side}{k}",
-                    f"spearman_random_{side}{k}",
-                    f"spearman_random_pval_{side}{k}",
-                ):
-                    results[f"{metric}_{name}"] = ds_results[metric]
-                results[f"n_{side}_{k}_{name}"] = ds_results[f"n_{side}_{k}"]
+        if not live_only:
+            results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
+            results[f"spearman_random_{name}"] = ds_results["spearman_random"]
+            results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
+
+            for k in flank_ks:
+                for side in ("left", "right"):
+                    for metric in (
+                        f"spearman_avg_{side}{k}",
+                        f"spearman_avg_pval_{side}{k}",
+                        f"spearman_random_{side}{k}",
+                        f"spearman_random_pval_{side}{k}",
+                    ):
+                        results[f"{metric}_{name}"] = ds_results[metric]
+                    results[f"n_{side}_{k}_{name}"] = ds_results[f"n_{side}_{k}"]
 
         if csv_dir is not None:
             cols = [c for c in ("aa", "mut", enrichment_col) if c in df.columns]
@@ -618,4 +636,211 @@ def run_multi_scoring_evaluation(
             out.to_csv(out_path, index=False)
             logger.info("Wrote per-pair scores: %s", out_path)
 
+        if return_payload:
+            payload[name] = {
+                "scores": np.asarray(ds_results["scores_avg"], dtype=float),
+                "enrichment": np.asarray(df[enrichment_col].to_numpy(), dtype=float),
+                "num_mut": (
+                    np.asarray(df["num_mut"].to_numpy(), dtype=float)
+                    if "num_mut" in df.columns
+                    else None
+                ),
+                "rho": ds_results["spearman_avg"],
+                "pval": ds_results["spearman_avg_pval"],
+            }
+
+    if live_only:
+        rhos = [v for k, v in results.items() if k.startswith("spearman_avg_") and np.isfinite(v)]
+        results["spearman_mean"] = float(np.mean(rhos)) if rhos else float("nan")
+
+    if return_payload:
+        results["_payload"] = payload
+
     return results
+
+
+# ---------------------------------------------------------------------------
+# D5 (ED5) test-eval helpers (factored out of dpo/train.py so evotuning can
+# call them too). Path-based: callers resolve config to paths first.
+# ---------------------------------------------------------------------------
+
+
+def ensure_test_eval_csv(
+    raw_ed5_path: Path,
+    processed_dir: Path,
+    log: logging.Logger,
+    force: bool = False,
+) -> Optional[Path]:
+    """Build (or reuse) D5.csv from the raw ED5 file. Returns its path or None."""
+    # Lazy import: data_processing pulls in heavy deps that not every caller needs.
+    from protein_design.dpo.data_processing import build_clean_ed5_csv
+
+    raw_ed5_path = Path(raw_ed5_path)
+    processed_dir = Path(processed_dir)
+    d5_path = processed_dir / "D5.csv"
+
+    try:
+        output_path = build_clean_ed5_csv(
+            raw_csv_path=raw_ed5_path,
+            processed_dir=processed_dir,
+            force=bool(force),
+            verbose=False,
+        )
+    except Exception as exc:
+        log.warning(
+            "Could not build ED5 processed CSV at %s from %s (%s). Skipping test PLL/Spearman.",
+            d5_path, raw_ed5_path, exc,
+        )
+        return None
+
+    if not output_path.exists():
+        log.warning(
+            "ED5 processed CSV build finished but file is still missing at %s.",
+            output_path,
+        )
+        return None
+
+    return output_path
+
+
+def load_test_pll_eval_sets(
+    d5_path: Optional[Path],
+    log: logging.Logger,
+    pos_threshold: float = 0.0,
+) -> Optional[Dict[str, List[str]]]:
+    """Load D5 sequences split into pos/neg/wt for PLL evaluation.
+
+    Returns dict keyed by `ppl/test_pos`, `ppl/test_neg`, `ppl/test_wt` (the
+    naming evaluate_pll_eval_sets uses), or None if the file is unavailable
+    or malformed.
+    """
+    if d5_path is None:
+        return None
+
+    try:
+        d5_df = pd.read_csv(d5_path)
+    except pd.errors.ParserError as exc:
+        log.warning("Could not parse %s (%s). Skipping test PLL.", d5_path, exc)
+        return None
+
+    required_cols = {"aa", "M22_binding_enrichment_adj"}
+    missing_cols = required_cols.difference(d5_df.columns)
+    if missing_cols:
+        log.warning(
+            "%s missing required columns (%s). Skipping test PLL.",
+            d5_path, ", ".join(sorted(missing_cols)),
+        )
+        return None
+
+    enrichment = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
+    clean_df = d5_df.loc[enrichment.notna()].copy()
+    clean_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
+    clean_df["aa"] = clean_df["aa"].astype(str).str.strip()
+    clean_df = clean_df[clean_df["aa"] != ""].copy()
+
+    test_pos = clean_df[clean_df["M22_binding_enrichment_adj"] > pos_threshold]["aa"].tolist()
+    test_neg = clean_df[clean_df["M22_binding_enrichment_adj"] < 0.0]["aa"].tolist()
+
+    return {
+        "ppl/test_pos": test_pos,
+        "ppl/test_neg": test_neg,
+        "ppl/test_wt": [WILD_TYPE],
+    }
+
+
+def load_test_spearman_df(
+    d5_path: Optional[Path],
+    log: logging.Logger,
+) -> Optional[pd.DataFrame]:
+    """Load D5 rows usable for test-set Spearman tracking. None on failure."""
+    if d5_path is None:
+        return None
+
+    try:
+        d5_df = pd.read_csv(d5_path)
+    except pd.errors.ParserError as exc:
+        log.warning("Could not parse %s (%s). Skipping test Spearman.", d5_path, exc)
+        return None
+
+    required_cols = {"mut", "M22_binding_enrichment_adj"}
+    missing_cols = required_cols.difference(d5_df.columns)
+    if missing_cols:
+        log.warning(
+            "%s missing required columns (%s). Skipping test Spearman.",
+            d5_path, ", ".join(sorted(missing_cols)),
+        )
+        return None
+
+    if "num_mut" in d5_df.columns:
+        d5_df = d5_df[d5_df["num_mut"] == 2].copy()
+
+    enrichment = pd.to_numeric(d5_df["M22_binding_enrichment_adj"], errors="coerce")
+    d5_df = d5_df.loc[enrichment.notna()].copy()
+    d5_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
+    d5_df["mut"] = d5_df["mut"].astype(str).str.strip()
+    d5_df = d5_df[d5_df["mut"] != ""].copy()
+
+    if len(d5_df) < 3:
+        log.warning("Test Spearman set too small (%d rows). Skipping.", len(d5_df))
+        return None
+
+    return d5_df.reset_index(drop=True)
+
+
+def _corpus_perplexity_for_sequences(
+    scorer: ESM2Model,
+    sequences: Sequence[str],
+    batch_size: int,
+) -> float:
+    """Group sequences by length, then compute corpus-level CDR perplexity."""
+    valid_sequences = [str(seq).strip() for seq in sequences if str(seq).strip()]
+    if not valid_sequences:
+        return float("nan")
+
+    grouped_by_len: Dict[int, List[str]] = {}
+    for seq in valid_sequences:
+        if len(seq) <= 0:
+            continue
+        grouped_by_len.setdefault(len(seq), []).append(seq)
+
+    if not grouped_by_len:
+        return float("nan")
+
+    scorer.model.eval()
+    total_pll = 0.0
+    total_scored_tokens = 0
+    batch_size = max(1, int(batch_size))
+
+    with torch.no_grad():
+        for cdr_len, seq_group in grouped_by_len.items():
+            for start in range(0, len(seq_group), batch_size):
+                batch = seq_group[start : start + batch_size]
+                pll_scores = scorer.pseudo_log_likelihood(
+                    batch,
+                    cdr_only=True,
+                    use_grad=False,
+                )
+                total_pll += float(pll_scores.sum().item())
+                total_scored_tokens += int(cdr_len) * len(batch)
+
+    if total_scored_tokens <= 0:
+        return float("nan")
+
+    avg_nll = -total_pll / float(total_scored_tokens)
+    return float(math.exp(avg_nll))
+
+
+def evaluate_pll_eval_sets(
+    model: ESM2Model,
+    eval_sets: Dict[str, Sequence[str]],
+) -> Dict[str, float]:
+    """Compute corpus PLL perplexity for each named bucket of sequences."""
+    sequence_batch_size = int(getattr(model, "pll_mask_chunk_size", 64))
+    metrics: Dict[str, float] = {}
+    for metric_name, sequences in eval_sets.items():
+        metrics[metric_name] = _corpus_perplexity_for_sequences(
+            scorer=model,
+            sequences=sequences,
+            batch_size=sequence_batch_size,
+        )
+    return metrics

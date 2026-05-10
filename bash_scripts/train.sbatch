@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=10G
 #SBATCH --gpus=1
-#SBATCH --gres=gpumem:24g
+#SBATCH --gres=gpumem:80g
 #SBATCH --time=48:00:00
 #SBATCH --output=bash_scripts/logs/train_%j.log
 
