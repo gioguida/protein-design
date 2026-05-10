@@ -15,6 +15,7 @@ run:
 paths:
   project_dir: ${oc.env:PROJECT_DIR}
   train_dir: ${oc.env:TRAIN_DIR}
+  scratch_dir: ${oc.env:SCRATCH_DIR,${oc.env:TRAIN_DIR}}
 
 wandb:
   enabled: true

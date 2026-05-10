@@ -93,7 +93,7 @@ def _make_eval_loaders(fasta_path: str, cfg: DictConfig):
     what training used — no more reconstruction drift.
     """
     split_cfg = _split_cfg_from(cfg)
-    _train, val_loader, test_loader = make_dataloaders(
+    _train, val_loader, test_loader, *_ = make_dataloaders(
         fasta_path=fasta_path,
         tokenizer_name=cfg.model.name,
         max_seq_len=int(cfg.data.max_seq_len),
@@ -176,7 +176,37 @@ def _score_model(model, tokenizer, datasets, device, batch_size, seed,
     )
 
 
-def _extract_final_scoring(metrics: dict) -> dict | None:
+def _load_training_history(metrics: dict, run_dir: Path) -> list:
+    """Per-step history. Prefer history.csv (new layout); fall back to
+    metrics['training_history'] for legacy runs.
+    """
+    history_path = run_dir / "history.csv"
+    if history_path.exists():
+        try:
+            df = pd.read_csv(history_path)
+        except Exception as exc:
+            logger.warning("Could not read %s (%s); falling back to legacy.", history_path, exc)
+        else:
+            return df.to_dict("records")
+    return metrics.get("training_history", [])
+
+
+def _extract_final_scoring(metrics: dict, run_dir: Path | None = None) -> dict | None:
+    """Final scoring entry. Reads new layout (metrics['final'] + history.csv)
+    first, falls back to the old `scoring_history` list-of-dicts shape.
+    """
+    final_block = metrics.get("final") or {}
+    if final_block:
+        # New shape: pull all `test_spearman_*` keys back out as a flat dict
+        # using the same key names the old scoring_history entries used
+        # (i.e. without the `test_` prefix).
+        scoring = {}
+        for key, value in final_block.items():
+            if key.startswith("test_spearman_") or key.startswith("test_n_"):
+                scoring[key.removeprefix("test_")] = value
+        if scoring:
+            return scoring
+    # Legacy shape: list-of-dicts under `scoring_history`.
     history = metrics.get("scoring_history", [])
     return history[-1] if history else None
 
@@ -240,7 +270,7 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
     #   1. explicit force flags
     #   2. checkpoint mismatch (best.pt picked but final_* were computed on final.pt)
     #   3. cached scoring lacks flank keys for the requested flank_ks
-    scoring = None if force_rescore else _extract_final_scoring(metrics)
+    scoring = None if force_rescore else _extract_final_scoring(metrics, run_dir)
     if scoring is not None and stale_final_metrics:
         scoring = None  # last scoring_history entry was recorded on final.pt
     if scoring is not None and not _scoring_has_flank_keys(scoring, dataset_names, flank_ks):
@@ -250,18 +280,24 @@ def evaluate_run(run_dir: Path, datasets, tokenizer, device, scoring_batch_size,
         )
         scoring = None
 
-    if metrics.get("final_val_perplexity") is not None or metrics.get("final_test_perplexity") is not None:
+    final_block = metrics.get("final") or {}
+    legacy_val = metrics.get("final_val_perplexity")
+    legacy_test = metrics.get("final_test_perplexity")
+    if legacy_val is not None or legacy_test is not None or final_block.get("test_perplexity") is not None:
         logger.info(
             "  ignoring cached final_val/test_perplexity (they were computed on the run's own corpus)"
         )
     val_ppl = None
     test_ppl = None
-    cdr_ppl = None if (force_cdr or stale_final_metrics) else metrics.get("final_cdr_pseudo_perplexity")
+    cached_cdr = final_block.get("val_cdr_ppl") or metrics.get("final_cdr_pseudo_perplexity")
+    cdr_ppl = None if (force_cdr or stale_final_metrics) else cached_cdr
     m22_cdr_ppl = (
         None if (force_m22_cdr or stale_final_metrics)
         else metrics.get("final_m22_cdr_pseudo_perplexity")
     )
-    training_history = metrics.get("training_history", [])
+    # New layout writes step-level history to history.csv; fall back to the
+    # legacy list-of-dicts shape if that doesn't exist.
+    training_history = _load_training_history(metrics, run_dir)
 
     model = ESM2Model(build_model_config(cfg, device=str(device)))
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
