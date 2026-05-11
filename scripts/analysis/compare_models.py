@@ -105,6 +105,8 @@ def _load_model(device: torch.device, checkpoint: str) -> ESM2Model:
             if pt_path is None:
                 raise FileNotFoundError(f"No HF weights, best.pt, or final.pt found at {ckpt}")
             _load_pt_into_esm(model, pt_path)
+    elif ckpt.is_absolute():
+        raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt}")
     else:
         # Allow HF model IDs.
         model.model = EsmForMaskedLM.from_pretrained(checkpoint)
