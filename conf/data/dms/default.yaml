@@ -4,7 +4,7 @@ split:
   val_frac: 0.1
   test_frac: 0.1
   seed: 42
-  output_dir: data/processed/dms_splits
+  output_dir: /cluster/project/infk/krause/${USER}/protein-design/data/dms_splits
   hamming_distance: 0
   stratify_bins: 10
 

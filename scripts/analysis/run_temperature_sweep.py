@@ -121,7 +121,7 @@ def main() -> int:
 
     needs_m22_for_summary = any(
         bool(summary_cfg.get(key, False))
-        for key in ("pll_vs_enrichment_scatter", "top_k_enrichment_recovery")
+        for key in ("pll_vs_enrichment_scatter", "top_k_enrichment_recovery", "jsd_vs_temp")
     )
     if needs_m22_for_summary and dms_m22 is None:
         print(
@@ -211,6 +211,7 @@ def main() -> int:
                 ]
                 if checkpoint:
                     pll_hist_cmd.extend(["--checkpoint-path", checkpoint])
+                pll_hist_cmd.extend(["--xlim-low", "-100"])
                 if dms_si06:
                     pll_hist_cmd.extend([
                         "--dms-si06", str(dms_si06),
@@ -238,6 +239,7 @@ def main() -> int:
                 ]
                 if checkpoint:
                     nmut_cmd.extend(["--checkpoint-path", checkpoint])
+                nmut_cmd.extend(["--clip-pll", "-100"])
                 _run(nmut_cmd, dry_run, f"beam_pll_vs_nmut:{model_name}:T={t_label}")
 
             if bool(plots_cfg.get("beam_aa_heatmap", False)) and dms_m22:
@@ -329,7 +331,30 @@ def main() -> int:
             ]
             if checkpoint:
                 dist_cmd.extend(["--checkpoint-path", checkpoint])
+            dist_cmd.extend(["--xlim-low", "-80"])
             _run(dist_cmd, dry_run, f"summary_pll_distributions:{model_name}")
+
+        if bool(summary_cfg.get("entropy_heatmap", False)):
+            entropy_cmd = [
+                "uv", "run", "python",
+                "scripts/analysis/plot_temp_entropy_heatmap.py",
+                *temp_csv_args,
+                "--model-variant", model_variant,
+                "--output-dir", str(summary_dir),
+            ]
+            _run(entropy_cmd, dry_run, f"summary_entropy_heatmap:{model_name}")
+
+        if bool(summary_cfg.get("jsd_vs_temp", False)):
+            jsd_cmd = [
+                "uv", "run", "python",
+                "scripts/analysis/plot_temp_jsd_vs_temp.py",
+                *temp_csv_args,
+                "--model-variant", model_variant,
+                "--dms-m22", str(dms_m22),
+                "--max-dms", str(max_dms),
+                "--output-dir", str(summary_dir),
+            ]
+            _run(jsd_cmd, dry_run, f"summary_jsd_vs_temp:{model_name}")
 
     print("[done] temperature sweep completed")
     return 0

@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-variant", required=True)
     p.add_argument("--checkpoint-path", default="")
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--xlim-low", type=float, default=-80.0)
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -125,10 +126,20 @@ def main() -> int:
             label=f"T={temp} (n={len(pll_vals)})",
         )
 
+    below = int((all_plls < args.xlim_low).sum())
+    below_pct = 100.0 * below / max(1, len(all_plls))
+    ax.set_xlim(args.xlim_low, 0.0)
     ax.set_xlabel("CDR-H3 PLL")
     ax.set_ylabel("Density")
     ax.set_title(
         f"PLL distribution by temperature (model: {args.model_variant})"
+    )
+    ax.text(
+        0.98, 0.97,
+        f"N sequences below {args.xlim_low:.1f}: {below} ({below_pct:.1f}%)",
+        transform=ax.transAxes,
+        ha="right", va="top", fontsize=9,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="grey"),
     )
     ax.legend(fontsize=9, loc="upper left")
     ax.grid(alpha=0.2)

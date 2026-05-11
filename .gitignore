@@ -64,6 +64,7 @@ plots/
 # Agents
 .claude
 .codex
+memory/
 
 # OS/editor junk
 .DS_Store
@@ -84,6 +85,7 @@ htmlcov/
 .eggs/
 pip-wheel-metadata/
 site/
+.pytest_dms_tmp
 
 # Local env/version managers
 .uv/
@@ -101,3 +103,4 @@ Pipfile.lock
 
 # Known accidental local files
 ion.python-versionq
+tmp32_hai5v

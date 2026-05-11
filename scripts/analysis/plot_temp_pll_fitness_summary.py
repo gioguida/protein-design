@@ -33,6 +33,7 @@ from gibbs_diagnostics import (
     per_position_cdr_log_probs,
     sequence_pll,
 )
+from nn_dms_match import nearest_neighbor_match
 from protein_design.constants import C05_CDRH3, WT_M22_BINDING_ENRICHMENT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -54,6 +55,9 @@ class TemperatureResult:
     topk_total: int
     topk_matched: int
     topk_mean_enrichment: float
+    topk_std_enrichment: float
+    mean_hamming_dist: float
+    topk_mean_hamming_dist: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -186,32 +190,58 @@ def _build_temperature_result(
     beam_df["above_wt"] = beam_df["pll"] > wt_pll
     above_wt_fraction = float(beam_df["above_wt"].mean()) if not beam_df.empty else float("nan")
 
-    matched_df = beam_df.merge(dms_lookup, on="cdrh3", how="inner")
-    matched_x = matched_df["pll"].to_numpy(dtype=np.float32)
-    matched_y = matched_df[FITNESS_COL].to_numpy(dtype=np.float32)
+    nn_df = nearest_neighbor_match(
+        beam_df["cdrh3"].astype(str).tolist(),
+        dms_lookup.rename(columns={"cdrh3": "aa"}),
+        [FITNESS_COL],
+    )
+    matched_df = beam_df.merge(
+        nn_df.rename(columns={"query_seq": "cdrh3"}),
+        on="cdrh3",
+        how="left",
+    )
+    valid_matched_df = matched_df.dropna(subset=[FITNESS_COL, "hamming_dist"]).copy()
+    matched_x = valid_matched_df["pll"].to_numpy(dtype=np.float32)
+    matched_y = valid_matched_df[FITNESS_COL].to_numpy(dtype=np.float32)
     matched_pearson_r, matched_spearman_rho = _safe_corr(matched_x, matched_y)
+    matched_count = int(valid_matched_df["nn_seq"].notna().sum())
+    mean_hamming = float(valid_matched_df["hamming_dist"].mean()) if matched_count > 0 else float("nan")
 
     topk_total = min(top_k, beam_total)
     if beam_df.empty:
         topk_matched_df = beam_df
     else:
         topk_df = beam_df.sort_values("pll", ascending=False).head(topk_total)
-        topk_matched_df = topk_df.merge(dms_lookup, on="cdrh3", how="inner")
-    topk_mean_enrichment = (
-        float(topk_matched_df[FITNESS_COL].mean()) if not topk_matched_df.empty else float("nan")
+        topk_matched_df = topk_df.merge(
+            nn_df.rename(columns={"query_seq": "cdrh3"}),
+            on="cdrh3",
+            how="left",
+        )
+    topk_valid = topk_matched_df.dropna(subset=[FITNESS_COL, "hamming_dist"]).copy()
+    topk_mean_enrichment = float(topk_valid[FITNESS_COL].mean()) if not topk_valid.empty else float("nan")
+    topk_std_enrichment = (
+        float(topk_valid[FITNESS_COL].std(ddof=1))
+        if len(topk_valid) >= 2
+        else 0.0
+    )
+    topk_mean_hamming = (
+        float(topk_valid["hamming_dist"].mean()) if not topk_valid.empty else float("nan")
     )
 
     return TemperatureResult(
         temperature=temperature,
         beam_total=beam_total,
-        beam_matched=len(matched_df),
+        beam_matched=matched_count,
         above_wt_fraction=above_wt_fraction,
         matched_pearson_r=matched_pearson_r,
         matched_spearman_rho=matched_spearman_rho,
         matched_df=matched_df,
         topk_total=topk_total,
-        topk_matched=len(topk_matched_df),
+        topk_matched=int(topk_valid["nn_seq"].notna().sum()),
         topk_mean_enrichment=topk_mean_enrichment,
+        topk_std_enrichment=topk_std_enrichment,
+        mean_hamming_dist=mean_hamming,
+        topk_mean_hamming_dist=topk_mean_hamming,
     )
 
 
@@ -294,6 +324,9 @@ def _plot_pll_vs_enrichment_grid(
     )
     cmap = plt.get_cmap("plasma")
     colors = [cmap(i / max(1, n_panels - 1)) for i in range(n_panels)]
+    nn_cmap = plt.get_cmap("RdYlGn_r")
+    nn_norm = plt.Normalize(vmin=1.0, vmax=5.0)
+    mappable = plt.cm.ScalarMappable(norm=nn_norm, cmap=nn_cmap)
 
     for idx, result in enumerate(results):
         row = idx // n_cols
@@ -305,14 +338,17 @@ def _plot_pll_vs_enrichment_grid(
             x_line = np.linspace(x_min, x_max, 200)
             ax.plot(x_line, slope * x_line + intercept, color="black", linewidth=1.0, zorder=2)
 
-        matched = result.matched_df
+        matched = result.matched_df.dropna(subset=[FITNESS_COL, "hamming_dist"]).copy()
         color = colors[idx]
         if not matched.empty:
+            cvals = matched["hamming_dist"].to_numpy(dtype=np.float32)
             ax.scatter(
                 matched["pll"],
                 matched[FITNESS_COL],
                 s=34,
-                color=color,
+                c=cvals,
+                cmap=nn_cmap,
+                norm=nn_norm,
                 edgecolors="black",
                 linewidths=0.35,
                 alpha=0.88,
@@ -326,14 +362,14 @@ def _plot_pll_vs_enrichment_grid(
 
             panel_text = (
                 f"matched {result.beam_matched}/{result.beam_total}\n"
-                f"rho={result.matched_spearman_rho:.2f}, r={result.matched_pearson_r:.2f}"
+                f"mean Hamming dist to NN: {result.mean_hamming_dist:.2f}"
             )
         else:
-            panel_text = f"matched 0/{result.beam_total}\nno exact DMS matches"
+            panel_text = f"matched 0/{result.beam_total}\nno DMS neighbors of equal length"
             ax.text(
                 0.5,
                 0.52,
-                "no exact DMS matches",
+                "no DMS neighbors",
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
@@ -385,6 +421,9 @@ def _plot_pll_vs_enrichment_grid(
     fig.suptitle(f"PLL vs M22 enrichment across temperatures\n(model: {model_variant})", fontsize=12)
     fig.supxlabel("CDR-H3 PLL")
     fig.supylabel("M22 binding enrichment")
+    cbar = fig.colorbar(mappable, ax=axes.ravel().tolist(), fraction=0.02, pad=0.01)
+    cbar.set_label("NN Hamming distance (5+=red)")
+    cbar.set_ticks([1, 2, 3, 4, 5])
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -394,7 +433,9 @@ def _plot_pll_vs_enrichment_grid(
 def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, out_path: Path) -> None:
     temps = np.array([r.temperature for r in results], dtype=np.float32)
     values = np.array([r.topk_mean_enrichment for r in results], dtype=np.float32)
+    stds = np.array([r.topk_std_enrichment for r in results], dtype=np.float32)
     matched_counts = np.array([r.topk_matched for r in results], dtype=np.int32)
+    hamming_means = np.array([r.topk_mean_hamming_dist for r in results], dtype=np.float32)
     topk_total = results[0].topk_total if results else 0
 
     fig, ax = plt.subplots(figsize=(7.0, 4.3))
@@ -404,17 +445,35 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
     finite = np.isfinite(values)
     if finite.any():
         ax.plot(temps[finite], values[finite], color="black", linewidth=1.2, marker="o", markersize=4.5, zorder=2)
+        ax.errorbar(
+            temps[finite],
+            values[finite],
+            yerr=stds[finite],
+            fmt="none",
+            ecolor="black",
+            elinewidth=1.0,
+            capsize=3,
+            zorder=2,
+        )
 
-    for temp, value, color, matched in zip(temps, values, colors, matched_counts):
+    for temp, value, color, matched, mean_h in zip(temps, values, colors, matched_counts, hamming_means):
         if np.isfinite(value):
             ax.scatter(temp, value, s=72, color=color, edgecolors="black", linewidths=0.35, zorder=3)
             ax.annotate(
                 f"{matched}/{topk_total}",
                 (temp, value),
                 textcoords="offset points",
-                xytext=(0, 8),
+                xytext=(0, 19),
                 ha="center",
                 fontsize=8.5,
+            )
+            ax.annotate(
+                f"mean Hamming: {mean_h:.2f}",
+                (temp, value),
+                textcoords="offset points",
+                xytext=(0, 7),
+                ha="center",
+                fontsize=8.0,
             )
         else:
             ax.scatter(temp, WT_M22_BINDING_ENRICHMENT, s=60, marker="x", color=color, linewidths=1.4, zorder=3)
@@ -422,7 +481,7 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
                 f"0/{topk_total}",
                 (temp, WT_M22_BINDING_ENRICHMENT),
                 textcoords="offset points",
-                xytext=(0, 8),
+                xytext=(0, 19),
                 ha="center",
                 fontsize=8.5,
             )

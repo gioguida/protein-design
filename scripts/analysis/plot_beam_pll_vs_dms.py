@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--xlim-low", type=float, default=-100.0)
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -137,8 +138,18 @@ def main() -> int:
     )
     ax.set_xlabel("CDR-H3 PLL")
     ax.set_ylabel("Density")
+    dms_below = int((dms_pll < args.xlim_low).sum())
+    dms_below_pct = 100.0 * dms_below / max(1, len(dms_pll))
+    ax.set_xlim(args.xlim_low, 0.0)
     ax.set_title(
         f"PLL distribution: SBS-generated vs DMS test sequences (model: {args.model_variant})"
+    )
+    ax.text(
+        0.98, 0.97,
+        f"DMS below {args.xlim_low:.1f}: {dms_below} ({dms_below_pct:.1f}%)",
+        transform=ax.transAxes,
+        ha="right", va="top", fontsize=9,
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="grey"),
     )
     ax.legend(fontsize=9)
     ax.grid(alpha=0.2)
