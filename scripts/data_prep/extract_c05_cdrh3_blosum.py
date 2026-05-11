@@ -11,10 +11,10 @@ Pipeline:
      thresholds skip the alignment pass.
   3. Either --preview (histogram of normalized scores) or --threshold X
      (keep H3s with norm_score >= X, expand to seq_ids, stream
-     oas_filtered.fasta into the final FASTA under $PROJECT_DIR/datasets/c05/).
+     oas_filtered.fasta into the final FASTA under $PROJECT_DIR/data/c05/).
 
 Intermediates in $SCRATCH_DIR/c05_cdrh3_blosum/; final FASTA in
-$PROJECT_DIR/datasets/c05/.
+$PROJECT_DIR/data/c05/.
 """
 from __future__ import annotations
 
@@ -46,10 +46,10 @@ def parse_args() -> argparse.Namespace:
     project = os.environ.get("PROJECT_DIR", ".")
     scratch = os.environ.get("SCRATCH_DIR", ".")
 
-    p.add_argument("--csv", default=os.path.join(project, "datasets", "oas_filtered.csv.gz"))
-    p.add_argument("--fasta", default=os.path.join(project, "datasets", "oas_filtered.fasta"))
+    p.add_argument("--csv", default=os.path.join(project, "data", "oas_filtered.csv.gz"))
+    p.add_argument("--fasta", default=os.path.join(project, "data", "oas_filtered.fasta"))
     p.add_argument("--scratch-dir", default=scratch)
-    p.add_argument("--output-dir", default=os.path.join(project, "datasets", "c05"))
+    p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"))
 
     p.add_argument("--preview", action="store_true",
                    help="Print normalized-score histogram and exit.")

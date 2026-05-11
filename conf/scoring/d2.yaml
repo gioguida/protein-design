@@ -8,17 +8,14 @@ scoring:
   persist_live_scores: false
   datasets:
     - name: M22
-      path: ${paths.project_dir}/datasets/scoring/D2_M22.csv
+      path: ${paths.project_dir}/data/dms_splits/ed2_m22/val.csv
       enrichment_col: M22_binding_enrichment_adj
     - name: SI06
-      path: ${paths.project_dir}/datasets/scoring/D2_SI06.csv
+      path: ${paths.project_dir}/data/dms_splits/ed2_si06/val.csv
       enrichment_col: SI06_binding_enrichment_adj
-    - name: exp
-      path: ${paths.project_dir}/datasets/scoring/D2_exp.csv
-      enrichment_col: exp_enrichment_adj
   # Optional end-of-training ED5 (D5) PLL pos/neg/wt + Spearman.
   # Set raw_ed5_path to enable; leave null to skip cleanly.
   test_eval:
-    raw_ed5_path: ${paths.project_dir}/datasets/raw/ED5_M22_enrichment.csv
+    raw_ed5_path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED5_M22_binding_enrichment.csv
     processed_dir: ${paths.scratch_dir}/processed/d5
     pos_threshold: 0.0

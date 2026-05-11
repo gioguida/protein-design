@@ -60,11 +60,11 @@ from protein_design.constants import (
 
 ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
 SEED = 42
-_DMS_BASE = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring"
+_DMS_BASE = "/cluster/project/infk/krause/gguidarini/protein-design/data/raw"
 DMS_DATASETS: Dict[str, Dict[str, str]] = {
     "ed2": {
-        "m22": f"{_DMS_BASE}/D2_M22.csv",
-        "si06": f"{_DMS_BASE}/D2_SI06.csv",
+        "m22": f"{_DMS_BASE}/ED2_M22_binding_enrichment.csv",
+        "si06": f"{_DMS_BASE}/ED2_SI06_binding_enrichment.csv",
     },
     "ed5": {
         "m22": f"{_DMS_BASE}/ED5_M22_binding_enrichment.csv",

@@ -9,7 +9,7 @@ Pipeline:
      tuning (-k 5, --comp-bias-corr 0).
   3. Either --preview (print a pident histogram and exit) or --threshold X
      (keep hits with pident >= X, expand to the full seq_id set, stream
-     oas_filtered.fasta to write the final FASTA under $PROJECT_DIR/datasets/c05/).
+     oas_filtered.fasta to write the final FASTA under $PROJECT_DIR/data/c05/).
 
 All MMseqs2 intermediates (query/target FASTAs, tmp/, results.tsv, mapping.pkl)
 live under $SCRATCH_DIR/c05_cdrh3_mmseqs/. Only the final FASTA goes to the
@@ -49,10 +49,10 @@ def parse_args() -> argparse.Namespace:
     project = os.environ.get("PROJECT_DIR", ".")
     scratch = os.environ.get("SCRATCH_DIR", ".")
 
-    p.add_argument("--csv", default=os.path.join(project, "datasets", "oas_filtered.csv.gz"))
-    p.add_argument("--fasta", default=os.path.join(project, "datasets", "oas_filtered.fasta"))
+    p.add_argument("--csv", default=os.path.join(project, "data", "oas_filtered.csv.gz"))
+    p.add_argument("--fasta", default=os.path.join(project, "data", "oas_filtered.fasta"))
     p.add_argument("--scratch-dir", default=scratch)
-    p.add_argument("--output-dir", default=os.path.join(project, "datasets", "c05"))
+    p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"))
 
     p.add_argument("--preview", action="store_true",
                    help="Run search + print pident histogram, do not write a final FASTA.")

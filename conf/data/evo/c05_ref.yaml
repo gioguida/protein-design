@@ -1,6 +1,6 @@
 # @package _global_
 # TTT uses a single sequence and does not consume the train/val/test split.
 data:
-  fasta_path: ${paths.project_dir}/datasets/c05/c05_ref.fasta
+  fasta_path: ${paths.project_dir}/data/c05/c05_ref.fasta
   max_seq_len: 256
   mlm_probability: 0.15

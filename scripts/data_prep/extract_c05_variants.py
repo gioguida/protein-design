@@ -53,11 +53,11 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--results-tsv", default=os.path.join(scratch, "c05_search", "results.tsv"),
                    help="MMseqs2 results TSV (for vh_pid60).")
-    p.add_argument("--csv", default=os.path.join(project, "datasets", "oas_filtered.csv.gz"),
+    p.add_argument("--csv", default=os.path.join(project, "data", "oas_filtered.csv.gz"),
                    help="OAS filtered metadata CSV with seq_id + cdr3_aa (gzipped).")
-    p.add_argument("--fasta", default=os.path.join(project, "datasets", "oas_filtered.fasta"),
+    p.add_argument("--fasta", default=os.path.join(project, "data", "oas_filtered.fasta"),
                    help="OAS filtered FASTA (for cdrh3_posid lookup).")
-    p.add_argument("--output-dir", default=os.path.join(project, "datasets", "c05"),
+    p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"),
                    help="Directory for output FASTA files.")
 
     p.add_argument("--pident-threshold", type=float, default=0.60,

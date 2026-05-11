@@ -7,6 +7,7 @@ defaults:
 
 seed: 42
 run_name: null
+finetune: null
 
 run:
   # Optional base name used by DPO naming (<base_name>_<YYYYMMDD_HHMMSS>).

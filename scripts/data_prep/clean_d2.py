@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SRC_DIR = Path("/cluster/project/infk/krause/ssussex/flu/data")
-OUT_DIR = Path(os.environ.get("PROJECT_DIR", ".")) / "datasets" / "scoring"
+OUT_DIR = Path(os.environ.get("PROJECT_DIR", ".")) / "data" / "scoring"
 
 DATASETS = {
     "D2_M22.csv": "M22_binding_enrichment.csv",

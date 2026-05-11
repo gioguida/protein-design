@@ -1,6 +1,6 @@
 # @package _global_
 data:
-  fasta_path: ${paths.project_dir}/datasets/c05/c05_vh_pid30.fasta
+  fasta_path: ${paths.project_dir}/data/c05/c05_vh_pid30.fasta
   max_seq_len: 256
   mlm_probability: 0.15
   split:

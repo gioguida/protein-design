@@ -9,7 +9,7 @@ so pre-split files and the on-the-fly loader are interchangeable.
 
 Usage:
   uv run scripts/data_prep/split_fasta.py \\
-      --input $PROJECT_DIR/datasets/oas_dedup_rep_seq.fasta \\
+      --input $PROJECT_DIR/data/oas_dedup_rep_seq.fasta \\
       --output-dir $PROJECT_DIR/datasets \\
       [--salt oas-v1] [--train-pct 90] [--val-pct 5] [--test-pct 5]
 """

@@ -61,8 +61,8 @@ from protein_design.constants import (
 
 ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
 SEED = 42
-DEFAULT_DMS_M22 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
-DEFAULT_DMS_SI06 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
+DEFAULT_DMS_M22 = "/cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/val.csv"
+DEFAULT_DMS_SI06 = "/cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/val.csv"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("compute_pll_pca")
