@@ -41,6 +41,9 @@ plots:
 
 # Summary comparison plots across temperatures.
 summary:
+  fraction_above_wt: true          # % of final-step sequences with PLL > WT PLL
+  pll_vs_enrichment_scatter: true  # per-temperature PLL vs DMS enrichment panels
+  top_k_enrichment_recovery: true  # mean DMS enrichment of top-k PLL sequences
   pll_vs_diversity_tradeoff: true   # mean PLL of top-k vs mean pairwise Hamming
   pll_distribution_by_temp: true    # overlaid PLL histograms, one per temperature
   top_k_for_pll: 50                 # top sequences used for mean PLL in tradeoff plot

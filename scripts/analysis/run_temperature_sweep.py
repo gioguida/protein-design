@@ -119,6 +119,17 @@ def main() -> int:
         print("[config-error] start_mode='dms' requires dms.si06_path to be set", file=sys.stderr)
         return 2
 
+    needs_m22_for_summary = any(
+        bool(summary_cfg.get(key, False))
+        for key in ("pll_vs_enrichment_scatter", "top_k_enrichment_recovery")
+    )
+    if needs_m22_for_summary and dms_m22 is None:
+        print(
+            "[config-error] summary enrichment plots require dms.m22_path to be set",
+            file=sys.stderr,
+        )
+        return 2
+
     for model_spec in models_cfg:
         model_name = str(model_spec.get("name", "model"))
         checkpoint = str(model_spec.get("checkpoint") or "")
@@ -268,6 +279,32 @@ def main() -> int:
             "--output-dir", str(comparisons_dir),
         ]
         _run(stack_cmd, dry_run, f"stack_temperature_plots:{model_name}")
+
+        if any(
+            bool(summary_cfg.get(key, False))
+            for key in ("fraction_above_wt", "pll_vs_enrichment_scatter", "top_k_enrichment_recovery")
+        ):
+            temp_fitness_cmd = [
+                "uv", "run", "python",
+                "scripts/analysis/plot_temp_pll_fitness_summary.py",
+                *temp_csv_args,
+                "--model-variant", model_variant,
+                "--output-dir", str(summary_dir),
+                "--top-k", str(top_k_pll),
+            ]
+            if checkpoint:
+                temp_fitness_cmd.extend(["--checkpoint-path", checkpoint])
+            if dms_m22:
+                temp_fitness_cmd.extend(["--dms-m22", str(dms_m22)])
+            if dms_si06:
+                temp_fitness_cmd.extend(["--dms-si06", str(dms_si06)])
+            if bool(summary_cfg.get("fraction_above_wt", False)):
+                temp_fitness_cmd.append("--fraction-above-wt")
+            if bool(summary_cfg.get("pll_vs_enrichment_scatter", False)):
+                temp_fitness_cmd.append("--pll-vs-enrichment-scatter")
+            if bool(summary_cfg.get("top_k_enrichment_recovery", False)):
+                temp_fitness_cmd.append("--top-k-enrichment-recovery")
+            _run(temp_fitness_cmd, dry_run, f"summary_fitness:{model_name}")
 
         if bool(summary_cfg.get("pll_vs_diversity_tradeoff", False)):
             tradeoff_cmd = [

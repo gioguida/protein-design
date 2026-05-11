@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute descriptive stats for ED2 M22 enrichment data."""
+"""Compute descriptive stats for ED811 M22 enrichment data."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import pandas as pd
 
-TARGET_NUM_MUT = (2, 3, 4, 5)
+TARGET_NUM_MUT = (5, 6, 7, 8, 9, 10, 11)
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,8 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("../data/raw/ED2_M22_binding_enrichment.csv"),
-        help="Path to ED2_M22_binding_enrichment.csv",
+        default=Path("../data/raw/ED811_M22_enrichment_full.csv"),
+        help="Path to ED811_M22_enrichment_full.csv",
     )
     parser.add_argument(
         "--plot-output",
@@ -76,23 +76,23 @@ def compute_stats(csv_path: Path) -> dict[str, Any]:
     required_cols = {
         "num_mut",
         "M22_binding_enrichment_adj",
-        "count_ED2M22pos",
-        "count_ED2M22neg",
+        "count_ED811M22r1pos",
+        "count_ED811M22neg",
     }
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     result: dict[str, Any] = {"input_csv": str(csv_path), "num_mut_stats": {}}
-    if {"count_ED2M22pos", "count_ED2M22neg"}.issubset(df.columns):
-        has_count_ED2M22pos = df["count_ED2M22pos"].notna()
-        has_count_ED2M22neg = df["count_ED2M22neg"].notna()
-        both_present = has_count_ED2M22pos & has_count_ED2M22neg
-        result["rows_with_both_count_ED2M22pos_and_count_ED2M22neg"] = int(both_present.sum())
-        result["rows_missing_at_least_one_of_count_ED2M22pos_count_ED2M22neg"] = int((~both_present).sum())
+    if {"count_ED811M22r1pos", "count_ED811M22neg"}.issubset(df.columns):
+        has_count_ED811M22r1pos = df["count_ED811M22r1pos"].notna()
+        has_count_ED811M22neg = df["count_ED811M22neg"].notna()
+        both_present = has_count_ED811M22r1pos & has_count_ED811M22neg
+        result["rows_with_both_count_ED811M22r1pos_and_count_ED811M22neg"] = int(both_present.sum())
+        result["rows_missing_at_least_one_of_count_ED811M22r1pos_count_ED811M22neg"] = int((~both_present).sum())
     else:
-        result["rows_with_both_count_ED2M22pos_and_count_ED2M22neg"] = None
-        result["rows_missing_at_least_one_of_count_ED2M22pos_count_ED2M22neg"] = None
+        result["rows_with_both_count_ED811M22r1pos_and_count_ED811M22neg"] = None
+        result["rows_missing_at_least_one_of_count_ED811M22r1pos_count_ED811M22neg"] = None
 
     for num_mut in TARGET_NUM_MUT:
         subset = df[df["num_mut"] == num_mut]
@@ -101,8 +101,8 @@ def compute_stats(csv_path: Path) -> dict[str, Any]:
 
 
         has_enrichment = subset["M22_binding_enrichment_adj"].notna()
-        has_pos = subset["count_ED2M22pos"].notna()
-        has_neg = subset["count_ED2M22neg"].notna()
+        has_pos = subset["count_ED811M22r1pos"].notna()
+        has_neg = subset["count_ED811M22neg"].notna()
 
         result["num_mut_stats"][str(num_mut)] = {
             "total_rows": int(len(subset)),
@@ -139,12 +139,12 @@ def plot_m22_enrichment_distribution(df: pd.DataFrame, output_path: Path) -> boo
 
 def plot_log_ratio_distribution(df: pd.DataFrame, output_path: Path) -> bool:
     df = df[df["num_mut"].isin(TARGET_NUM_MUT)]
-    required = {"count_ED2M22pos", "count_ED2M22neg"}
+    required = {"count_ED811M22r1pos", "count_ED811M22neg"}
     if not required.issubset(df.columns):
         return False
 
-    pos = df["count_ED2M22pos"]
-    neg = df["count_ED2M22neg"]
+    pos = df["count_ED811M22r1pos"]
+    neg = df["count_ED811M22neg"]
     valid = pos.notna() & neg.notna()
     if not valid.any():
         return False
@@ -155,8 +155,8 @@ def plot_log_ratio_distribution(df: pd.DataFrame, output_path: Path) -> bool:
 
     plt.figure(figsize=(8, 5))
     plt.hist(values, bins=50, edgecolor="black", alpha=0.8)
-    plt.title("Distribution of log(count_ED2M22pos / count_ED2M22neg)")
-    plt.xlabel("log(count_ED2M22pos / count_ED2M22neg)")
+    plt.title("Distribution of log(count_ED811M22r1pos / count_ED811M22neg)")
+    plt.xlabel("log(count_ED811M22r1pos / count_ED811M22neg)")
     plt.ylabel("Count")
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,41 +206,41 @@ def main() -> None:
             file=sys.stderr,
         )
     ratio_plot_output = args.plots_dir / (
-        f"{args.input.stem}_log_count_ED2M22pos_over_count_ED2M22neg_distribution.png"
+        f"{args.input.stem}_log_count_ED811M22r1pos_over_count_ED811M22neg_distribution.png"
     )
     ratio_plotted = plot_log_ratio_distribution(df, ratio_plot_output)
     if ratio_plotted:
         print(
-            f"Saved log(count_ED2M22pos/count_ED2M22neg) distribution plot to: {ratio_plot_output}",
+            f"Saved log(count_ED811M22r1pos/count_ED811M22neg) distribution plot to: {ratio_plot_output}",
             file=sys.stderr,
         )
     else:
         print(
-            "Skipped log(count_ED2M22pos/count_ED2M22neg) plot: required columns missing or no valid values.",
+            "Skipped log(count_ED811M22r1pos/count_ED811M22neg) plot: required columns missing or no valid values.",
             file=sys.stderr,
         )
-    count_ed2m22pos_output = args.plots_dir / f"{args.input.stem}_count_ED2M22pos_distribution.png"
-    count_ed2m22pos_plotted = plot_column_distribution(df, "count_ED2M22pos", count_ed2m22pos_output)
-    if count_ed2m22pos_plotted:
+    count_ED811M22r1pos_output = args.plots_dir / f"{args.input.stem}_count_ED811M22r1pos_distribution.png"
+    count_ED811M22r1pos_plotted = plot_column_distribution(df, "count_ED811M22r1pos", count_ED811M22r1pos_output)
+    if count_ED811M22r1pos_plotted:
         print(
-            f"Saved count_ED2M22pos distribution plot to: {count_ed2m22pos_output}",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            "Skipped count_ED2M22pos plot: column missing or no non-null values.",
-            file=sys.stderr,
-        )
-    count_ed2ed2_output = args.plots_dir / f"{args.input.stem}_count_ED2Ed5_distribution.png"
-    count_ed2ed2_plotted = plot_column_distribution(df, "count_ED2pre", count_ed2ed2_output)
-    if count_ed2ed2_plotted:
-        print(
-            f"Saved count_ED2pre distribution plot to: {count_ed2ed2_output}",
+            f"Saved count_ED811M22r1pos distribution plot to: {count_ED811M22r1pos_output}",
             file=sys.stderr,
         )
     else:
         print(
-            "Skipped count_ED2pre plot: column missing or no non-null values.",
+            "Skipped count_ED811M22r1pos plot: column missing or no non-null values.",
+            file=sys.stderr,
+        )
+    count_ed811ed811_output = args.plots_dir / f"{args.input.stem}_count_ED811Ed811_distribution.png"
+    count_ed811ed811_plotted = plot_column_distribution(df, "count_ED811Ed811", count_ed811ed811_output)
+    if count_ed811ed811_plotted:
+        print(
+            f"Saved count_ED811Ed811 distribution plot to: {count_ed811ed811_output}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Skipped count_ED811Ed811 plot: column missing or no non-null values.",
             file=sys.stderr,
         )
 
