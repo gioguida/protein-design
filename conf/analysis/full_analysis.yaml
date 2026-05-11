@@ -63,8 +63,8 @@ datasets:
       m22_dataset: ed811_m22
       si06_dataset: null
   oas:
-    fasta_path: "/cluster/project/infk/krause/mdenegri/protein-design/data/oas_dedup_rep_seq.fasta"
-    meta_csv_gz_path: "/cluster/project/infk/krause/mdenegri/protein-design/data/oas_filtered.csv.gz"
+    fasta_path: "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_dedup_rep_seq.fasta"
+    meta_csv_gz_path: "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_filtered.csv.gz"
 
 sampling:
   selected_sampling_strategies: [gibbs_dist, gibbs_fit, beam_dist, beam_fit]

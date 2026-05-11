@@ -46,8 +46,8 @@ def parse_args() -> argparse.Namespace:
     project = os.environ.get("PROJECT_DIR", ".")
     scratch = os.environ.get("SCRATCH_DIR", ".")
 
-    p.add_argument("--csv", default=os.path.join(project, "data", "oas_filtered.csv.gz"))
-    p.add_argument("--fasta", default=os.path.join(project, "data", "oas_filtered.fasta"))
+    p.add_argument("--csv", default=os.path.join(project, "data", "oas", "oas_filtered.csv.gz"))
+    p.add_argument("--fasta", default=os.path.join(project, "data", "oas", "oas_filtered.fasta"))
     p.add_argument("--scratch-dir", default=scratch)
     p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"))
 

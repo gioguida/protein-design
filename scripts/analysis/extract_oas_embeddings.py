@@ -60,8 +60,8 @@ from extract_embeddings import (  # noqa: E402
 
 SCHEMA_VERSION = "v2"
 
-DEFAULT_OAS_FASTA = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas_dedup_rep_seq.fasta"
-DEFAULT_OAS_META = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas_filtered.csv.gz"
+DEFAULT_OAS_FASTA = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_dedup_rep_seq.fasta"
+DEFAULT_OAS_META = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_filtered.csv.gz"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("extract_oas_embeddings")

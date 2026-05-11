@@ -23,7 +23,7 @@ from scipy.stats import gaussian_kde
 load_dotenv()
 
 _PROJECT_DIR = os.environ.get("PROJECT_DIR", ".")
-DEFAULT_CSV = os.path.join(_PROJECT_DIR, "data", "oas_filtered.csv.gz")
+DEFAULT_CSV = os.path.join(_PROJECT_DIR, "data", "oas", "oas_filtered.csv.gz")
 
 
 def main() -> None:

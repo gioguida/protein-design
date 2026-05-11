@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     _project_dir = os.environ.get("PROJECT_DIR", ".")
     p.add_argument(
         "--fasta",
-        default=os.path.join(_project_dir, "data", "oas_filtered.fasta"),
+        default=os.path.join(_project_dir, "data", "oas", "oas_filtered.fasta"),
         help="Target FASTA to search.",
     )
     p.add_argument(
@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--csv",
-        default=os.path.join(_project_dir, "data", "oas_filtered.csv.gz"),
+        default=os.path.join(_project_dir, "data", "oas", "oas_filtered.csv.gz"),
         help="OAS filtered metadata CSV (gzipped) with cdr3_aa column.",
     )
     p.add_argument("--threads", type=int, default=16)
