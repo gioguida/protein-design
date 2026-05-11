@@ -14,6 +14,19 @@ from omegaconf import DictConfig, OmegaConf
 
 
 @dataclass
+class LoraSpec:
+    """LoRA adapter spec for TTT. When set on ModelConfig, ESM2Model wraps
+    its underlying EsmForMaskedLM with peft.get_peft_model."""
+
+    r: int = 8
+    alpha: int = 16
+    dropout: float = 0.0
+    target_modules: List[str] = field(
+        default_factory=lambda: ["query", "key", "value"]
+    )
+
+
+@dataclass
 class ModelConfig:
     """Configuration for ESM2Model (unified trainable MLM + PLL scorer)."""
 
@@ -23,6 +36,10 @@ class ModelConfig:
     pll_mask_chunk_size: int = 64
     freeze_embeddings: bool = False
     freeze_first_n_layers: int = 0
+    lora: Optional[LoraSpec] = None
+    # When True, the MLM (lm) head is set to requires_grad=False so the
+    # scoring head is never updated. Used by TTT.
+    freeze_lm_head: bool = False
 
 
 @dataclass
@@ -77,12 +94,25 @@ def _cuda_available() -> bool:
 def build_model_config(cfg: DictConfig, device: str | None = None) -> ModelConfig:
     """Build a ModelConfig from a nested Hydra config."""
     resolved_device = device or ("cuda" if _cuda_available() else "cpu")
+    lora_cfg = cfg.model.get("lora", None)
+    lora: Optional[LoraSpec] = None
+    if lora_cfg is not None:
+        lora = LoraSpec(
+            r=int(lora_cfg.get("r", 8)),
+            alpha=int(lora_cfg.get("alpha", 16)),
+            dropout=float(lora_cfg.get("dropout", 0.0)),
+            target_modules=[str(m) for m in lora_cfg.get(
+                "target_modules", ["query", "key", "value"]
+            )],
+        )
     return ModelConfig(
         esm_model_path=cfg.model.name,
         device=resolved_device,
         use_context=bool(cfg.model.get("use_context", True)),
         freeze_embeddings=bool(cfg.model.freeze_embeddings),
         freeze_first_n_layers=int(cfg.model.freeze_first_n_layers),
+        lora=lora,
+        freeze_lm_head=bool(cfg.model.get("freeze_lm_head", False)),
     )
 
 

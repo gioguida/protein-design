@@ -35,6 +35,10 @@ class TrainingConfig:
     save_every_n_steps: Optional[int] = None
     fp16: bool = False
     resume_checkpoint: Optional[str] = None
+    # TTT-only: optimizer-step indices at which to snapshot the model
+    # (LoRA adapter weights if LoRA is active, else full state_dict).
+    # Empty list = no snapshots beyond final.pt.
+    snapshot_steps: list[int] = field(default_factory=list)
 
 
 def build_data_config(cfg: DictConfig) -> DataConfig:
@@ -68,4 +72,5 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
         save_every_n_steps=t.save_every_n_steps if t.save_every_n_steps is not None else None,
         fp16=bool(t.fp16),
         resume_checkpoint=t.get("resume_checkpoint", None),
+        snapshot_steps=[int(s) for s in t.get("snapshot_steps", []) or []],
     )

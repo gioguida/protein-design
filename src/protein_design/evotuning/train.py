@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -683,6 +684,10 @@ def _train_ttt(
     training_history = []
     model.train()
 
+    snapshot_steps = set(int(s) for s in (training_cfg.snapshot_steps or []))
+    if snapshot_steps:
+        log.info("Will snapshot model at TTT steps: %s", sorted(snapshot_steps))
+
     for step in range(1, max_steps + 1):
         step_loss = 0.0
         for _ in range(accum_steps):
@@ -696,21 +701,41 @@ def _train_ttt(
         optimizer.zero_grad()
 
         avg_loss = step_loss / accum_steps
-        artifacts.log({"train/loss": avg_loss, "train/step": step}, step=step)
-        log.info("Step %d/%d — loss: %.4f", step, max_steps, avg_loss)
+
+        # Per-step label-free signal on the WT (CDR-H3 PLL with framework
+        # context). Sanity check that overrides the training loss as a
+        # smoother monotone curve.
+        model.eval()
+        wt_cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
+        model.train()
+
+        artifacts.log(
+            {
+                "train/loss": avg_loss,
+                "train/step": step,
+                "train/wt_cdr_ppl": wt_cdr_ppl,
+            },
+            step=step,
+        )
+        log.info(
+            "Step %d/%d — loss: %.4f — wt CDR-H3 PPL: %.4f",
+            step, max_steps, avg_loss, wt_cdr_ppl,
+        )
         training_history.append({
             "step": step,
             "train_loss": avg_loss,
+            "wt_cdr_ppl": wt_cdr_ppl,
             "learning_rate": training_cfg.learning_rate,
             "wall_time": time.time() - train_start,
         })
 
-    final_state = {
-        "global_step": max_steps,
-        "model_state_dict": model.state_dict(),
-    }
+        if step in snapshot_steps:
+            snap_path = checkpoint_dir / f"step_{step}.pt"
+            model.save_state(snap_path, extra={"global_step": step})
+            log.info("Saved TTT snapshot to %s", snap_path)
+
     final_path = checkpoint_dir / "final.pt"
-    torch.save(final_state, final_path)
+    model.save_state(final_path, extra={"global_step": max_steps})
     log.info("Saved final checkpoint to %s", final_path)
 
     scoring_history = []
@@ -812,12 +837,22 @@ def run_stage(
         except Exception as exc:
             run_log.warning("Failed to write %s: %s", wandb_id_path, exc)
 
-    model = ESM2Model(model_cfg)
+    # Build the model WITHOUT LoRA first so we can load any base/evotuned
+    # finetune checkpoint directly. LoRA (if requested) attaches afterwards.
+    deferred_lora = getattr(model_cfg, "lora", None)
+    deferred_freeze_lm_head = bool(getattr(model_cfg, "freeze_lm_head", False))
+    base_cfg = replace(model_cfg, lora=None, freeze_lm_head=False)
+    model = ESM2Model(base_cfg)
 
     if run_cfg.finetune:
         run_log.info("Loading finetune checkpoint: %s", run_cfg.finetune)
         ckpt = torch.load(run_cfg.finetune, map_location="cpu")
         model.load_state_dict(ckpt["model_state_dict"])
+
+    if deferred_lora is not None:
+        model.attach_lora(deferred_lora)
+    if deferred_freeze_lm_head:
+        model.freeze_lm_head()
 
     summary = model.param_summary()
     run_log.info(

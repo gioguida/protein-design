@@ -1,6 +1,7 @@
 """Unified ESM2 wrapper: trainable masked LM + antibody-context PLL scoring."""
 
 import logging
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 import torch
@@ -43,6 +44,51 @@ class ESM2Model(nn.Module):
         self.pll_mask_chunk_size = chunk_size
 
         self._freeze_layers()
+        self.is_peft: bool = False
+
+        # If LoRA is requested at construction time, attach it now. Callers
+        # who need to load a non-LoRA checkpoint first should construct with
+        # config.lora=None and call attach_lora() afterwards.
+        if getattr(config, "lora", None) is not None:
+            self.attach_lora(config.lora)
+
+        if getattr(config, "freeze_lm_head", False):
+            self.freeze_lm_head()
+
+    def attach_lora(self, spec) -> None:
+        """Wrap the underlying EsmForMaskedLM with peft.LoraConfig."""
+        if self.is_peft:
+            raise RuntimeError("LoRA already attached to this ESM2Model.")
+        from peft import LoraConfig, get_peft_model
+
+        lora_config = LoraConfig(
+            r=int(spec.r),
+            lora_alpha=int(spec.alpha),
+            lora_dropout=float(spec.dropout),
+            target_modules=list(spec.target_modules),
+            bias="none",
+            task_type="FEATURE_EXTRACTION",
+        )
+        self.model = get_peft_model(self.model, lora_config)
+        self.is_peft = True
+        logger.info(
+            "Attached LoRA (r=%d, alpha=%d, target=%s)",
+            spec.r, spec.alpha, list(spec.target_modules),
+        )
+
+    def freeze_lm_head(self) -> None:
+        for param in self._lm_head_module().parameters():
+            param.requires_grad = False
+        logger.info("Froze MLM (lm) head")
+
+    def _lm_head_module(self) -> nn.Module:
+        """Return the underlying EsmForMaskedLM lm_head module, unwrapping
+        PEFT if present."""
+        m = self.model
+        if self.is_peft:
+            # peft.PeftModel -> base_model (LoraModel) -> model (EsmForMaskedLM)
+            m = m.base_model.model
+        return m.lm_head
 
     # ------------------------------------------------------------------ training
 
@@ -65,6 +111,45 @@ class ESM2Model(nn.Module):
         total = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return {"total": total, "trainable": trainable, "frozen": total - trainable}
+
+    # ------------------------------------------------------------------ checkpoint I/O
+
+    def save_state(self, path: str | Path, extra: Optional[dict] = None) -> None:
+        """Save model state. With LoRA active, writes only the adapter state
+        dict (small); otherwise writes the full state dict. Always tags the
+        payload with `format` so load_state can dispatch."""
+        if self.is_peft:
+            from peft import get_peft_model_state_dict
+
+            state = {
+                "format": "peft_adapter",
+                "model_state_dict": get_peft_model_state_dict(self.model),
+            }
+        else:
+            state = {"format": "full", "model_state_dict": self.model.state_dict()}
+        if extra:
+            state.update(extra)
+        torch.save(state, str(path))
+
+    def load_state(self, path: str | Path) -> dict:
+        """Load model state written by save_state. Returns the full ckpt dict
+        (useful for reading `step`, etc.)."""
+        ckpt = torch.load(str(path), map_location="cpu")
+        fmt = ckpt.get("format")
+        sd = ckpt["model_state_dict"]
+        if fmt == "peft_adapter":
+            if not self.is_peft:
+                raise ValueError(
+                    "Checkpoint is a PEFT adapter but this ESM2Model has no LoRA."
+                )
+            from peft import set_peft_model_state_dict
+
+            set_peft_model_state_dict(self.model, sd)
+        else:
+            # Backward-compat path: existing evotuning checkpoints don't tag a
+            # format and were saved as the wrapper's full state dict.
+            self.load_state_dict(sd)
+        return ckpt
 
     def forward(
         self,

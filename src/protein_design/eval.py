@@ -329,6 +329,70 @@ def score_double_mutants(
         raise ValueError(f"Unknown strategy: {strategy!r}")
 
 
+def score_sequences_masked_positions(
+    scorer: ESM2Model,
+    df: pd.DataFrame,
+    wt: str,
+    batch_size: int = 512,
+) -> np.ndarray:
+    """Edit-distance-agnostic fitness scorer.
+
+    For each row in `df` with a `mut` string (semicolon-separated `{WT}{1-pos}{MUT}`
+    tokens), build the variant sequence, then mask each mutated CDR position
+    one at a time and read log P(mut_aa | variant with that position masked).
+    The row's score is the sum of those log-probs over its mutated positions.
+
+    This is equivalent to a CDR pseudo-log-likelihood restricted to the
+    mutated positions of each variant.
+    """
+    if "mut" not in df.columns:
+        raise ValueError("df must have a 'mut' column.")
+
+    wt_list = list(wt)
+
+    # Flatten: each (variant, position, target_aa) triple becomes one forward
+    # pass; remember row provenance to aggregate the sum afterwards.
+    flat_sequences: list[str] = []
+    flat_positions: list[int] = []
+    flat_targets: list[str] = []
+    row_offsets: list[int] = [0]
+    for mut_str in df["mut"]:
+        muts = parse_mutations(mut_str, wt)
+        variant = wt_list.copy()
+        for pos, _wt_aa, mut_aa in muts:
+            variant[pos] = mut_aa
+        variant_str = "".join(variant)
+        for pos, _wt_aa, mut_aa in muts:
+            flat_sequences.append(variant_str)
+            flat_positions.append(pos)
+            flat_targets.append(mut_aa)
+        row_offsets.append(len(flat_sequences))
+
+    if not flat_sequences:
+        return np.zeros(len(df), dtype=np.float32)
+
+    flat_log_probs = compute_masked_log_probs_batch(
+        model=None,
+        tokenizer=None,
+        sequences=flat_sequences,
+        mask_positions=flat_positions,
+        target_aas=flat_targets,
+        device=None,
+        batch_size=batch_size,
+        scorer=scorer,
+    )
+
+    n_rows = len(df)
+    out = np.empty(n_rows, dtype=np.float32)
+    for i in range(n_rows):
+        start, end = row_offsets[i], row_offsets[i + 1]
+        if start == end:
+            out[i] = 0.0
+        else:
+            out[i] = float(flat_log_probs[start:end].sum())
+    return out
+
+
 def score_sequences_cdr_pll(
     scorer: ESM2Model,
     sequences: Sequence[str],
