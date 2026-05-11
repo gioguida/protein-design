@@ -156,7 +156,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
                 )
             finetune = str(checkpoint)
         elif source in {"huggingface", "base"}:
-            finetune = None
+            pass  # respect any explicit finetune= CLI override
         else:
             raise ValueError(
                 f"Unsupported model.init.source={source!r}. "

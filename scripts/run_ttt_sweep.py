@@ -8,10 +8,10 @@ step.
 
 Examples:
     uv run python scripts/run_ttt_sweep.py task=ttt_sweep \\
-        run.finetune=/path/to/evotuned/best.pt
+        finetune=/path/to/evotuned/best.pt
 
     uv run python scripts/run_ttt_sweep.py task=ttt_sweep \\
-        run.finetune=/path/to/evotuned/best.pt \\
+        finetune=/path/to/evotuned/best.pt \\
         model=esm2_8m training.max_steps=10 training.snapshot_steps=[5,10]
 """
 
