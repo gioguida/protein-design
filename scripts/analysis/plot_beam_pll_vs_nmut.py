@@ -10,6 +10,7 @@ Inputs
 --checkpoint-path PATH  Model checkpoint (HF dir, .pt file, or HF model ID)
 --model-variant STR     Model label (for title)
 --batch-size INT        Inference batch size (default: 32)
+--clip-pll FLOAT        Clip lower PLL axis bound and mark clipped points
 --output-dir PATH
 
 Output
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-path", default="")
     p.add_argument("--model-variant", required=True)
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--clip-pll", type=float, default=-100.0)
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -95,24 +97,38 @@ def main() -> int:
 
     rho, pval = spearmanr(n_mutations, pll)
 
+    clipped_mask = pll < args.clip_pll
+    pll_plot = np.maximum(pll, args.clip_pll)
+
     fig, ax = plt.subplots(figsize=(6.5, 5.0))
     ax.scatter(
-        n_mutations, pll,
+        n_mutations[~clipped_mask], pll_plot[~clipped_mask],
         s=22, alpha=0.65, color="tab:blue",
-        edgecolors="black", linewidths=0.25,
+        edgecolors="black", linewidths=0.25, label="PLL",
     )
+    if clipped_mask.any():
+        ax.scatter(
+            n_mutations[clipped_mask], pll_plot[clipped_mask],
+            s=34, alpha=0.9, color="tab:red", marker="v",
+            edgecolors="black", linewidths=0.3,
+            label=f"Clipped at {args.clip_pll:.1f}",
+        )
+
     ax.set_xlabel("Number of mutations from WT (n_mutations)")
     ax.set_ylabel("CDR-H3 PLL")
     ax.set_title(
         f"PLL vs number of mutations from seed (model: {args.model_variant})"
     )
+    ax.set_ylim(bottom=args.clip_pll - 2.0)
     ax.text(
         0.97, 0.97,
-        f"Spearman ρ = {rho:.3f}\n(p = {pval:.2e}, n = {len(seqs)})",
+        f"Spearman rho = {rho:.3f}\n(p = {pval:.2e}, n = {len(seqs)})",
         transform=ax.transAxes,
         ha="right", va="top", fontsize=9,
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="grey"),
     )
+    if clipped_mask.any():
+        ax.legend(loc="lower right", fontsize=9, frameon=True)
     ax.grid(alpha=0.2)
     fig.tight_layout()
 

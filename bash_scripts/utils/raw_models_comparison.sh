@@ -36,10 +36,11 @@ SPLIT_NAME="test"
 ED2_DATASET_KEY="ed2_m22"
 ED5_DATASET_KEY="ed5_m22"
 ED811_DATASET_KEY="ed811_m22"
-FORCE_SPLIT_REBUILD=0
+FORCE_SPLIT_REBUILD=1
 MAX_DATASET_ROWS=5000
 SUBSAMPLE_SEED=42
 SUBSAMPLE_STRATIFY_BINS=10
+SUBSAMPLE_EQUAL_WEIGHT=1
 
 # Runtime knobs
 BATCH_SIZE=64
@@ -61,6 +62,8 @@ ARGS=(
   --subsample-stratify-bins "${SUBSAMPLE_STRATIFY_BINS}"
   --batch-size "${BATCH_SIZE}"
 )
+
+if [[ "${SUBSAMPLE_EQUAL_WEIGHT}" == "1" ]]; then ARGS+=(--subsample-equal-weight); fi
 
 if [[ "${USE_ESM2_8M}" == "1" ]]; then ARGS+=(--include-model "esm2_8m"); fi
 if [[ "${USE_ESM2_35M}" == "1" ]]; then ARGS+=(--include-model "esm2_35m"); fi

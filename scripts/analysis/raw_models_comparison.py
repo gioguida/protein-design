@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--subsample-seed", type=int, default=42)
     parser.add_argument("--subsample-stratify-bins", type=int, default=10)
+    parser.add_argument(
+        "--subsample-equal-weight",
+        action="store_true",
+        help="Sample equal rows per metric bin instead of proportional sampling.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument(
         "--split-mode",
@@ -133,6 +138,7 @@ def _subsample_dataset(
     max_rows: int | None,
     seed: int,
     stratify_bins: int,
+    equal_weight: bool = False,
 ) -> pd.DataFrame:
     if max_rows is None or max_rows <= 0 or len(df) <= max_rows:
         return df.reset_index(drop=True)
@@ -140,6 +146,20 @@ def _subsample_dataset(
     rng = np.random.default_rng(int(seed))
     working = df.copy()
     working["_metric_bin"] = _metric_strata(working[ENRICHMENT_COL], int(stratify_bins))
+
+    if equal_weight:
+        bins = sorted(working["_metric_bin"].unique().tolist())
+        n_bins = len(bins)
+        base = max_rows // n_bins
+        remainder = max_rows - base * n_bins
+        selected: list[int] = []
+        for i, bin_id in enumerate(bins):
+            target = base + (1 if i < remainder else 0)
+            group_idx = working.index[working["_metric_bin"] == bin_id].to_numpy()
+            n = min(target, len(group_idx))
+            selected.extend(rng.choice(group_idx, size=n, replace=False).tolist())
+        return df.loc[selected].reset_index(drop=True)
+
     group_cols = ["_metric_bin"]
     if "num_mut" in working.columns:
         group_cols = ["num_mut", "_metric_bin"]
@@ -173,7 +193,7 @@ def _subsample_dataset(
             targets.loc[idx] += 1
             remaining -= 1
 
-    selected: list[int] = []
+    selected = []
     for group_key, group in grouped:
         n = int(targets.loc[group_key])
         if n <= 0:
@@ -304,6 +324,7 @@ def main() -> int:
             max_rows=args.max_dataset_rows,
             seed=int(args.subsample_seed),
             stratify_bins=int(args.subsample_stratify_bins),
+            equal_weight=bool(args.subsample_equal_weight),
         )
         dataset_frames[ds] = selected_df
         dataset_paths[ds] = dataset_path
@@ -404,6 +425,7 @@ def main() -> int:
             "max_dataset_rows": args.max_dataset_rows,
             "subsample_seed": int(args.subsample_seed),
             "subsample_stratify_bins": int(args.subsample_stratify_bins),
+            "subsample_equal_weight": bool(args.subsample_equal_weight),
             "metric_columns": dataset_metric_cols,
             "dataset_rows": dataset_row_stats,
         },
