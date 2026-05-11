@@ -212,6 +212,9 @@ def compute_masked_log_probs_batch(
                 for i, token_pos in enumerate(token_positions):
                     tid = target_ids[start + i]
                     log_probs[start + i] = log_softmax[i, token_pos, tid].item()
+
+                if (start // batch_size) % 500 == 0 and start > 0:
+                    logger.info("  scored %d / %d sequences", start, n)
         return log_probs
 
     if model is None or tokenizer is None or device is None:
