@@ -505,6 +505,11 @@ def load_scoring_data(
 
     df = df[np.isfinite(df[enrichment_col])].copy()
 
+    if "num_mut" in df.columns:
+        before = len(df)
+        df = df[df["num_mut"] == 2].copy()
+        logger.info("Filtered to num_mut==2: %d → %d sequences", before, len(df))
+
     if len(df) > n_samples:
         df = df.sample(n=n_samples, random_state=seed)
         logger.info("Subsampled to %d sequences", n_samples)
@@ -565,19 +570,47 @@ def run_scoring_evaluation(
         scores_rnd = scores_avg.copy()
         rho_rnd, pval_rnd = rho_avg, pval_avg
     else:
-        scores_avg = score_double_mutants(
-            model, tokenizer, C05_CDRH3, df, device,
-            strategy="average", batch_size=batch_size, seed=seed,
-            scorer=scorer,
-        )
+        if "num_mut" in df.columns and not (df["num_mut"] == 2).all():
+            # Mixed mutation orders: path-averaging for doubles, masked-positions for others.
+            is_double = (df["num_mut"] == 2).values
+            df_double = df[is_double].reset_index(drop=True)
+            df_other = df[~is_double].reset_index(drop=True)
+            logger.info(
+                "Mixed mutation orders: %d doubles, %d other (scored via masked positions)",
+                int(is_double.sum()), int((~is_double).sum()),
+            )
+            scores_avg = np.empty(len(df), dtype=np.float32)
+            scores_rnd = np.empty(len(df), dtype=np.float32)
+            if len(df_double) > 0:
+                scores_avg[is_double] = score_double_mutants(
+                    model, tokenizer, C05_CDRH3, df_double, device,
+                    strategy="average", batch_size=batch_size, seed=seed, scorer=scorer,
+                )
+                scores_rnd[is_double] = score_double_mutants(
+                    model, tokenizer, C05_CDRH3, df_double, device,
+                    strategy="random", batch_size=batch_size, seed=seed, scorer=scorer,
+                )
+            if len(df_other) > 0:
+                if scorer is None:
+                    raise ValueError("Scoring higher-order mutants requires scorer.")
+                sc_other = score_sequences_masked_positions(
+                    scorer, df_other, C05_CDRH3, batch_size=batch_size,
+                )
+                scores_avg[~is_double] = sc_other
+                scores_rnd[~is_double] = sc_other
+        else:
+            scores_avg = score_double_mutants(
+                model, tokenizer, C05_CDRH3, df, device,
+                strategy="average", batch_size=batch_size, seed=seed,
+                scorer=scorer,
+            )
+            scores_rnd = score_double_mutants(
+                model, tokenizer, C05_CDRH3, df, device,
+                strategy="random", batch_size=batch_size, seed=seed,
+                scorer=scorer,
+            )
         rho_avg, pval_avg = evaluate_spearman(scores_avg, enrichment)
         logger.info("Spearman (average ordering): rho=%.4f, p=%.2e", rho_avg, pval_avg)
-
-        scores_rnd = score_double_mutants(
-            model, tokenizer, C05_CDRH3, df, device,
-            strategy="random", batch_size=batch_size, seed=seed,
-            scorer=scorer,
-        )
         rho_rnd, pval_rnd = evaluate_spearman(scores_rnd, enrichment)
         logger.info("Spearman (random ordering):  rho=%.4f, p=%.2e", rho_rnd, pval_rnd)
 

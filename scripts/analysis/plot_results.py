@@ -232,7 +232,7 @@ def _scoring_has_flank_keys(
 def _find_m22_df(datasets):
     """Return the M22 dataframe from a loaded scoring datasets list, or None."""
     for name, df, _col in datasets:
-        if name == "M22":
+        if name in ("M22", "M22_val"):
             return df
     return None
 

@@ -1,0 +1,88 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+
+\title{\vspace{-1.5cm}\textbf{Generative Antibody Design via Preference Optimization\\of Protein Language Models}\vspace{-0.3cm}}
+\author{
+    Marco De Negri \quad Giovanni Guidarini\\[0.3em]
+    \textit{Supervisor(s): Prof. Dr. Andreas Krause, Scott Sussex}\\[0.2em]
+    \small Department of Computer Science, ETH Z\"urich
+}
+\date{Begin date:  17.03.2026}
+
+\begin{document}
+\maketitle
+ 
+\section*{Context}
+ 
+Antibodies are proteins that the immune system uses to recognise and neutralise pathogens. Engineering antibodies with improved binding to a target, for example, a conserved region of the influenza virus, is a central problem in therapeutic design. Experimentally, researchers can test thousands of antibody variants in the lab and measure how well each one binds, producing large datasets of sequence--affinity pairs.
+ 
+Currently, these datasets are used to train predictive models that \emph{score} candidate sequences, but the actual generation of new candidates still relies largely on random mutation. The question driving this project is: \textbf{can we instead train a model that directly proposes new, high-affinity antibody sequences?}
+ 
+This project is part of an ongoing collaboration with the Reddy Lab on the C05 antibody~\cite{ekiert2012cross}, a broadly neutralising anti-influenza antibody. In this specific setting, vanilla ESM2~\cite{lin2023evolutionary} pseudo-likelihoods do not correlate with the experimental binding labels. Both evolutionary fine-tuning~\cite{alley2019unified} and preference optimisation~\cite{ferragu2025gdpo} have shown promise on other proteins, and prior work has demonstrated that sampling directly from protein language models can produce functional antibodies~\cite{hie2023efficient, shanehsazzadeh2023unlocking}. However, it remains unclear how well these approaches transfer to our particular case, which presents several distinctive challenges: (i)~antibodies are structurally distinct from the enzymes on which most methods have been validated, (ii)~C05 is a highly irregular antibody whose CDRH3 loop is 24 amino acids long---far larger than typical, (iii)~all variation is concentrated in this CDRH3 loop, which is the most variable region of an antibody and therefore the hardest to model. What makes this setting uniquely valuable for evaluation is the availability of a complete double deep mutational scan providing dense local data, together with datasets at higher mutational distances (5, 8, and 11 mutations) that can serve as out-of-distribution test sets.
+ 
+\section*{Approach}
+ 
+We build on ESM2~\cite{lin2023evolutionary}, a large pre-trained language model for proteins developed by Meta AI. ESM2 has learned general patterns of protein structure and function from millions of natural sequences. Our goal is to specialise it toward antibody design through two fine-tuning strategies:
+ 
+\begin{enumerate}[nosep]
+    \item \textbf{Evolutionary fine-tuning (evotuning)~\cite{alley2019unified}:} We further train ESM2 on sequences that are evolutionarily related to our target antibody, so the model focuses on the relevant protein family.
+    \item \textbf{Preference optimisation (DPO)~\cite{rafailov2023direct, ferragu2025gdpo}:} Using the experimental binding data, we construct pairs of sequences where one binds better than the other, and train ESM2 to prefer the higher-affinity variant. This aligns the model's outputs with the desired property without needing a separate reward model.
+\end{enumerate}
+ 
+After fine-tuning, we generate new candidate sequences by iteratively asking the model to suggest amino acid substitutions starting from the known wild-type antibody.
+ 
+ 
+\section*{Exploratory Nature}
+ 
+Both evotuning and preference optimisation are established techniques that have been applied to protein engineering in other contexts. However, their effectiveness on antibodies---and on this particularly challenging antibody---has not been demonstrated. This project is therefore investigative in nature: we aim to systematically assess whether and under what conditions these methods yield meaningful improvements in this setting, with the understanding that the direction of the work may be shaped by intermediate findings and that negative results would be equally valuable in informing future research.
+  
+\begin{thebibliography}{9}
+\small
+ 
+\bibitem{ekiert2012cross}
+D.~C. Ekiert \emph{et al.},
+``Cross-neutralization of influenza A viruses mediated by a single antibody loop,''
+\emph{Nature}, vol.~489, pp.~526--532, 2012.
+ 
+\bibitem{lin2023evolutionary}
+Z.~Lin \emph{et al.},
+``Evolutionary-scale prediction of atomic-level protein structure with a language model,''
+\emph{Science}, vol.~379, no.~6637, pp.~1123--1130, 2023.
+ 
+\bibitem{alley2019unified}
+E.~C. Alley, G.~Khimulya, S.~Biswas, M.~AlQuraishi, and G.~M. Church,
+``Unified rational protein engineering with sequence-based deep representation learning,''
+\emph{Nature Methods}, vol.~16, no.~12, pp.~1315--1322, 2019.
+ 
+\bibitem{rafailov2023direct}
+R.~Rafailov, A.~Sharma, E.~Mitchell, C.~D. Manning, S.~Ermon, and C.~Finn,
+``Direct Preference Optimization: Your language model is secretly a reward model,''
+in \emph{NeurIPS}, 2023.
+ 
+\bibitem{ferragu2025gdpo}
+C.~Ferragu \emph{et al.},
+``g-DPO: Scalable preference optimization for protein language models,''
+\emph{arXiv preprint arXiv:2510.19474}, 2025.
+ 
+\bibitem{hie2023efficient}
+B.~L. Hie \emph{et al.},
+``Efficient evolution of human antibodies from general protein language models,''
+\emph{Nature Biotechnology}, vol.~41, pp.~275--283, 2023.
+ 
+\bibitem{shanehsazzadeh2023unlocking}
+A.~Shanehsazzadeh \emph{et al.},
+``Unlocking de novo antibody design with generative artificial intelligence,''
+\emph{arXiv preprint arXiv:2310.16976}, 2023.
+ 
+\end{thebibliography}
+ 
+\end{document}

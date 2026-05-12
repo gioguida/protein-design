@@ -567,7 +567,7 @@ def _run_end_of_training_eval(
                     cols["mut"] = df["mut"].to_numpy()
                 if "num_mut" in df.columns:
                     cols["num_mut"] = df["num_mut"].to_numpy()
-                cols["pll"] = p["scores_avg"]
+                cols["pll"] = p["scores"]
                 cols["enrichment"] = p["enrichment"]
                 out_df = pd.DataFrame(cols)
                 out_path = artifacts.write_scores_csv(name, out_df, suffix="test")
@@ -682,6 +682,7 @@ def _train_ttt(
     )
 
     training_history = []
+    scoring_history = []
     model.train()
 
     snapshot_steps = set(int(s) for s in (training_cfg.snapshot_steps or []))
@@ -734,11 +735,33 @@ def _train_ttt(
             model.save_state(snap_path, extra={"global_step": step})
             log.info("Saved TTT snapshot to %s", snap_path)
 
+            if scoring_cfg.datasets:
+                scoring_datasets = load_scoring_datasets(
+                    scoring_cfg.datasets,
+                    n_samples=scoring_cfg.n_samples,
+                    seed=run_cfg.seed,
+                )
+                model.eval()
+                snapshot_scores = run_multi_scoring_evaluation(
+                    model, tokenizer, scoring_datasets,
+                    device=device,
+                    batch_size=scoring_cfg.batch_size,
+                    seed=run_cfg.seed,
+                    flank_ks=scoring_cfg.flank_ks,
+                    scorer=model,
+                    live_only=True,
+                )
+                model.train()
+                artifacts.log(
+                    {f"eval/{k}": v for k, v in snapshot_scores.items() if isinstance(v, (int, float))},
+                    step=step,
+                )
+                scoring_history.append({"step": step, **snapshot_scores})
+
     final_path = checkpoint_dir / "final.pt"
     model.save_state(final_path, extra={"global_step": max_steps})
     log.info("Saved final checkpoint to %s", final_path)
 
-    scoring_history = []
     if scoring_cfg.datasets:
         scoring_datasets = load_scoring_datasets(
             scoring_cfg.datasets,

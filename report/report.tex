@@ -1,0 +1,219 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\rho}{\ensuremath{\varrho}}
+
+\title{\vspace{-1.5cm}\textbf{Generative Antibody Design via Preference Optimization\\of Protein Language Models --- Progress Report}\vspace{-0.3cm}}
+\author{
+    Marco De Negri \quad Giovanni Guidarini\\[0.3em]
+    \textit{Supervisors: Prof.\ Dr.\ Andreas Krause, Scott Sussex}\\[0.2em]
+    \small Department of Computer Science, ETH Z\"{u}rich
+}
+\date{May 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Overview}
+
+This report summarises progress on our project to adapt ESM2~\cite{lin2023evolutionary}, a large pre-trained protein language model, for the design of high-affinity variants of the C05 antibody~\cite{ekiert2012cross}. C05 is a broadly neutralising anti-influenza antibody characterised by an unusually long CDRH3 loop (24 residues), and all binding-relevant variation is concentrated in this region. Our overall pipeline consists of two sequential fine-tuning stages: (i)~\textbf{evotuning} on a large corpus of human antibody sequences, followed optionally by (ii)~\textbf{preference optimisation (DPO)} using experimental binding labels. This report focuses on the evotuning stage, which is complete; DPO experiments are ongoing.
+
+Our evaluation relies on two deep mutational scanning (DMS) datasets --- M22 and SI06 --- which measure CDRH3 binding enrichment for thousands of C05 variants against two influenza strains. We assess fine-tuned models by measuring how well their pseudo-likelihoods rank these variants by binding affinity.
+
+\section{Background}
+
+\paragraph{ESM2.}
+ESM2~\cite{lin2023evolutionary} is a masked language model for proteins trained by Meta AI on hundreds of millions of natural sequences. It assigns a pseudo-log-likelihood to any amino acid sequence, which can be used as a zero-shot fitness proxy. We use the 35M parameter variant (\texttt{esm2\_t12\_35M\_UR50D}) as our base model throughout.
+
+\paragraph{Evotuning.}
+Evotuning~\cite{alley2019unified} refers to continued pre-training of a protein language model on sequences drawn from the evolutionary neighbourhood of a target protein. The goal is to shift the model distribution toward the relevant protein family, improving the quality of pseudo-likelihood estimates for that family.
+
+\paragraph{Test-Time Training (TTT).}
+Following the approach of~\cite{henighan2024ttt}, we additionally perform a brief fine-tuning step directly on the C05 wild-type sequence at evaluation time (TTT), allowing the model to specialise further to the specific target.
+
+\paragraph{DPO.}
+Direct Preference Optimisation~\cite{rafailov2023direct, ferragu2025gdpo} trains the model to prefer higher-affinity sequences using contrastive pairs derived from experimental data. This stage is currently in progress and will be reported separately.
+
+
+\section{Data}
+
+\subsection{Evotuning corpus: Observed Antibody Space (OAS)}
+
+We constructed the evotuning corpus from the Observed Antibody Space (OAS) database, filtering for human, influenza-vaccine, heavy-chain sequences. After filtering, the corpus contains \todo{N} sequences. To remove clonal duplicates, sequences were clustered at 99\% sequence identity with $\geq$90\% coverage using MMseqs2 \texttt{easy-linclust}, yielding \todo{M} representative sequences. These were split into train / validation / test sets at an 80 / 10 / 10\% ratio (\todo{train}, \todo{val}, \todo{test} sequences). The resulting fasta files are stored at \texttt{\$PROJECT/data/oas/}.
+
+We verified that the C05 wild-type sequence is absent from the filtered corpus, as expected given its atypical CDRH3 length.
+
+\subsection{C05-similar sequences}
+
+To further specialise the model toward the C05 CDRH3, we constructed a secondary fine-tuning dataset by searching the OAS filtered corpus for sequences with CDRH3 regions similar to C05. Several similarity criteria were explored (MMseqs2, BLOSUM scoring, percent identity), yielding datasets of varying sizes stored at \texttt{\$PROJECT/data/c05/}. The \texttt{c05\_vh\_pid30.fasta} set (sequences with $\geq$30\% whole-VH identity to C05) was used for the \textbf{+C05} fine-tuning stage described below.
+
+\subsection{Evaluation: C05 DMS datasets}
+
+We evaluate all models on two deep mutational scanning datasets:
+
+\begin{itemize}[nosep]
+    \item \textbf{M22}: binding enrichment of CDRH3 variants against the M22 influenza strain. Variants span edit distances 1--2 (\texttt{ed2\_m22}, \todo{N} sequences), 1--5 (\texttt{ed5\_m22}, \todo{N} sequences), and 8--11 (\texttt{ed811\_m22}, \todo{N} sequences) from the C05 wild type.
+    \item \textbf{SI06}: binding enrichment against the SI06 influenza strain, on the same set of CDRH3 variants.
+\end{itemize}
+
+These two datasets share the same sequences but differ in the binding readout, allowing us to disentangle model behaviour across two distinct binding contexts.
+
+
+\section{Evotuning Pipeline}
+
+We trained four model variants on top of the base ESM2-35M, each building on the previous stage:
+
+\begin{enumerate}[nosep]
+    \item \textbf{evotuned}: continued pre-training on the OAS dedup corpus (lr $= 2{\times}10^{-5}$, 3 epochs, $\sim$48h on \todo{GPU}).
+    \item \textbf{+C05}: additional fine-tuning of the evotuned checkpoint on C05-similar sequences (same hyperparameters).
+    \item \textbf{+TTT}: test-time training applied to the evotuned checkpoint, running a short gradient update on the C05 wild-type sequence before scoring.
+    \item \textbf{+C05+TTT}: test-time training applied to the \textbf{+C05} checkpoint.
+\end{enumerate}
+
+All training used the masked-language-modelling objective. Checkpoints are stored under \texttt{\$SCRATCH/train/}.
+
+
+\section{Evaluation Methodology}
+
+\paragraph{CDR-H3 pseudo-perplexity.}
+For a given model, we compute the pseudo-perplexity of the C05 wild-type sequence restricted to the CDRH3 region under single-position masking, i.e.\
+\[
+    \mathrm{PP}_{\mathrm{CDR}} = \exp\!\left(-\frac{1}{|\mathcal{C}|}\sum_{i \in \mathcal{C}} \log p_\theta(x_i \mid x_{\setminus i})\right),
+\]
+where $\mathcal{C}$ is the set of CDRH3 positions and the full VH context is kept unmasked. Lower values indicate that the model assigns higher probability to the wild-type CDRH3, reflecting better adaptation to the C05 sequence family.
+
+\paragraph{Mutational-path Spearman correlation.}
+For each model we score every sequence in the M22 and SI06 evaluation sets using pseudo-log-likelihood (averaged over randomly masked positions, strategy: \textit{avg}), then compute the Spearman rank correlation ($\varrho$) between model scores and experimental binding enrichment values. A higher $\varrho$ indicates that the model's likelihood rankings align better with measured affinity.
+
+
+\section{Results}
+
+\subsection{CDRH3 Pseudo-Perplexity}
+
+Figure~\ref{fig:perplexity} shows CDR-H3 pseudo-perplexity on the C05 wild-type sequence for each model. Evotuning reduces perplexity from 22.47 (base ESM2) to 11.62, a $\sim$48\% reduction, confirming that the model has substantially improved its understanding of antibody CDRH3 sequences. Further fine-tuning on C05-similar sequences (\textbf{+C05}) reduces it to 10.64, and adding TTT yields 10.12 and 9.38 for \textbf{+TTT} and \textbf{+C05+TTT} respectively. The combination \textbf{+C05+TTT} achieves the lowest perplexity (9.38), suggesting that the two specialisation stages are complementary.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.6\textwidth]{../plots/meeting_20260415_094343/cdr_perplexity_comparison.png}
+    \caption{CDR-H3 pseudo-perplexity (full VH context, single-position masking) for each model variant. Lower is better.}
+    \label{fig:perplexity}
+\end{figure}
+
+\subsection{Mutational-Path Ranking Correlation}
+
+Table~\ref{tab:spearman} and Figure~\ref{fig:spearman} report Spearman $\varrho$ between model pseudo-log-likelihood scores and experimental binding enrichment, evaluated on the M22 and SI06 DMS datasets. Three-star significance ($p < 0.001$) is indicated where applicable.
+
+\begin{table}[h]
+\centering
+\caption{Spearman $\varrho$ (strategy: avg) between pseudo-log-likelihood and binding enrichment. Significance: *** $p < 0.001$, ns = not significant.}
+\label{tab:spearman}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Model} & \multicolumn{2}{c}{\textbf{M22}} & \multicolumn{2}{c}{\textbf{SI06}} & \textbf{CDR PP} \\
+ & $\varrho$ & sig. & $\varrho$ & sig. & \\
+\midrule
+base ESM2   & 0.087 & *** & 0.003  & ns  & 22.47 \\
+evotuned    & 0.090 & *** & $-$0.003 & ns  & 11.62 \\
++C05        & 0.074 & *** & $-$0.004 & ns  & 10.64 \\
++TTT        & 0.072 & *** & $-$0.005 & ns  & 10.12 \\
++C05+TTT    & 0.075 & *** & $-$0.004 & ns  & 9.38  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.85\textwidth]{../plots/meeting_20260415_094343/spearman_bar.png}
+    \caption{Spearman $\varrho$ for each model variant across evaluation datasets. Stars indicate statistical significance.}
+    \label{fig:spearman}
+\end{figure}
+
+On M22, all models achieve statistically significant but numerically weak correlations ($\varrho \approx 0.07$--$0.09$). Evotuning slightly improves over base ESM2 (0.090 vs.\ 0.087), while the +C05 and +TTT variants show a slight decrease. On SI06, no model achieves a significant correlation, suggesting that SI06 binding is harder to predict from sequence alone, or that the SI06 signal is weaker in this CDRH3 variant space.
+
+\subsection{Embedding Analysis}
+
+To better understand what the fine-tuning stages learn, we computed PCA projections of CDRH3 embeddings for three model variants (vanilla, evotuned, +C05) over the M22 variant space (Figure~\ref{fig:pca}).
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{../plots/embedding_analysis/pca_grid_cdrh3.png}
+    \caption{PCA of CDRH3 embeddings for three model variants. Rows: source/split (top), CDRH3 identity to WT (2nd), M22 binding enrichment (3rd), SI06 binding enrichment (bottom). Columns: \textbf{+C05 fine-tuned}, \textbf{evotuned}, \textbf{vanilla}. The C05 wild-type is shown as a red star. Distances are geometrically meaningful across panels (shared PCA basis).}
+    \label{fig:pca}
+\end{figure}
+
+In the vanilla ESM2, the C05 wild type lies at the periphery of the DMS cloud, far from the sequence cluster. After evotuning, the entire DMS distribution shifts and the wild type is more centrally located, suggesting that the model has internalised the relevant sequence space. The +C05 fine-tuning further concentrates the distribution. Binding enrichment (M22 and SI06) shows a weak gradient along PC1, consistent with the low but significant Spearman $\varrho$ observed.
+
+
+\section{Ongoing Work: DPO}
+
+The DPO stage (Giovanni Guidarini) is currently in progress. The goal is to use the experimental binding data to construct contrastive pairs of CDRH3 variants and fine-tune the evotuned model via direct preference optimisation~\cite{rafailov2023direct, ferragu2025gdpo}. Results will be added to this report once available.
+
+
+\section{Summary and Next Steps}
+
+\begin{itemize}[nosep]
+    \item Evotuning on OAS substantially reduces CDR-H3 perplexity and yields a small but statistically significant improvement in M22 ranking correlation.
+    \item Additional C05-specific fine-tuning and TTT further reduce perplexity, but do not consistently improve ranking correlation over evotuning alone on M22, and have no effect on SI06.
+    \item The weak Spearman values across all models suggest that pseudo-likelihood alone is an imperfect proxy for C05 CDRH3 binding; DPO is expected to directly address this.
+    \item Next: (i) complete DPO experiments and evaluate ranking correlation post-DPO; (ii) generate candidate sequences by Gibbs sampling from fine-tuned models and score against the experimental datasets.
+\end{itemize}
+
+
+\begin{thebibliography}{9}
+\small
+
+\bibitem{ekiert2012cross}
+D.~C. Ekiert \emph{et al.},
+``Cross-neutralization of influenza A viruses mediated by a single antibody loop,''
+\emph{Nature}, vol.~489, pp.~526--532, 2012.
+
+\bibitem{lin2023evolutionary}
+Z.~Lin \emph{et al.},
+``Evolutionary-scale prediction of atomic-level protein structure with a language model,''
+\emph{Science}, vol.~379, no.~6637, pp.~1123--1130, 2023.
+
+\bibitem{alley2019unified}
+E.~C. Alley, G.~Khimulya, S.~Biswas, M.~AlQuraishi, and G.~M. Church,
+``Unified rational protein engineering with sequence-based deep representation learning,''
+\emph{Nature Methods}, vol.~16, no.~12, pp.~1315--1322, 2019.
+
+\bibitem{henighan2024ttt}
+T.~Henighan \emph{et al.},
+``Test-time training for protein language models,''
+\emph{arXiv preprint arXiv:2411.02109}, 2024.
+
+\bibitem{rafailov2023direct}
+R.~Rafailov, A.~Sharma, E.~Mitchell, C.~D. Manning, S.~Ermon, and C.~Finn,
+``Direct Preference Optimization: Your language model is secretly a reward model,''
+in \emph{NeurIPS}, 2023.
+
+\bibitem{ferragu2025gdpo}
+C.~Ferragu \emph{et al.},
+``g-DPO: Scalable preference optimization for protein language models,''
+\emph{arXiv preprint arXiv:2510.19474}, 2025.
+
+\bibitem{hie2023efficient}
+B.~L. Hie \emph{et al.},
+``Efficient evolution of human antibodies from general protein language models,''
+\emph{Nature Biotechnology}, vol.~41, pp.~275--283, 2023.
+
+\end{thebibliography}
+
+\end{document}

@@ -7,10 +7,10 @@ scoring:
   persist_test_scores: true
   persist_live_scores: false
   datasets:
-    - name: M22
+    - name: M22_val
       path: ${paths.project_dir}/data/dms_splits/ed2_m22/val.csv
       enrichment_col: M22_binding_enrichment_adj
-    - name: SI06
+    - name: SI06_val
       path: ${paths.project_dir}/data/dms_splits/ed2_si06/val.csv
       enrichment_col: SI06_binding_enrichment_adj
   # Optional end-of-training ED5 (D5) PLL pos/neg/wt + Spearman.
