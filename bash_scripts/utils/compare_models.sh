@@ -21,7 +21,7 @@ MODELS=(
   "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
   "dpo_linear_warmup|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup/best.pt"
   "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
-  # "dpo_step|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_step/best.pt"
+  "dpo_step|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_step/best.pt"
 )
 
 # ----------------------------- switches --------------------------------------
