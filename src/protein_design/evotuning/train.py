@@ -28,14 +28,17 @@ from tqdm import tqdm
 from transformers import DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
 
 from protein_design.constants import C05_CDRH3
+from protein_design.dms_splitting import dms_config_path_from_cfg, resolve_dataset_split
 from protein_design.eval import (
     corpus_perplexity,
     compute_perplexity,
     ensure_test_eval_csv,
     evaluate_pll_eval_sets,
+    evaluate_spearman,
     load_scoring_datasets,
     load_test_pll_eval_sets,
     run_multi_scoring_evaluation,
+    score_sequences_masked_positions,
 )
 from protein_design.config import ModelConfig, RunConfig, ScoringConfig
 from protein_design.evotuning.config import DataConfig, TrainingConfig
@@ -55,6 +58,71 @@ from protein_design.wandb_plots import (
 
 # Module-level logger for orchestration messages (before run_dir exists).
 logger = logging.getLogger(__name__)
+
+# DMS dataset keys used for TTT snapshot evaluation.
+_TTT_EVAL_DATASET_KEYS: dict[str, str] = {
+    "ED2":   "ed2_m22",
+    "ED5":   "ed5_m22",
+    "ED811": "ed811_m22",
+}
+
+
+def _load_ttt_eval_datasets(
+    cfg: DictConfig, log: logging.Logger
+) -> dict[str, pd.DataFrame]:
+    """Load ED2/ED5/ED811 test splits for TTT snapshot evaluation."""
+    dms_config_path = dms_config_path_from_cfg(cfg)
+    datasets: dict[str, pd.DataFrame] = {}
+    for label, dataset_key in _TTT_EVAL_DATASET_KEYS.items():
+        test_path = resolve_dataset_split(dataset_key, "test", dms_config_path)
+        df = pd.read_csv(test_path)
+        df = df.dropna(subset=["mut", "M22_binding_enrichment_adj"]).copy()
+        df["mut"] = df["mut"].astype(str).str.strip()
+        df = df[df["mut"] != ""].reset_index(drop=True)
+        log.info("TTT eval: loaded %s (%d rows) from %s", label, len(df), test_path)
+        datasets[label] = df
+    return datasets
+
+
+def _ttt_snapshot_eval(
+    model: ESM2Model,
+    step: int,
+    ttt_eval_datasets: dict[str, pd.DataFrame],
+    eval_batch_size: int,
+    artifacts: "RunArtifacts",
+    log: logging.Logger,
+) -> dict[str, float]:
+    """Compute CDR PPL + Spearman on all TTT eval datasets; log and return results."""
+    model.eval()
+    results: dict[str, float] = {}
+
+    cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
+    results["cdr_ppl"] = cdr_ppl
+
+    spearman_vals: list[float] = []
+    for name, df in ttt_eval_datasets.items():
+        scores = score_sequences_masked_positions(
+            scorer=model, df=df, wt=C05_CDRH3, batch_size=eval_batch_size,
+        )
+        enrichment = df["M22_binding_enrichment_adj"].to_numpy(dtype=float)
+        rho, pval = evaluate_spearman(scores, enrichment)
+        results[f"spearman_{name}"] = float(rho)
+        spearman_vals.append(float(rho))
+        log.info("  step=%d  %s (n=%d): Spearman rho=%.4f  p=%.2e", step, name, len(df), rho, pval)
+
+    results["spearman_mean"] = float(np.mean(spearman_vals)) if spearman_vals else float("nan")
+    log.info("  step=%d  CDR PPL=%.4f  spearman_mean=%.4f", step, cdr_ppl, results["spearman_mean"])
+
+    artifacts.log(
+        {
+            "eval/cdr_ppl": cdr_ppl,
+            "eval/spearman_mean": results["spearman_mean"],
+            **{f"eval/spearman_{name}": results[f"spearman_{name}"] for name in ttt_eval_datasets},
+        },
+        step=step,
+    )
+    model.train()
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -643,9 +711,11 @@ def _train_ttt(
     log: logging.Logger,
     artifacts: RunArtifacts,
     log_every_n_steps: int,
+    ttt_eval_datasets: Optional[dict[str, pd.DataFrame]] = None,
+    eval_batch_size: int = 64,
 ) -> tuple[list, list, int, Path, dict]:
-    """Run TTT on a single sequence. Returns (training_history, scoring_history,
-    global_step, final_ckpt_path)."""
+    """Run TTT on a single sequence. Returns (training_history, eval_history,
+    global_step, final_ckpt_path, final_metrics)."""
     sequence = _load_single_sequence(data_cfg.fasta_path, log)
     tokenizer = model.tokenizer
     tokenized = tokenizer(
@@ -681,13 +751,23 @@ def _train_ttt(
         weight_decay=0.0,
     )
 
-    training_history = []
-    scoring_history = []
+    training_history: list[dict] = []
+    eval_history: list[dict] = []
     model.train()
 
     snapshot_steps = set(int(s) for s in (training_cfg.snapshot_steps or []))
     if snapshot_steps:
-        log.info("Will snapshot model at TTT steps: %s", sorted(snapshot_steps))
+        log.info("Will snapshot + eval at TTT steps: %s", sorted(snapshot_steps))
+
+    # --- Step 0: evaluate the starting model before any gradient ---
+    if ttt_eval_datasets:
+        log.info("=== TTT step 0 eval (pre-training) ===")
+        step0_results = _ttt_snapshot_eval(
+            model, step=0, ttt_eval_datasets=ttt_eval_datasets,
+            eval_batch_size=eval_batch_size, artifacts=artifacts, log=log,
+        )
+        eval_history.append({"step": 0, **step0_results})
+        artifacts.flush()
 
     for step in range(1, max_steps + 1):
         step_loss = 0.0
@@ -703,25 +783,16 @@ def _train_ttt(
 
         avg_loss = step_loss / accum_steps
 
-        # Per-step label-free signal on the WT (CDR-H3 PLL with framework
-        # context). Sanity check that overrides the training loss as a
-        # smoother monotone curve.
+        # Per-step label-free signal on the WT CDR-H3.
         model.eval()
         wt_cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
         model.train()
 
         artifacts.log(
-            {
-                "train/loss": avg_loss,
-                "train/step": step,
-                "train/wt_cdr_ppl": wt_cdr_ppl,
-            },
+            {"train/loss": avg_loss, "train/step": step, "train/wt_cdr_ppl": wt_cdr_ppl},
             step=step,
         )
-        log.info(
-            "Step %d/%d — loss: %.4f — wt CDR-H3 PPL: %.4f",
-            step, max_steps, avg_loss, wt_cdr_ppl,
-        )
+        log.info("Step %d/%d — loss: %.4f — wt CDR-H3 PPL: %.4f", step, max_steps, avg_loss, wt_cdr_ppl)
         training_history.append({
             "step": step,
             "train_loss": avg_loss,
@@ -733,56 +804,58 @@ def _train_ttt(
         if step in snapshot_steps:
             snap_path = checkpoint_dir / f"step_{step}.pt"
             model.save_state(snap_path, extra={"global_step": step})
-            log.info("Saved TTT snapshot to %s", snap_path)
+            log.info("Saved TTT snapshot: %s", snap_path)
 
-            if scoring_cfg.datasets:
-                scoring_datasets = load_scoring_datasets(
-                    scoring_cfg.datasets,
-                    n_samples=scoring_cfg.n_samples,
-                    seed=run_cfg.seed,
+            if ttt_eval_datasets:
+                log.info("=== TTT step %d eval ===", step)
+                snap_results = _ttt_snapshot_eval(
+                    model, step=step, ttt_eval_datasets=ttt_eval_datasets,
+                    eval_batch_size=eval_batch_size, artifacts=artifacts, log=log,
                 )
-                model.eval()
-                snapshot_scores = run_multi_scoring_evaluation(
-                    model, tokenizer, scoring_datasets,
-                    device=device,
-                    batch_size=scoring_cfg.batch_size,
-                    seed=run_cfg.seed,
-                    flank_ks=scoring_cfg.flank_ks,
-                    scorer=model,
-                    live_only=True,
-                )
-                model.train()
-                artifacts.log(
-                    {f"eval/{k}": v for k, v in snapshot_scores.items() if isinstance(v, (int, float))},
-                    step=step,
-                )
-                scoring_history.append({"step": step, **snapshot_scores})
+                eval_history.append({"step": step, **snap_results})
+
+            artifacts.flush()
 
     final_path = checkpoint_dir / "final.pt"
     model.save_state(final_path, extra={"global_step": max_steps})
-    log.info("Saved final checkpoint to %s", final_path)
+    log.info("Saved final TTT checkpoint: %s", final_path)
 
-    if scoring_cfg.datasets:
-        scoring_datasets = load_scoring_datasets(
-            scoring_cfg.datasets,
-            n_samples=scoring_cfg.n_samples,
-            seed=run_cfg.seed,
-        )
-        scoring_results = run_multi_scoring_evaluation(
-            model, tokenizer, scoring_datasets,
-            device=device,
-            batch_size=scoring_cfg.batch_size,
-            seed=run_cfg.seed,
-            flank_ks=scoring_cfg.flank_ks,
-            scorer=model,
-        )
-        artifacts.log(
-            {f"eval/{k}": v for k, v in scoring_results.items() if isinstance(v, (int, float))},
-            step=max_steps,
-        )
-        scoring_history.append({"step": max_steps, **scoring_results})
+    final_metrics: dict = {}
+    if eval_history:
+        # Write per-step eval history CSV.
+        eval_df = pd.DataFrame(eval_history)
+        eval_csv = run_dir / "ttt_eval_history.csv"
+        eval_df.to_csv(eval_csv, index=False)
+        log.info("Wrote TTT eval history: %s", eval_csv)
 
-    return training_history, scoring_history, max_steps, final_path, {}
+        # Best step by ED2 Spearman (if available), else by spearman_mean.
+        rank_col = "spearman_ED2" if "spearman_ED2" in eval_df.columns else "spearman_mean"
+        snap_df = eval_df[eval_df["step"] > 0]
+        if not snap_df.empty:
+            best_idx = snap_df[rank_col].map(lambda v: v if np.isfinite(v) else -np.inf).idxmax()
+            best_step = int(snap_df.loc[best_idx, "step"])
+            best_row = snap_df.loc[best_idx]
+            log.info(
+                "Best TTT step = %d (%s=%.4f)", best_step, rank_col, best_row[rank_col],
+            )
+            final_metrics["best_ttt_step"] = best_step
+            for col in eval_df.columns:
+                if col != "step":
+                    final_metrics[f"best_{col}"] = float(best_row[col])
+
+        # Markdown summary table.
+        cols = [c for c in eval_df.columns if c != "step"]
+        header = "| step | " + " | ".join(cols) + " |"
+        sep = "| --- | " + " | ".join(["---"] * len(cols)) + " |"
+        rows = [header, sep]
+        for _, row in eval_df.iterrows():
+            cells = [str(int(row["step"]))] + [f"{row[c]:.4f}" for c in cols]
+            rows.append("| " + " | ".join(cells) + " |")
+        md = "\n".join(rows)
+        (run_dir / "ttt_eval_table.md").write_text(md + "\n")
+        log.info("Results table:\n%s", md)
+
+    return training_history, eval_history, max_steps, final_path, final_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -896,10 +969,19 @@ def run_stage(
         )
         handoff_ckpt = best_ckpt_path if best_ckpt_path is not None else checkpoint_dir / "final.pt"
     else:  # ttt
+        ttt_eval_datasets: dict[str, pd.DataFrame] = {}
+        if cfg is not None:
+            try:
+                ttt_eval_datasets = _load_ttt_eval_datasets(cfg, run_log)
+            except Exception as exc:
+                run_log.warning("Could not load TTT eval datasets: %s", exc)
+        ttt_eval_batch_size = max(int(scoring_cfg.batch_size or 0), 64)
         training_history, scoring_history, global_step, handoff_ckpt, final_metrics = _train_ttt(
             model, model_cfg, data_cfg, training_cfg, scoring_cfg, run_cfg,
             run_dir, checkpoint_dir, device, train_start,
             log=run_log, artifacts=artifacts, log_every_n_steps=log_every_n_steps,
+            ttt_eval_datasets=ttt_eval_datasets or None,
+            eval_batch_size=ttt_eval_batch_size,
         )
 
     # ------------------------------------------------------------------

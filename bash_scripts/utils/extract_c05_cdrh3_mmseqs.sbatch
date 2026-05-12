@@ -20,13 +20,13 @@ MODE="${1:?Usage: sbatch ... preview OR build <threshold> [extra args]}"
 case "$MODE" in
   preview)
     shift
-    python scripts/data_prep/extract_c05_cdrh3_mmseqs.py --preview --threads 16 "$@"
+    python scripts/data_prep/extract_c05_cdrh3_mmseqs.py --preview --threads 16 --max-seqs 2000000 "$@"
     ;;
   build)
     THRESH="${2:?ERROR: build needs a threshold, e.g. sbatch ... build 0.60}"
     shift 2
     python scripts/data_prep/extract_c05_cdrh3_mmseqs.py \
-      --threshold "$THRESH" --threads 16 "$@"
+      --threshold "$THRESH" --threads 16 --max-seqs 2000000 "$@"
     ;;
   *)
     echo "Unknown mode: $MODE. Use preview | build <threshold>" >&2

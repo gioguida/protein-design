@@ -52,7 +52,7 @@ def main() -> None:
         sys.exit(1)
 
     output_path = args.output or os.path.join(
-        os.path.dirname(args.csv_path), "cdrh3_length_distribution.png"
+        os.path.dirname(args.csv_path), "cdrh3_length_distribution.pdf"
     )
 
     print(f"Reading {args.csv_path} ...")
@@ -130,7 +130,7 @@ def main() -> None:
     ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, bbox_inches="tight")
     print(f"\nPlot saved to: {output_path}")
 
 

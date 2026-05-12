@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - override /data: evo/c05_single
-  - override /scoring: d2
+  - override /scoring: none
   - _self_
 
 task:
@@ -9,12 +9,21 @@ task:
   runner: evotuning
   stage_type: ttt
 
+model:
+  freeze_lm_head: true
+  lora:
+    r: 8
+    alpha: 16
+    dropout: 0.0
+    target_modules: [query, key, value]
+
 training:
   learning_rate: 4.0e-4
   warmup_steps: 0
   max_epochs: 1
-  max_steps: 30
+  max_steps: 1000
   batch_size: 4
   gradient_accumulation_steps: 16
   save_every_n_steps: null
   fp16: false
+  snapshot_steps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
