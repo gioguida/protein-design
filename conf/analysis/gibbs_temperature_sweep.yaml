@@ -14,14 +14,21 @@ sweep:
   n_steps: 500            # sampling steps (after burn-in)
   burn_in: 200            # steps before recording
   snapshot_every: 50
-  max_mutations: 8        # reject steps that exceed this edit distance from WT
+  max_mutations: 6        # reject steps that exceed this edit distance from WT
   start_mode: "wt"        # wt | dms
   seed: 42
 
 models:
   - name: "dpo_from_evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__evo_base_20260425_190014"
+    checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
     model_variant: "DPO from evo"
+  - name: "evo"
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"" 
+    model_variant: "evotuned"
+  - name: "vanilla"
+    checkpoint: "facebook/esm2_t12_35M_UR50D" 
+    model_variant: "vanilla"
+  
 
 dms:
   m22_path: "/cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_M22_binding_enrichment.csv"

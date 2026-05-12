@@ -16,8 +16,14 @@ sweep:
 
 models:
   - name: "dpo_from_evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/dpo__evo_base_20260425_190014"
+    checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
     model_variant: "DPO from evo"
+  - name: "evo"
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"" 
+    model_variant: "evotuned"
+  - name: "vanilla"
+    checkpoint: "facebook/esm2_t12_35M_UR50D" 
+    model_variant: "vanilla"
 
 # DMS reference paths used for beam_pll_vs_dms_histogram and beam_aa_heatmap.
 # Leave null to skip DMS-dependent plots.
