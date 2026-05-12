@@ -135,6 +135,9 @@ def parse_args() -> argparse.Namespace:
                         "and as the chain start when --start-mode=wt).")
     p.add_argument("--n-chains", type=int, default=5)
     p.add_argument("--n-steps", type=int, default=5000)
+    p.add_argument("--burn-in", type=int, default=0,
+                   help="Number of initial steps to run before recording any snapshots. "
+                        "Step numbering in the output CSV starts after burn-in.")
     p.add_argument("--snapshot-every", type=int, default=100)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--output-path", required=True,
@@ -151,6 +154,9 @@ def parse_args() -> argparse.Namespace:
                    help="Path to D2_SI06.csv (required when --start-mode=dms).")
     p.add_argument("--max-dms-seeds", type=int, default=500,
                    help="Cap on the DMS pool size before per-chain sampling.")
+    p.add_argument("--max-mutations", type=int, default=None,
+                   help="If set, reject any Gibbs step that would push edit distance "
+                        "from WT beyond this value. The old residue is kept instead.")
     return p.parse_args()
 
 
@@ -227,6 +233,29 @@ def make_record(
         "n_mutations": hamming(cdrh3, wt_cdrh3),
         "model_variant": model_variant,
     }
+
+
+def _do_gibbs_step(
+    current_vh: str,
+    current_tokens: torch.Tensor,
+    *,
+    args: argparse.Namespace,
+    model: EsmForMaskedLM,
+    aa_token_ids: torch.Tensor,
+    mask_id: int,
+) -> tuple[str, torch.Tensor]:
+    """Run one Gibbs step with optional max-mutation rejection."""
+    local_pos = random.randrange(C05_CDRH3_END - C05_CDRH3_START)
+    new_vh, new_tokens, _ = gibbs_step(
+        current_vh, current_tokens, local_pos,
+        model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
+        temperature=args.temperature, debug=False,
+    )
+    if args.max_mutations is not None:
+        new_cdrh3 = new_vh[C05_CDRH3_START:C05_CDRH3_END]
+        if hamming(new_cdrh3, args.wt_cdrh3) > args.max_mutations:
+            return current_vh, current_tokens
+    return new_vh, new_tokens
 
 
 def main() -> None:
@@ -308,22 +337,33 @@ def main() -> None:
 
     snapshots: list[dict] = []
     print(f"\n[run] n_chains={args.n_chains}  n_steps={args.n_steps}  "
-          f"snapshot_every={args.snapshot_every}  temperature={args.temperature}")
+          f"burn_in={args.burn_in}  snapshot_every={args.snapshot_every}  "
+          f"temperature={args.temperature}  max_mutations={args.max_mutations}")
 
     for chain_id in range(args.n_chains):
         start_cdrh3 = chain_starts[chain_id]
         current_vh = add_context(start_cdrh3)
         current_tokens = tokenize_full_vh(tokenizer, current_vh).to(device)
-        snapshots.append(make_record(chain_id, 0, current_vh, args.wt_cdrh3, args.model_variant))
         t_chain = time.time()
         print(f"\n[chain {chain_id}] start  cdrh3={start_cdrh3}")
 
+        for _ in range(args.burn_in):
+            current_vh, current_tokens = _do_gibbs_step(
+                current_vh, current_tokens,
+                args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
+            )
+
+        if args.burn_in > 0:
+            cdrh3 = current_vh[C05_CDRH3_START:C05_CDRH3_END]
+            print(f"[chain {chain_id}] burn-in done ({args.burn_in} steps)  "
+                  f"cdrh3={cdrh3}  mut={hamming(cdrh3, args.wt_cdrh3)}")
+
+        snapshots.append(make_record(chain_id, 0, current_vh, args.wt_cdrh3, args.model_variant))
+
         for step in range(args.n_steps):
-            local_pos = random.randrange(C05_CDRH3_END - C05_CDRH3_START)
-            current_vh, current_tokens, _ = gibbs_step(
-                current_vh, current_tokens, local_pos,
-                model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
-                temperature=args.temperature, debug=False,
+            current_vh, current_tokens = _do_gibbs_step(
+                current_vh, current_tokens,
+                args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
             )
             steps_taken = step + 1
             is_snapshot = steps_taken % args.snapshot_every == 0 or step == args.n_steps - 1
@@ -350,7 +390,9 @@ def main() -> None:
         "wt_cdrh3": args.wt_cdrh3,
         "n_chains": args.n_chains,
         "n_steps": args.n_steps,
+        "burn_in": args.burn_in,
         "snapshot_every": args.snapshot_every,
+        "max_mutations": args.max_mutations,
         "temperature": args.temperature,
         "seed": args.seed,
         "start_mode": args.start_mode,
