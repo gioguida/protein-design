@@ -1,0 +1,23 @@
+[cache] config: conf/data/dms/default.yaml
+[cache] force rebuild: 1
+[cache] output_dir: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits
+[cache] ed2_m22:
+  - train: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/train.csv
+  - val: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/val.csv
+  - test: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/test.csv
+[cache] ed2_si06:
+  - train: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/train.csv
+  - val: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/val.csv
+  - test: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/test.csv
+[cache] ed5_m22:
+  - train: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/train.csv
+  - val: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/val.csv
+  - test: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/test.csv
+[cache] ed5_si06:
+  - train: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/train.csv
+  - val: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/val.csv
+  - test: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/test.csv
+[cache] ed811_m22:
+  - train: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/train.csv
+  - val: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/val.csv
+  - test: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/test.csv

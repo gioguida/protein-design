@@ -165,7 +165,15 @@ def _barplot(
     offsets = (np.arange(n_models) - (n_models - 1) / 2.0) * width
     cmap = plt.get_cmap("tab10")
     for i, model_label in enumerate(models):
-        ax.bar(x + offsets[i], values[i], width=width, alpha=0.9, color=cmap(i % 10), label=model_label)
+        bars = ax.bar(x + offsets[i], values[i], width=width, alpha=0.9, color=cmap(i % 10), label=model_label)
+        for bar, val in zip(bars, values[i]):
+            if not np.isnan(val):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height(),
+                    f"{val:.2g}",
+                    ha="center", va="bottom", fontsize=7, rotation=90,
+                )
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     if legend_labels is not None:
