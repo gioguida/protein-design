@@ -53,6 +53,15 @@ WT_STAR = dict(marker="*", s=240, c="red", edgecolors="black", linewidths=0.6, z
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plot_gibbs_per_model_pca")
 
+plt.rcParams.update(
+    {
+        "savefig.dpi": 300,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": False,
+    }
+)
+
 
 def load_per_model_npz(
     npz_path: Path,
@@ -123,9 +132,12 @@ def plot_one_variant(
     config_suffix: str = "",
     view_suffix: str = "",
     title_extra: str = "",
+    overlay_style: str = "trajectory",
+    highlight_final: bool = True,
 ) -> None:
     chain_cmap = plt.get_cmap("tab10")
     step_cmap = plt.get_cmap("plasma")
+    is_full_view = view_suffix == ""
 
     for fkey, flabel, fshort in FITNESS:
         if np.isnan(dms_fitness[fkey]).all():
@@ -139,17 +151,69 @@ def plot_one_variant(
 
         if gibbs_pc is not None and len(gibbs_pc):
             unique_chains = sorted(set(int(c) for c in gibbs_chain_id))
-            for i, ch in enumerate(unique_chains):
-                cm = gibbs_chain_id == ch
-                pts = gibbs_pc[cm]
-                st = gibbs_step[cm]
-                order = np.argsort(st)
-                pts, st = pts[order], st[order]
-                line_color = chain_cmap(i % 10)
-                ax.plot(pts[:, 0], pts[:, 1], "-", color=line_color,
-                        alpha=0.55, linewidth=1.0, zorder=4)
-                ax.scatter(pts[:, 0], pts[:, 1], c=st, cmap=step_cmap,
-                           s=22, zorder=5, edgecolors=line_color, linewidths=0.5)
+            if overlay_style == "scatter":
+                ax.scatter(
+                    gibbs_pc[:, 0],
+                    gibbs_pc[:, 1],
+                    s=40,
+                    c="red",
+                    edgecolors="black",
+                    linewidths=0.4,
+                    alpha=0.85,
+                    zorder=6,
+                    label="Beam samples",
+                )
+            else:
+                line_width = 0.5 if is_full_view else 1.0
+                line_alpha = 0.4 if is_full_view else 0.55
+                marker_size = 10 if is_full_view else 22
+                for i, ch in enumerate(unique_chains):
+                    cm = gibbs_chain_id == ch
+                    pts = gibbs_pc[cm]
+                    st = gibbs_step[cm]
+                    order = np.argsort(st)
+                    pts, st = pts[order], st[order]
+                    line_color = chain_cmap(i % 10)
+                    ax.plot(
+                        pts[:, 0],
+                        pts[:, 1],
+                        "-",
+                        color=line_color,
+                        alpha=line_alpha,
+                        linewidth=line_width,
+                        zorder=4,
+                    )
+                    ax.scatter(
+                        pts[:, 0],
+                        pts[:, 1],
+                        c=st,
+                        cmap=step_cmap,
+                        s=marker_size,
+                        alpha=line_alpha,
+                        zorder=5,
+                        edgecolors=line_color,
+                        linewidths=0.5,
+                    )
+                if highlight_final:
+                    for i, ch in enumerate(unique_chains):
+                        cm = gibbs_chain_id == ch
+                        st = gibbs_step[cm]
+                        if not len(st):
+                            continue
+                        final_mask = st == np.max(st)
+                        final_pts = gibbs_pc[cm][final_mask]
+                        if not len(final_pts):
+                            continue
+                        ax.scatter(
+                            final_pts[:, 0],
+                            final_pts[:, 1],
+                            s=50,
+                            c=[chain_cmap(i % 10)],
+                            edgecolors="black",
+                            linewidths=0.6,
+                            alpha=0.9,
+                            zorder=7,
+                        )
 
         if wt_pc is not None:
             ax.scatter(wt_pc[0], wt_pc[1], **WT_STAR)
@@ -159,12 +223,14 @@ def plot_one_variant(
         ax.set_ylabel(f"PC2 ({100 * ev[1]:.1f}% var)" if len(ev) > 1 else "PC2")
         cfg_extra = f"  [{config_suffix}]" if config_suffix else ""
         view_extra = f"  [{title_extra}]" if title_extra else ""
+        title_prefix = "Beam samples" if overlay_style == "scatter" else "Gibbs trajectory"
         ax.set_title(
-            f"{variant} — Gibbs trajectory in own DMS-PCA "
+            f"{variant} — {title_prefix} in own DMS-PCA "
             f"[{dms_dataset.upper()}]  ({emb_type}){cfg_extra}{view_extra}\n"
             f"DMS background coloured by {flabel}; WT marked with red star",
             fontsize=11,
         )
+        ax.grid(alpha=0.15, linewidth=0.45)
         cfg_part = f"_{config_suffix}" if config_suffix else ""
         view_part = f"_{view_suffix}" if view_suffix else ""
         out_path = (
@@ -172,7 +238,7 @@ def plot_one_variant(
             / f"gibbs_per_model_pca_{variant}_{emb_type}_{fshort}_{dms_dataset}{cfg_part}{view_part}.png"
         )
         fig.tight_layout()
-        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
         log.info("Wrote %s", out_path)
 
@@ -189,6 +255,8 @@ def plot_per_model_pca_grid(
     out_dir: Path,
     view_suffix: str = "",
     title_extra: str = "",
+    overlay_style: str = "trajectory",
+    highlight_final: bool = True,
 ) -> None:
     """Combined grid: rows = configs, cols = variants — all in one figure.
 
@@ -224,6 +292,7 @@ def plot_per_model_pca_grid(
 
     chain_cmap = plt.get_cmap("tab10")
     step_cmap = plt.get_cmap("plasma")
+    is_full_view = view_suffix == ""
 
     n_rows, n_cols = len(configs), len(variants)
     fig, axes = plt.subplots(
@@ -265,17 +334,53 @@ def plot_per_model_pca_grid(
             # Gibbs trajectories
             if gibbs_pc is not None and len(gibbs_pc):
                 unique_chains = sorted(set(int(c) for c in gibbs_chain_id))
-                for i, ch in enumerate(unique_chains):
-                    cm = gibbs_chain_id == ch
-                    pts = gibbs_pc[cm]
-                    st = gibbs_step[cm]
-                    order = np.argsort(st)
-                    pts, st = pts[order], st[order]
-                    line_color = chain_cmap(i % 10)
-                    ax.plot(pts[:, 0], pts[:, 1], "-", color=line_color,
-                            alpha=0.55, linewidth=0.9, zorder=4)
-                    ax.scatter(pts[:, 0], pts[:, 1], c=st, cmap=step_cmap,
-                               s=16, zorder=5, edgecolors=line_color, linewidths=0.35)
+                if overlay_style == "scatter":
+                    ax.scatter(
+                        gibbs_pc[:, 0],
+                        gibbs_pc[:, 1],
+                        s=40,
+                        c="red",
+                        edgecolors="black",
+                        linewidths=0.4,
+                        alpha=0.85,
+                        zorder=6,
+                    )
+                else:
+                    line_width = 0.5 if is_full_view else 0.9
+                    line_alpha = 0.4 if is_full_view else 0.55
+                    marker_size = 10 if is_full_view else 16
+                    for i, ch in enumerate(unique_chains):
+                        cm = gibbs_chain_id == ch
+                        pts = gibbs_pc[cm]
+                        st = gibbs_step[cm]
+                        order = np.argsort(st)
+                        pts, st = pts[order], st[order]
+                        line_color = chain_cmap(i % 10)
+                        ax.plot(pts[:, 0], pts[:, 1], "-", color=line_color,
+                                alpha=line_alpha, linewidth=line_width, zorder=4)
+                        ax.scatter(pts[:, 0], pts[:, 1], c=st, cmap=step_cmap,
+                                   s=marker_size, alpha=line_alpha, zorder=5,
+                                   edgecolors=line_color, linewidths=0.35)
+                    if highlight_final:
+                        for i, ch in enumerate(unique_chains):
+                            cm = gibbs_chain_id == ch
+                            st = gibbs_step[cm]
+                            if not len(st):
+                                continue
+                            final_mask = st == np.max(st)
+                            final_pts = gibbs_pc[cm][final_mask]
+                            if not len(final_pts):
+                                continue
+                            ax.scatter(
+                                final_pts[:, 0],
+                                final_pts[:, 1],
+                                s=50,
+                                c=[chain_cmap(i % 10)],
+                                edgecolors="black",
+                                linewidths=0.6,
+                                alpha=0.9,
+                                zorder=7,
+                            )
 
             if wt_pc is not None:
                 ax.scatter(wt_pc[0], wt_pc[1], **WT_STAR)
@@ -287,17 +392,25 @@ def plot_per_model_pca_grid(
             ax.set_ylabel((f"{cfg}\n\n{pc2_label}") if col == 0 else pc2_label, fontsize=8)
             ax.set_xlabel(pc1_label, fontsize=7)
             ax.tick_params(labelsize=6)
+            ax.grid(alpha=0.15, linewidth=0.4)
 
     fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.6, aspect=30, pad=0.02, label=flabel)
     view_extra = f"  [{title_extra}]" if title_extra else ""
-    fig.suptitle(
-        f"Gibbs trajectory in per-model DMS-PCA [{dms_dataset.upper()}]  ({emb_type}){view_extra}\n"
-        f"DMS coloured by {flabel}; chains coloured by chain ID; markers shaded by Gibbs step",
-        fontsize=11,
-    )
+    if overlay_style == "scatter":
+        fig.suptitle(
+            f"Beam samples in per-model DMS-PCA [{dms_dataset.upper()}]  ({emb_type}){view_extra}\n"
+            f"DMS coloured by {flabel}",
+            fontsize=11,
+        )
+    else:
+        fig.suptitle(
+            f"Gibbs trajectory in per-model DMS-PCA [{dms_dataset.upper()}]  ({emb_type}){view_extra}\n"
+            f"DMS coloured by {flabel}; chains coloured by chain ID; markers shaded by Gibbs step",
+            fontsize=11,
+        )
     view_part = f"_{view_suffix}" if view_suffix else ""
     out_path = out_dir / f"gibbs_per_model_pca_all_{emb_type}_{fshort}_{dms_dataset}{view_part}.png"
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -325,6 +438,21 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=None,
         help="Optional list of gibbs_config names to include (e.g. gibbs_dist gibbs_fit).",
+    )
+    p.add_argument(
+        "--overlay-style",
+        choices=("trajectory", "scatter"),
+        default="trajectory",
+        help=(
+            "Overlay rendering mode: 'trajectory' draws chain trajectories and step-shaded markers; "
+            "'scatter' draws all overlay points as high-visibility red dots."
+        ),
+    )
+    p.add_argument(
+        "--highlight-final",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Highlight final-step point(s) per chain in trajectory mode.",
     )
     return p.parse_args()
 
@@ -457,6 +585,8 @@ def main() -> int:
                 plot_per_model_pca_grid(
                     per_cell_full, variant_order, config_name_set,
                     fkey, flabel, fshort, emb_type, dms_dataset, args.output_dir,
+                    overlay_style=args.overlay_style,
+                    highlight_final=args.highlight_final,
                 )
             if per_cell_early:
                 plot_per_model_pca_grid(
@@ -467,6 +597,8 @@ def main() -> int:
                         f"early: ≤{args.early_max_chains} chains, "
                         f"steps through first ED>{args.early_max_ed}"
                     ),
+                    overlay_style=args.overlay_style,
+                    highlight_final=args.highlight_final,
                 )
 
     return 0

@@ -139,19 +139,23 @@ def _run_probe(cfg: Any) -> Path:
             "train_progress": float(train_step) / float(total_batches),
             "spearman_avg": float(metrics["spearman_avg"]),
             "spearman_avg_pval": float(metrics["spearman_avg_pval"]),
+            "spearman_avg_pos": float(metrics["spearman_avg_pos"]),
+            "spearman_avg_neg": float(metrics["spearman_avg_neg"]),
+            "auroc": float(metrics["auroc"]),
             "spearman_random": float(metrics["spearman_random"]),
             "spearman_random_pval": float(metrics["spearman_random_pval"]),
         }
         history.append(record)
         logger.info(
-            "[%s] step=%d/%d | spearman_avg=%.4f (p=%.2e) | spearman_random=%.4f (p=%.2e)",
+            "[%s] step=%d/%d | spearman_avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | spearman_random=%.4f",
             stage,
             train_step,
             total_batches,
             record["spearman_avg"],
-            record["spearman_avg_pval"],
+            record["spearman_avg_pos"],
+            record["spearman_avg_neg"],
+            record["auroc"],
             record["spearman_random"],
-            record["spearman_random_pval"],
         )
         if wandb_run is not None:
             wandb_mod.log(
@@ -162,6 +166,9 @@ def _run_probe(cfg: Any) -> Path:
                     "probe/train_progress": record["train_progress"],
                     "probe/spearman_avg": record["spearman_avg"],
                     "probe/spearman_avg_pval": record["spearman_avg_pval"],
+                    "probe/spearman_avg_pos": record["spearman_avg_pos"],
+                    "probe/spearman_avg_neg": record["spearman_avg_neg"],
+                    "probe/auroc": record["auroc"],
                     "probe/spearman_random": record["spearman_random"],
                     "probe/spearman_random_pval": record["spearman_random_pval"],
                 },

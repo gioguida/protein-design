@@ -1,7 +1,7 @@
-"""Temperature sweep orchestrator for SBS analysis.
+"""Gibbs temperature sweep orchestrator.
 
-Reads conf/analysis/temperature_sweep.yaml (or --config path) and:
-  1. Runs stochastic_beam_search.py for each temperature × model combination.
+Reads conf/analysis/gibbs_temperature_sweep.yaml (or --config path) and:
+  1. Runs gibbs_sampling.py for each temperature x model combination.
   2. Runs enabled per-temperature plots (beam_pll_trajectory, beam_pll_vs_dms_histogram,
      beam_diversity_diagnostics, beam_pll_vs_nmut, beam_aa_heatmap).
   3. After all temperatures, produces cross-temperature summary plots:
@@ -10,8 +10,8 @@ Reads conf/analysis/temperature_sweep.yaml (or --config path) and:
 
 Usage
 -----
-uv run python scripts/analysis/run_temperature_sweep.py \
-    --config conf/analysis/temperature_sweep.yaml [--dry-run]
+uv run python scripts/analysis/run_gibbs_temperature_sweep.py \
+    --config conf/analysis/gibbs_temperature_sweep.yaml [--dry-run]
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--config", type=Path,
-        default=Path("conf/analysis/temperature_sweep.yaml"),
+        default=Path("conf/analysis/gibbs_temperature_sweep.yaml"),
     )
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
@@ -83,11 +83,13 @@ def main() -> int:
 
     sweep = dict(cfg.get("sweep", {}))
     temperatures = [float(t) for t in sweep.get("temperatures", [1.0])]
-    beam_size = int(sweep.get("beam_size", 5))
-    n_steps = int(sweep.get("n_steps", 5))
-    snapshot_every = int(sweep.get("snapshot_every", 1))
+    n_chains = int(sweep.get("n_chains", 15))
+    n_steps = int(sweep.get("n_steps", 500))
+    burn_in = int(sweep.get("burn_in", 0))
+    max_mutations = sweep.get("max_mutations")
+    snapshot_every = int(sweep.get("snapshot_every", 50))
     start_mode = str(sweep.get("start_mode", "wt"))
-    n_chains = int(sweep.get("n_chains", 10))
+    seed = int(sweep.get("seed", 42))
 
     models_cfg = list(cfg.get("models", []))
     if not models_cfg:
@@ -99,8 +101,8 @@ def main() -> int:
     top_k_pll = int(summary_cfg.get("top_k_for_pll", 50))
 
     out_cfg = dict(cfg.get("output", {}))
-    base_dir = _expand_path(str(out_cfg.get("base_dir", "outputs/temperature_sweep")), repo_root)
-    plots_dir = _expand_path(str(out_cfg.get("plots_dir", "reports/temperature_sweep")), repo_root)
+    base_dir = _expand_path(str(out_cfg.get("base_dir", "outputs/gibbs_temperature_sweep")), repo_root)
+    plots_dir = _expand_path(str(out_cfg.get("plots_dir", "reports/gibbs_temperature_sweep")), repo_root)
 
     dms_cfg = dict(cfg.get("dms", {}))
     dms_m22 = _expand_path(dms_cfg["m22_path"], repo_root) if dms_cfg.get("m22_path") else None
@@ -109,7 +111,7 @@ def main() -> int:
     dms_si06_col = str(dms_cfg.get("si06_col", "SI06_binding_enrichment_adj"))
     max_dms = int(dms_cfg.get("max_dms", 500))
 
-    if start_mode in ("dms", "top_dms") and dms_m22 is None:
+    if start_mode == "dms" and dms_m22 is None:
         print(
             f"[config-error] start_mode={start_mode!r} requires dms.m22_path to be set",
             file=sys.stderr,
@@ -143,31 +145,33 @@ def main() -> int:
             run_dir = base_dir / model_name / f"temp_{t_label}"
             _mkdir(run_dir, dry_run, f"sweep:{model_name}:T={t_label}")
 
-            csv_path = run_dir / "beam_output.csv"
+            csv_path = run_dir / "gibbs_output.csv"
             temp_csv_map[temp] = csv_path
 
-            # --- Run SBS ---
+            # --- Run Gibbs ---
             cmd = [
                 "uv", "run", "python",
-                "scripts/stochastic_beam_search.py",
+                "scripts/gibbs_sampling.py",
                 "--model-variant", model_variant,
-                "--beam-size", str(beam_size),
+                "--n-chains", str(n_chains),
                 "--n-steps", str(n_steps),
+                "--burn-in", str(burn_in),
                 "--snapshot-every", str(snapshot_every),
                 "--temperature", str(temp),
+                "--seed", str(seed),
                 "--start-mode", start_mode,
                 "--output-path", str(csv_path),
             ]
+            if max_mutations is not None:
+                cmd.extend(["--max-mutations", str(max_mutations)])
             if checkpoint:
                 cmd.extend(["--checkpoint-path", checkpoint])
-            if start_mode in ("dms", "top_dms"):
+            if start_mode == "dms":
                 if dms_m22:
                     cmd.extend(["--dms-m22-path", str(dms_m22)])
                 if dms_si06:
                     cmd.extend(["--dms-si06-path", str(dms_si06)])
-            if start_mode == "top_dms":
-                cmd.extend(["--top-k-dms", str(n_chains)])
-            _run(cmd, dry_run, f"sbs:{model_name}:T={t_label}")
+            _run(cmd, dry_run, f"gibbs:{model_name}:T={t_label}")
 
             # --- Per-temperature plots ---
             per_temp_dir = plots_dir / model_name / f"temp_{t_label}"
@@ -182,7 +186,7 @@ def main() -> int:
                     "uv", "run", "python",
                     "scripts/analysis/gibbs_diagnostics.py",
                     "--gibbs", gibbs_spec,
-                    "--sampler-label", "beam",
+                    "--sampler-label", "gibbs",
                     "--output-dir", str(per_temp_dir),
                 ]
                 if dms_m22:
@@ -366,3 +370,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[error] {exc}", file=sys.stderr)
         raise SystemExit(1)
+

@@ -121,6 +121,10 @@ def main() -> None:
     dpo_cfg = _load_yaml(DPO_CONFIG_PATH)
     data_cfg = dpo_cfg.get("data", {}) or {}
     delta_cfg = data_cfg.get("delta_based", {}) or {}
+    mix_cfg = delta_cfg.get("mix", {}) or {}
+    mix_count_cfg = mix_cfg.get("count", {}) or {}
+    mix_fraction_cfg = mix_cfg.get("fraction", {}) or {}
+    pair_split_cfg = data_cfg.get("pair_split", {}) or {}
 
     official_dms_config_path = _resolve_repo_path(
         data_cfg.get("dms_config", "conf/data/dms/default.yaml")
@@ -143,6 +147,13 @@ def main() -> None:
     print(f"key_metric_col: {spec.key_metric_col}")
     print(f"pairing_strategy: {pairing_strategy}")
     print(f"delta_components: {delta_cfg.get('components', [])}")
+    print(f"delta_mix_mode: {mix_cfg.get('mode', 'count')}")
+    print(
+        "pair_split: "
+        f"enforce_train_controlled_sizes={bool(pair_split_cfg.get('enforce_train_controlled_sizes', False))}, "
+        f"train/val/test={float(pair_split_cfg.get('train_frac', 0.8))}/"
+        f"{float(pair_split_cfg.get('val_frac', 0.1))}/{float(pair_split_cfg.get('test_frac', 0.1))}"
+    )
     print(f"force_rebuild: {force_rebuild}")
 
     split_paths = {
@@ -168,7 +179,16 @@ def main() -> None:
         force_rebuild=force_rebuild,
         min_positive_delta=float(data_cfg.get("min_positive_delta", 0.0)),
         min_delta_margin=float(data_cfg.get("min_delta_margin", 0.0)),
+        train_frac=float(pair_split_cfg.get("train_frac", 0.8)),
+        val_frac=float(pair_split_cfg.get("val_frac", 0.1)),
+        test_frac=float(pair_split_cfg.get("test_frac", 0.1)),
+        enforce_train_controlled_split_sizes=bool(
+            pair_split_cfg.get("enforce_train_controlled_sizes", False)
+        ),
         delta_components=tuple(delta_cfg.get("components", [])),
+        delta_mix_mode=str(mix_cfg.get("mode", "count")),
+        delta_component_pair_counts={str(k): int(v) for k, v in mix_count_cfg.items()},
+        delta_component_pair_fractions={str(k): float(v) for k, v in mix_fraction_cfg.items()},
         gap=float(delta_cfg.get("gap", 0.5)),
         wt_pairs_frac=float(delta_cfg.get("wt_pairs_frac", 0.1)),
         cross_pairs_frac=float(delta_cfg.get("cross_pairs_frac", 0.1)),

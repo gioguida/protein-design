@@ -411,6 +411,13 @@ def run_unlikelihood(cfg: Any) -> Path:
                     "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                     "val_spearman_random": float(val_spearman["spearman_random"]),
                     "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                    "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                    "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                    "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                    "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                    "val_n_pos": int(val_spearman["n_pos"]),
+                    "val_n_neg": int(val_spearman["n_neg"]),
+                    "val_auroc": float(val_spearman["auroc"]),
                 }
             )
         except Exception as exc:  # pragma: no cover - best effort eval
@@ -615,6 +622,13 @@ def run_unlikelihood(cfg: Any) -> Path:
                                 "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                                 "val_spearman_random": float(val_spearman["spearman_random"]),
                                 "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                                "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                                "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                                "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                                "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                                "val_n_pos": int(val_spearman["n_pos"]),
+                                "val_n_neg": int(val_spearman["n_neg"]),
+                                "val_auroc": float(val_spearman["auroc"]),
                             }
                         )
                     except Exception as exc:  # pragma: no cover - best effort eval
@@ -736,6 +750,13 @@ def run_unlikelihood(cfg: Any) -> Path:
                             "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                             "val_spearman_random": float(val_spearman["spearman_random"]),
                             "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                            "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                            "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                            "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                            "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                            "val_n_pos": int(val_spearman["n_pos"]),
+                            "val_n_neg": int(val_spearman["n_neg"]),
+                            "val_auroc": float(val_spearman["auroc"]),
                         }
                     )
                 except Exception as exc:  # pragma: no cover - best effort eval
@@ -856,6 +877,13 @@ def run_unlikelihood(cfg: Any) -> Path:
         "test_spearman_avg_pval": None,
         "test_spearman_random": None,
         "test_spearman_random_pval": None,
+        "test_spearman_avg_pos": None,
+        "test_spearman_avg_pos_pval": None,
+        "test_spearman_avg_neg": None,
+        "test_spearman_avg_neg_pval": None,
+        "test_n_pos": None,
+        "test_n_neg": None,
+        "test_auroc": None,
     }
     if test_eval_sets is not None:
         test_metrics.update(
@@ -881,6 +909,13 @@ def run_unlikelihood(cfg: Any) -> Path:
                     "test_spearman_avg_pval": float(test_spearman["spearman_avg_pval"]),
                     "test_spearman_random": float(test_spearman["spearman_random"]),
                     "test_spearman_random_pval": float(test_spearman["spearman_random_pval"]),
+                    "test_spearman_avg_pos": float(test_spearman["spearman_avg_pos"]),
+                    "test_spearman_avg_pos_pval": float(test_spearman["spearman_avg_pos_pval"]),
+                    "test_spearman_avg_neg": float(test_spearman["spearman_avg_neg"]),
+                    "test_spearman_avg_neg_pval": float(test_spearman["spearman_avg_neg_pval"]),
+                    "test_n_pos": int(test_spearman["n_pos"]),
+                    "test_n_neg": int(test_spearman["n_neg"]),
+                    "test_auroc": float(test_spearman["auroc"]),
                 }
             )
         except Exception as exc:  # pragma: no cover - best effort eval

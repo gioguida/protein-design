@@ -41,6 +41,7 @@ MODEL_CONF_PATHS: dict[str, str] = {
 }
 
 ENRICHMENT_COL = "M22_binding_enrichment_adj"
+ENRICHMENT_BIMODAL_THRESHOLD = 0.0
 DATASET_TO_DMS_KEY = {
     "ED2": "ed2_m22",
     "ED5": "ed5_m22",
@@ -246,7 +247,7 @@ def _plot_dataset_subplots(
     dataset_name: str,
     model_order: list[str],
     per_model_xy: dict[str, tuple[np.ndarray, np.ndarray]],
-    per_model_spearman: dict[str, tuple[float, float]],
+    per_model_metrics: dict[str, dict[str, float]],
     out_path: Path,
 ) -> None:
     n_models = len(model_order)
@@ -258,7 +259,14 @@ def _plot_dataset_subplots(
     for idx, model_key in enumerate(model_order):
         ax = axes_flat[idx]
         x, y = per_model_xy.get(model_key, (np.array([]), np.array([])))
-        rho, pval = per_model_spearman.get(model_key, (float("nan"), float("nan")))
+        metric_row = per_model_metrics.get(model_key, {})
+        rho = float(metric_row.get("spearman_avg", float("nan")))
+        pval = float(metric_row.get("spearman_avg_pval", float("nan")))
+        rho_pos = float(metric_row.get("spearman_avg_pos", float("nan")))
+        rho_neg = float(metric_row.get("spearman_avg_neg", float("nan")))
+        n_pos = int(metric_row.get("n_pos", 0))
+        n_neg = int(metric_row.get("n_neg", 0))
+        auroc = float(metric_row.get("auroc", float("nan")))
         valid = np.isfinite(x) & np.isfinite(y)
         xv = x[valid]
         yv = y[valid]
@@ -270,13 +278,19 @@ def _plot_dataset_subplots(
             ax.grid(alpha=0.2)
             continue
 
-        ax.scatter(xv, yv, s=7, alpha=0.35, color="#4e79a7")
+        colors = np.where(yv > ENRICHMENT_BIMODAL_THRESHOLD, "#e15759", "#4e79a7")
+        ax.scatter(xv, yv, s=7, alpha=0.35, c=colors)
         if len(xv) > 1:
             slope, intercept = np.polyfit(xv, yv, 1)
             xline = np.linspace(float(np.min(xv)), float(np.max(xv)), 200)
             ax.plot(xline, slope * xline + intercept, color="black", linewidth=1.0)
 
-        title = f"{model_key} | n={len(xv)} | rho={rho:.3f} (p={pval:.1e})"
+        title = (
+            f"{model_key} | n={len(xv)}\n"
+            f"rho={rho:.3f} (p={pval:.1e}) | "
+            f"rho_pos={rho_pos:.3f} (n={n_pos}) | "
+            f"rho_neg={rho_neg:.3f} (n={n_neg}) | AUROC={auroc:.3f}"
+        )
         ax.set_title(title)
         ax.set_xlabel("CDR-H3 PLL")
         ax.set_ylabel("M22 binding enrichment")
@@ -339,7 +353,7 @@ def main() -> int:
     plot_data: dict[str, dict[str, tuple[np.ndarray, np.ndarray]]] = {
         ds: {} for ds in selected_datasets
     }
-    plot_stats: dict[str, dict[str, tuple[float, float]]] = {
+    plot_stats: dict[str, dict[str, dict[str, float]]] = {
         ds: {} for ds in selected_datasets
     }
 
@@ -375,13 +389,25 @@ def main() -> int:
             if args.run_spearman:
                 row[f"spearman_{ds.lower()}"] = float(eval_result["spearman_avg"])
                 row[f"spearman_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pval"])
+                row[f"spearman_pos_{ds.lower()}"] = float(eval_result["spearman_avg_pos"])
+                row[f"spearman_pos_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pos_pval"])
+                row[f"spearman_neg_{ds.lower()}"] = float(eval_result["spearman_avg_neg"])
+                row[f"spearman_neg_pval_{ds.lower()}"] = float(eval_result["spearman_avg_neg_pval"])
+                row[f"n_pos_{ds.lower()}"] = int(eval_result["n_pos"])
+                row[f"n_neg_{ds.lower()}"] = int(eval_result["n_neg"])
+                row[f"auroc_{ds.lower()}"] = float(eval_result["auroc"])
 
             if args.run_plots:
                 plot_data[ds][model_key] = (scores, enrichment)
-                plot_stats[ds][model_key] = (
-                    float(eval_result["spearman_avg"]),
-                    float(eval_result["spearman_avg_pval"]),
-                )
+                plot_stats[ds][model_key] = {
+                    "spearman_avg": float(eval_result["spearman_avg"]),
+                    "spearman_avg_pval": float(eval_result["spearman_avg_pval"]),
+                    "spearman_avg_pos": float(eval_result["spearman_avg_pos"]),
+                    "spearman_avg_neg": float(eval_result["spearman_avg_neg"]),
+                    "n_pos": int(eval_result["n_pos"]),
+                    "n_neg": int(eval_result["n_neg"]),
+                    "auroc": float(eval_result["auroc"]),
+                }
 
         if args.run_dataset_ppl and per_dataset_ppl:
             vals = [v for v in per_dataset_ppl.values() if np.isfinite(v)]
@@ -399,7 +425,7 @@ def main() -> int:
                 dataset_name=ds,
                 model_order=selected_models,
                 per_model_xy=plot_data[ds],
-                per_model_spearman=plot_stats[ds],
+                per_model_metrics=plot_stats[ds],
                 out_path=out_path,
             )
 

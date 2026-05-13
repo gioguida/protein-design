@@ -1,0 +1,65 @@
+# Gibbs temperature sweep configuration
+# Runs Gibbs sampling at multiple temperatures, produces per-temperature plots
+# and cross-temperature summary comparisons.
+#
+# Usage:
+#   uv run python scripts/analysis/run_gibbs_temperature_sweep.py \
+#     --config conf/analysis/gibbs_temperature_sweep.yaml
+
+sweep:
+  temperatures: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.5]
+
+  # Gibbs-specific parameters
+  n_chains: 15
+  n_steps: 100          # sampling steps (after burn-in)
+  burn_in: 0            # steps before recording
+  snapshot_every: 50
+  max_mutations: 6        # reject steps that exceed this edit distance from WT
+  start_mode: "wt"        # wt | dms
+  seed: 42
+
+models:
+  - name: "evo_dpo_low_lr_one_epoch"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr" 
+    model_variant: "evoDPO light"
+
+  # - name: "evo"
+  #   checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+  #   model_variant: "evotuned"
+
+  # - name: "vanilla"
+  #   checkpoint: "facebook/esm2_t12_35M_UR50D" 
+  #   model_variant: "vanilla"
+  
+
+dms:
+  m22_path: "/cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_M22_binding_enrichment.csv"
+  si06_path: "/cluster/project/infk/krause/${USER}/protein-design/data/raw/ED2_SI06_binding_enrichment.csv"
+  m22_col: "M22_binding_enrichment_adj"
+  si06_col: "SI06_binding_enrichment_adj"
+  max_dms: 500
+
+# Same plot toggles as the SBS sweep - all reuse the same scripts.
+# The per-temperature plots all read a CSV with columns:
+#   chain_id, gibbs_step, sequence, cdrh3, n_mutations, model_variant
+# which is the SAME format for both Gibbs and SBS output.
+plots:
+  beam_pll_trajectory: true        # routes to gibbs_diagnostics.py (works for both)
+  beam_pll_vs_dms_histogram: true
+  beam_diversity_diagnostics: true
+  beam_pll_vs_nmut: true
+  beam_aa_heatmap: true
+
+summary:
+  fraction_above_wt: true
+  pll_vs_enrichment_scatter: true
+  top_k_enrichment_recovery: true
+  pll_vs_diversity_tradeoff: true
+  pll_distribution_by_temp: true
+  entropy_heatmap: true
+  jsd_vs_temp: true
+  top_k_for_pll: 50
+
+output:
+  base_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/gibbs_temperature_sweep/outputs"
+  plots_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/gibbs_temperature_sweep/plots"

@@ -128,7 +128,8 @@ def main() -> int:
 
     below = int((all_plls < args.xlim_low).sum())
     below_pct = 100.0 * below / max(1, len(all_plls))
-    ax.set_xlim(args.xlim_low, 0.0)
+    pad = 0.05 * (hi - lo) if hi > lo else 1.0
+    ax.set_xlim(lo - pad, hi + pad)    
     ax.set_xlabel("CDR-H3 PLL")
     ax.set_ylabel("Density")
     ax.set_title(

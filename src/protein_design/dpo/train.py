@@ -108,13 +108,47 @@ def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, 
         raise ValueError("data.delta_based is required when data.pairing_strategy='delta_based'.")
     components = validate_delta_based_components([str(component) for component in delta_cfg.components])
 
+    mix_cfg = getattr(delta_cfg, "mix", None)
+    mix_mode = "count"
+    component_pair_counts: Dict[str, int] = {}
+    component_pair_fractions: Dict[str, float] = {}
+    if mix_cfg is not None:
+        mix_mode = str(getattr(mix_cfg, "mode", "count"))
+        count_cfg = getattr(mix_cfg, "count", None)
+        fraction_cfg = getattr(mix_cfg, "fraction", None)
+        for component in DELTA_BASED_COMPONENTS:
+            if count_cfg is not None and getattr(count_cfg, component, None) is not None:
+                component_pair_counts[component] = int(getattr(count_cfg, component))
+            if fraction_cfg is not None and getattr(fraction_cfg, component, None) is not None:
+                component_pair_fractions[component] = float(getattr(fraction_cfg, component))
+
+    split_size_cfg = getattr(cfg.data, "pair_split", None)
+    enforce_train_controlled_split_sizes = False
+    pair_train_frac = 0.8
+    pair_val_frac = 0.1
+    pair_test_frac = 0.1
+    if split_size_cfg is not None:
+        enforce_train_controlled_split_sizes = bool(
+            getattr(split_size_cfg, "enforce_train_controlled_sizes", False)
+        )
+        pair_train_frac = float(getattr(split_size_cfg, "train_frac", 0.8))
+        pair_val_frac = float(getattr(split_size_cfg, "val_frac", 0.1))
+        pair_test_frac = float(getattr(split_size_cfg, "test_frac", 0.1))
+
     return build_split_pair_dataframes_from_raw(
         pairing_strategy=pairing_strategy,
         include_views=[],
         force_rebuild=bool(cfg.data.force_rebuild),
         min_positive_delta=float(cfg.data.min_positive_delta),
         min_delta_margin=float(cfg.data.min_delta_margin),
+        train_frac=pair_train_frac,
+        val_frac=pair_val_frac,
+        test_frac=pair_test_frac,
+        enforce_train_controlled_split_sizes=enforce_train_controlled_split_sizes,
         delta_components=components,
+        delta_mix_mode=mix_mode,
+        delta_component_pair_counts=component_pair_counts if component_pair_counts else None,
+        delta_component_pair_fractions=component_pair_fractions if component_pair_fractions else None,
         gap=_delta_value("gap", 0.5),
         wt_pairs_frac=_delta_value("wt_pairs_frac", 0.1),
         cross_pairs_frac=_delta_value("cross_pairs_frac", 0.1),
@@ -757,39 +791,72 @@ def _load_validation_spearman_df(cfg: Any, logger: logging.Logger) -> Optional[p
     processed_dir = _resolve_processed_dir(cfg)
     val_spearman_path = processed_dir / "val_spearman.csv"
 
-    if not val_spearman_path.exists():
-        logger.warning(
-            "Validation Spearman set missing (expected %s). Skipping Spearman logging.",
-            val_spearman_path,
-        )
+    return _load_spearman_eval_df(
+        csv_path=val_spearman_path,
+        logger=logger,
+        dataset_label="Validation Spearman set",
+    )
+
+
+def _load_spearman_eval_df(
+    csv_path: Path,
+    logger: logging.Logger,
+    dataset_label: str,
+) -> Optional[pd.DataFrame]:
+    if not csv_path.exists():
+        logger.warning("%s missing (expected %s). Skipping Spearman logging.", dataset_label, csv_path)
         return None
 
     try:
-        val_df = pd.read_csv(val_spearman_path)
+        eval_df = pd.read_csv(csv_path)
     except (FileNotFoundError, pd.errors.ParserError) as exc:
-        logger.warning("Could not read validation Spearman set (%s). Skipping Spearman logging.", exc)
+        logger.warning("Could not read %s (%s). Skipping Spearman logging.", dataset_label, exc)
         return None
 
     required_cols = {"aa", "M22_binding_enrichment_adj"}
-    missing_cols = required_cols.difference(val_df.columns)
+    missing_cols = required_cols.difference(eval_df.columns)
     if missing_cols:
         logger.warning(
-            "Validation Spearman set missing columns (%s). Skipping Spearman logging.",
+            "%s missing columns (%s). Skipping Spearman logging.",
+            dataset_label,
             ", ".join(sorted(missing_cols)),
         )
         return None
 
-    val_df["aa"] = val_df["aa"].astype(str).str.strip()
-    val_df = val_df[val_df["aa"] != ""].copy()
-    enrichment = pd.to_numeric(val_df["M22_binding_enrichment_adj"], errors="coerce")
-    val_df = val_df.loc[enrichment.notna()].copy()
-    val_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
+    eval_df["aa"] = eval_df["aa"].astype(str).str.strip()
+    eval_df = eval_df[eval_df["aa"] != ""].copy()
+    enrichment = pd.to_numeric(eval_df["M22_binding_enrichment_adj"], errors="coerce")
+    eval_df = eval_df.loc[enrichment.notna()].copy()
+    eval_df["M22_binding_enrichment_adj"] = enrichment.loc[enrichment.notna()].astype(float)
 
-    if len(val_df) < 3:
-        logger.warning("Validation Spearman set too small (%d rows). Skipping Spearman logging.", len(val_df))
+    if len(eval_df) < 3:
+        logger.warning("%s too small (%d rows). Skipping Spearman logging.", dataset_label, len(eval_df))
         return None
 
-    return val_df.reset_index(drop=True)
+    return eval_df.reset_index(drop=True)
+
+
+def _load_validation_pos_neg_spearman_dfs(
+    cfg: Any,
+    logger: logging.Logger,
+) -> Dict[str, Optional[pd.DataFrame]]:
+    _ensure_validation_eval_csvs(cfg, logger)
+    processed_dir = _resolve_processed_dir(cfg)
+    val_pos_path = processed_dir / "val_pos.csv"
+    val_neg_path = processed_dir / "val_neg.csv"
+
+    return {
+        "val_pos": _load_spearman_eval_df(
+            csv_path=val_pos_path,
+            logger=logger,
+            dataset_label="Validation val_pos Spearman set",
+        ),
+        "val_neg": _load_spearman_eval_df(
+            csv_path=val_neg_path,
+            logger=logger,
+            dataset_label="Validation val_neg Spearman set",
+        ),
+    }
 
 
 def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[str, List[str]]]:
@@ -1086,6 +1153,9 @@ def run_dpo(cfg: Any) -> Path:
     global_step = 0
     _ensure_validation_eval_csvs(cfg, logger)
     val_spearman_df = _load_validation_spearman_df(cfg, logger)
+    val_subset_spearman_dfs = _load_validation_pos_neg_spearman_dfs(cfg, logger)
+    val_pos_spearman_df = val_subset_spearman_dfs.get("val_pos")
+    val_neg_spearman_df = val_subset_spearman_dfs.get("val_neg")
     test_spearman_df = _load_test_spearman_df(cfg, logger)
     val_spearman_batch_size = int(getattr(cfg.model, "pll_mask_chunk_size", 64))
     if (
@@ -1172,17 +1242,52 @@ def run_dpo(cfg: Any) -> Path:
                         "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                         "val_spearman_random": float(val_spearman["spearman_random"]),
                         "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                        "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                        "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                        "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                        "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                        "val_n_pos": int(val_spearman["n_pos"]),
+                        "val_n_neg": int(val_spearman["n_neg"]),
+                        "val_auroc": float(val_spearman["auroc"]),
                     }
                 )
                 logger.info(
-                    "Validation Spearman (step 0) | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                    "Validation Spearman (step 0) | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                     float(val_spearman["spearman_avg"]),
-                    float(val_spearman["spearman_avg_pval"]),
+                    float(val_spearman["spearman_avg_pos"]),
+                    float(val_spearman["spearman_avg_neg"]),
+                    float(val_spearman["auroc"]),
                     float(val_spearman["spearman_random"]),
-                    float(val_spearman["spearman_random_pval"]),
                 )
             except Exception as exc:
                 logger.warning("Validation Spearman evaluation failed at step 0 (%s). Skipping this metric.", exc)
+        for split_name, split_df in (("val_pos", val_pos_spearman_df), ("val_neg", val_neg_spearman_df)):
+            if split_df is None:
+                continue
+            try:
+                split_metrics = run_scoring_evaluation(
+                    scorer=policy,
+                    df=split_df,
+                    enrichment_col="M22_binding_enrichment_adj",
+                    batch_size=val_spearman_batch_size,
+                    seed=int(cfg.seed),
+                    scoring_mode="cdr_pll",
+                )
+                metric_key = f"val_spearman_{split_name}"
+                step0_record[metric_key] = float(split_metrics["spearman_avg"])
+                step0_record[f"{metric_key}_pval"] = float(split_metrics["spearman_avg_pval"])
+                logger.info(
+                    "Validation Spearman %s (step 0) | rho=%.4f | p=%.2e",
+                    split_name,
+                    float(split_metrics["spearman_avg"]),
+                    float(split_metrics["spearman_avg_pval"]),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Validation Spearman evaluation failed on %s at step 0 (%s). Skipping this metric.",
+                    split_name,
+                    exc,
+                )
 
         history.append(step0_record)
         logger.info(
@@ -1298,17 +1403,52 @@ def run_dpo(cfg: Any) -> Path:
                         "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                         "val_spearman_random": float(val_spearman["spearman_random"]),
                         "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                        "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                        "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                        "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                        "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                        "val_n_pos": int(val_spearman["n_pos"]),
+                        "val_n_neg": int(val_spearman["n_neg"]),
+                        "val_auroc": float(val_spearman["auroc"]),
                     }
                 )
                 logger.info(
-                    "Validation Spearman | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                    "Validation Spearman | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                     float(val_spearman["spearman_avg"]),
-                    float(val_spearman["spearman_avg_pval"]),
+                    float(val_spearman["spearman_avg_pos"]),
+                    float(val_spearman["spearman_avg_neg"]),
+                    float(val_spearman["auroc"]),
                     float(val_spearman["spearman_random"]),
-                    float(val_spearman["spearman_random_pval"]),
                 )
             except Exception as exc:
                 logger.warning("Validation Spearman evaluation failed (%s). Skipping this metric.", exc)
+        for split_name, split_df in (("val_pos", val_pos_spearman_df), ("val_neg", val_neg_spearman_df)):
+            if split_df is None:
+                continue
+            try:
+                split_metrics = run_scoring_evaluation(
+                    scorer=policy,
+                    df=split_df,
+                    enrichment_col="M22_binding_enrichment_adj",
+                    batch_size=val_spearman_batch_size,
+                    seed=int(cfg.seed),
+                    scoring_mode="cdr_pll",
+                )
+                metric_key = f"val_spearman_{split_name}"
+                epoch_record[metric_key] = float(split_metrics["spearman_avg"])
+                epoch_record[f"{metric_key}_pval"] = float(split_metrics["spearman_avg_pval"])
+                logger.info(
+                    "Validation Spearman %s | rho=%.4f | p=%.2e",
+                    split_name,
+                    float(split_metrics["spearman_avg"]),
+                    float(split_metrics["spearman_avg_pval"]),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Validation Spearman evaluation failed on %s (%s). Skipping this metric.",
+                    split_name,
+                    exc,
+                )
 
         if scheduler is not None and not scheduler_step_on_batch:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -1467,13 +1607,21 @@ def run_dpo(cfg: Any) -> Path:
                 "test_spearman_avg_pval": float(test_spearman["spearman_avg_pval"]),
                 "test_spearman_random": float(test_spearman["spearman_random"]),
                 "test_spearman_random_pval": float(test_spearman["spearman_random_pval"]),
+                "test_spearman_avg_pos": float(test_spearman["spearman_avg_pos"]),
+                "test_spearman_avg_pos_pval": float(test_spearman["spearman_avg_pos_pval"]),
+                "test_spearman_avg_neg": float(test_spearman["spearman_avg_neg"]),
+                "test_spearman_avg_neg_pval": float(test_spearman["spearman_avg_neg_pval"]),
+                "test_n_pos": int(test_spearman["n_pos"]),
+                "test_n_neg": int(test_spearman["n_neg"]),
+                "test_auroc": float(test_spearman["auroc"]),
             }
             logger.info(
-                "Test Spearman | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                "Test Spearman | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                 float(test_spearman["spearman_avg"]),
-                float(test_spearman["spearman_avg_pval"]),
+                float(test_spearman["spearman_avg_pos"]),
+                float(test_spearman["spearman_avg_neg"]),
+                float(test_spearman["auroc"]),
                 float(test_spearman["spearman_random"]),
-                float(test_spearman["spearman_random_pval"]),
             )
         except Exception as exc:
             logger.warning("Test Spearman evaluation failed (%s). Skipping this metric.", exc)
@@ -1500,6 +1648,13 @@ def run_dpo(cfg: Any) -> Path:
         "test_spearman_avg_pval": None,
         "test_spearman_random": None,
         "test_spearman_random_pval": None,
+        "test_spearman_avg_pos": None,
+        "test_spearman_avg_pos_pval": None,
+        "test_spearman_avg_neg": None,
+        "test_spearman_avg_neg_pval": None,
+        "test_n_pos": None,
+        "test_n_neg": None,
+        "test_auroc": None,
         "num_train_pairs": int(len(train_df)),
         "num_val_pairs": int(len(val_df)),
         "num_test_pairs": int(len(test_df)),
@@ -1527,6 +1682,13 @@ def run_dpo(cfg: Any) -> Path:
         "test_spearman_avg_pval": None,
         "test_spearman_random": None,
         "test_spearman_random_pval": None,
+        "test_spearman_avg_pos": None,
+        "test_spearman_avg_pos_pval": None,
+        "test_spearman_avg_neg": None,
+        "test_spearman_avg_neg_pval": None,
+        "test_n_pos": None,
+        "test_n_neg": None,
+        "test_auroc": None,
         "spearman_SI06_val": None,
         "spearman_exp": None,
         "notes": None if cfg.wandb.notes is None else str(cfg.wandb.notes),

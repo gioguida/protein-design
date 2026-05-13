@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, rankdata, spearmanr
 from transformers import AutoTokenizer
 
 from protein_design.constants import C05_CDRH3, WT_M22_BINDING_ENRICHMENT, WILD_TYPE
@@ -30,6 +30,7 @@ from protein_design.dpo.splitting import (
     build_or_load_cluster_split_membership,
     split_membership_keys,
 )
+from nn_dms_match import nearest_neighbor_match
 
 from gibbs_diagnostics import (
     DMS_DATASETS,
@@ -52,9 +53,18 @@ SAMPLER_SPECS = [
     ("beam_fit", "beam fitness", "D", "#16a085"),
 ]
 SAMPLER_KEYS = {k for k, _, _, _ in SAMPLER_SPECS}
+ENRICHMENT_BIMODAL_THRESHOLD = 0.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plot_pll_vs_enrichment_overlays")
+
+plt.rcParams.update(
+    {
+        "savefig.dpi": 300,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+    }
+)
 
 
 def parse_variant_spec(spec: str) -> Tuple[str, str]:
@@ -149,6 +159,17 @@ def parse_args() -> argparse.Namespace:
         choices=("full", "train_dpo", "val_dpo", "test_dpo"),
         default="full",
         help="Subset DMS background to one DPO cluster split partition.",
+    )
+    p.add_argument(
+        "--match-mode",
+        choices=("exact", "nn", "both"),
+        default="both",
+        help=(
+            "How to assign enrichment to overlay sequences. "
+            "'exact': plot only exact CDR-H3 matches in DMS. "
+            "'nn': assign enrichment by nearest-neighbor Hamming match for all overlays. "
+            "'both': filled markers for exact matches and hollow markers for NN-only matches."
+        ),
     )
     p.add_argument(
         "--dpo-split-config",
@@ -326,6 +347,62 @@ def compute_pll_map(
     return {seq: float(score) for seq, score in zip(sequences, pll)}
 
 
+def _match_overlay_to_dms(
+    *,
+    overlay_df: pd.DataFrame,
+    dms_df: pd.DataFrame,
+    dms_lookup: pd.DataFrame,
+    enrichment_cols: list[str],
+    match_mode: str,
+) -> pd.DataFrame:
+    empty = overlay_df.copy()
+    for col in enrichment_cols:
+        if col not in empty.columns:
+            empty[col] = np.array([], dtype=np.float32)
+    empty["nn_hamming"] = np.array([], dtype=np.float32)
+    empty["match_source"] = np.array([], dtype=object)
+    if empty.empty:
+        return empty
+
+    if match_mode == "exact":
+        exact = overlay_df.merge(dms_lookup, on="cdrh3", how="inner")
+        exact["nn_hamming"] = 0.0
+        exact["match_source"] = "exact"
+        return exact
+
+    if match_mode == "nn":
+        nn_df = nearest_neighbor_match(
+            overlay_df["cdrh3"].astype(str).tolist(),
+            dms_df,
+            enrichment_cols=enrichment_cols,
+        )
+        matched = overlay_df.copy()
+        for col in enrichment_cols:
+            matched[col] = nn_df[col].to_numpy()
+        matched["nn_hamming"] = nn_df["hamming_dist"].to_numpy(dtype=np.float32)
+        matched["match_source"] = "nn"
+        return matched
+
+    exact = overlay_df.merge(dms_lookup, on="cdrh3", how="inner")
+    exact["nn_hamming"] = 0.0
+    exact["match_source"] = "exact"
+    unmatched_mask = ~overlay_df["cdrh3"].isin(exact["cdrh3"])
+    if not unmatched_mask.any():
+        return exact
+
+    unmatched = overlay_df.loc[unmatched_mask].copy()
+    nn_df = nearest_neighbor_match(
+        unmatched["cdrh3"].astype(str).tolist(),
+        dms_df,
+        enrichment_cols=enrichment_cols,
+    )
+    for col in enrichment_cols:
+        unmatched[col] = nn_df[col].to_numpy()
+    unmatched["nn_hamming"] = nn_df["hamming_dist"].to_numpy(dtype=np.float32)
+    unmatched["match_source"] = "nn"
+    return pd.concat([exact, unmatched], ignore_index=True)
+
+
 def make_plot(
     out_path: Path,
     variant: str,
@@ -346,34 +423,80 @@ def make_plot(
         return
 
     fig, ax = plt.subplots(figsize=(7.6, 5.8))
-    ax.scatter(x, y, s=8, c="lightgrey", alpha=0.45, label=f"DMS (n={len(x)})", zorder=1)
+    point_colors = np.where(y > ENRICHMENT_BIMODAL_THRESHOLD, "#e15759", "#4e79a7")
+    ax.scatter(x, y, s=8, c=point_colors, alpha=0.45, label=f"DMS (n={len(x)})", zorder=1)
 
     slope, intercept = np.polyfit(x, y, 1)
     xr = np.linspace(float(np.min(x)), float(np.max(x)), 200)
     ax.plot(xr, slope * xr + intercept, color="black", linewidth=1.2, zorder=2)
     rp, pp = pearsonr(x, y)
     rs, ps = spearmanr(x, y)
+    pos_mask = y > ENRICHMENT_BIMODAL_THRESHOLD
+    neg_mask = ~pos_mask
+    n_pos = int(np.sum(pos_mask))
+    n_neg = int(np.sum(neg_mask))
+    if n_pos >= 3:
+        pos_stats = spearmanr(x[pos_mask], y[pos_mask])
+        rs_pos = float(pos_stats.statistic if hasattr(pos_stats, "statistic") else pos_stats[0])
+    else:
+        rs_pos = float("nan")
+    if n_neg >= 3:
+        neg_stats = spearmanr(x[neg_mask], y[neg_mask])
+        rs_neg = float(neg_stats.statistic if hasattr(neg_stats, "statistic") else neg_stats[0])
+    else:
+        rs_neg = float("nan")
+    if n_pos > 0 and n_neg > 0:
+        labels = pos_mask.astype(int)
+        ranks = rankdata(x)
+        auroc = (ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+        auroc = float(auroc)
+    else:
+        auroc = float("nan")
 
     legend_rows = []
     for row in sampler_rows:
         matched = row["matched"]
         total = row["total"]
         if matched.empty:
-            legend_rows.append(f"{row['label']}: 0/{total} matched")
+            legend_rows.append(f"{row['label']}: 0 exact + 0 NN")
             continue
-        ax.scatter(
-            matched["pll"],
-            matched[fitness_col],
-            s=28,
-            marker=row["marker"],
-            c=row["color"],
-            alpha=0.78,
-            edgecolors="black",
-            linewidths=0.25,
-            zorder=3,
-            label=f"{row['label']} ({len(matched)}/{total} matched)",
-        )
-        legend_rows.append(f"{row['label']}: {len(matched)}/{total} matched")
+        n_exact = int(row.get("n_exact", int((matched["match_source"] == "exact").sum())))
+        n_nn = int(row.get("n_nn", int((matched["match_source"] == "nn").sum())))
+        mean_hd = float(row.get("mean_hd", float("nan")))
+
+        if n_exact > 0:
+            exact = matched[matched["match_source"] == "exact"]
+            ax.scatter(
+                exact["pll"],
+                exact[fitness_col],
+                s=34,
+                marker=row["marker"],
+                c=row["color"],
+                alpha=0.84,
+                edgecolors="black",
+                linewidths=0.4,
+                zorder=3.2,
+                label=f"{row['label']} ({len(matched)}/{total})",
+            )
+        if n_nn > 0:
+            nn_only = matched[matched["match_source"] == "nn"]
+            ax.scatter(
+                nn_only["pll"],
+                nn_only[fitness_col],
+                s=34,
+                marker=row["marker"],
+                facecolors="none",
+                edgecolors=row["color"],
+                alpha=0.95,
+                linewidths=1.0,
+                zorder=3.1,
+                label=None if n_exact > 0 else f"{row['label']} ({len(matched)}/{total})",
+            )
+
+        if n_nn > 0 and np.isfinite(mean_hd):
+            legend_rows.append(f"{row['label']}: {n_exact} exact + {n_nn} NN (mean HD={mean_hd:.1f})")
+        else:
+            legend_rows.append(f"{row['label']}: {n_exact} exact + {n_nn} NN")
 
     if np.isfinite(wt_pll) and np.isfinite(wt_fitness):
         ax.scatter(
@@ -410,6 +533,8 @@ def make_plot(
     text = (
         f"DMS Pearson r = {rp:.3f} (p={pp:.1e})\n"
         f"DMS Spearman rho = {rs:.3f} (p={ps:.1e})\n"
+        f"DMS Spearman pos/neg = {rs_pos:.3f}/{rs_neg:.3f} (n={n_pos}/{n_neg})\n"
+        f"DMS AUROC (binder vs non-binder) = {auroc:.3f}\n"
         + "\n".join(legend_rows)
     )
     ax.text(
@@ -429,10 +554,10 @@ def make_plot(
         f"{variant} - {dataset_label.upper()} - PLL vs {fitness_label}\n"
         "DMS background + Gibbs/beam overlays"
     )
-    ax.grid(alpha=0.22)
+    ax.grid(alpha=0.2, linewidth=0.5, linestyle="--")
     ax.legend(loc="lower right", fontsize=8, frameon=True)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -562,7 +687,8 @@ def main() -> int:
             dms_df["pll"] = dms_df["aa"].map(pll_map)
             wt_pll = float(pll_map.get(wt_seq, float("nan")))
 
-            lookup_cols = ["aa", "M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"]
+            enrichment_cols = ["M22_binding_enrichment_adj", "SI06_binding_enrichment_adj"]
+            lookup_cols = ["aa", *enrichment_cols]
             dms_lookup = dms_df[lookup_cols].rename(columns={"aa": "cdrh3"})
             sampler_rows: List[dict] = []
             for key, label, marker, color in SAMPLER_SPECS:
@@ -573,10 +699,24 @@ def main() -> int:
                         pll=np.array([], dtype=np.float32),
                         M22_binding_enrichment_adj=np.array([], dtype=np.float32),
                         SI06_binding_enrichment_adj=np.array([], dtype=np.float32),
+                        nn_hamming=np.array([], dtype=np.float32),
+                        match_source=np.array([], dtype=object),
                     )
                 else:
                     overlay_df["pll"] = overlay_df["cdrh3"].map(pll_map)
-                    matched = overlay_df.merge(dms_lookup, on="cdrh3", how="inner")
+                    matched = _match_overlay_to_dms(
+                        overlay_df=overlay_df,
+                        dms_df=dms_df,
+                        dms_lookup=dms_lookup,
+                        enrichment_cols=enrichment_cols,
+                        match_mode=args.match_mode,
+                    )
+                n_exact = int((matched["match_source"] == "exact").sum()) if not matched.empty else 0
+                n_nn = int((matched["match_source"] == "nn").sum()) if not matched.empty else 0
+                if n_nn > 0:
+                    mean_hd = float(np.nanmean(matched.loc[matched["match_source"] == "nn", "nn_hamming"]))
+                else:
+                    mean_hd = float("nan")
                 sampler_rows.append(
                     {
                         "key": key,
@@ -585,6 +725,9 @@ def main() -> int:
                         "color": color,
                         "total": len(cdrs),
                         "matched": matched,
+                        "n_exact": n_exact,
+                        "n_nn": n_nn,
+                        "mean_hd": mean_hd,
                     }
                 )
 
