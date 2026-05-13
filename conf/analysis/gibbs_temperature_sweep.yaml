@@ -23,7 +23,7 @@ models:
     checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
     model_variant: "DPO from evo"
   - name: "evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"" 
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
     model_variant: "evotuned"
   - name: "vanilla"
     checkpoint: "facebook/esm2_t12_35M_UR50D" 
@@ -49,8 +49,13 @@ plots:
   beam_aa_heatmap: true
 
 summary:
+  fraction_above_wt: true
+  pll_vs_enrichment_scatter: true
+  top_k_enrichment_recovery: true
   pll_vs_diversity_tradeoff: true
   pll_distribution_by_temp: true
+  entropy_heatmap: true
+  jsd_vs_temp: true
   top_k_for_pll: 50
 
 output:

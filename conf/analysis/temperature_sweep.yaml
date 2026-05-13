@@ -19,7 +19,7 @@ models:
     checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
     model_variant: "DPO from evo"
   - name: "evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"" 
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt" 
     model_variant: "evotuned"
   - name: "vanilla"
     checkpoint: "facebook/esm2_t12_35M_UR50D" 

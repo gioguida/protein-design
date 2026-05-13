@@ -10,11 +10,11 @@ task:
 
 training:
   batch_size: 40
-  num_epochs: 5
-  lr: 1e-5
+  num_epochs: 4
+  lr: 1e-6
   weight_decay: 0.0
   loss: weighted_dpo     # dpo | weighted_dpo
-  beta: 0.04
+  beta: 0.2
   temperature: 1         # only relevant for weighted loss
   grad_clip_norm: 1.0
   patience: 10
@@ -28,7 +28,7 @@ training:
   scheduler:
     enabled: true
     name: step  # step | cosine | linear_warmup | linear_warmup_cosine | reduce_on_plateau
-    interval: step       # epoch | step
+    interval: epoch       # epoch | step
     step_size: 100
     gamma: 0.95
     warmup_steps: 200

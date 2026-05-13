@@ -132,7 +132,7 @@ def main() -> int:
 
     for model_spec in models_cfg:
         model_name = str(model_spec.get("name", "model"))
-        checkpoint = str(model_spec.get("checkpoint") or "")
+        checkpoint = os.path.expandvars(os.path.expanduser(str(model_spec.get("checkpoint") or "")))
         model_variant = str(model_spec.get("model_variant", model_name))
 
         # Collect CSV paths per temperature for summary plots.
