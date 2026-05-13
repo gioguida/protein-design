@@ -4,14 +4,34 @@ data:
   dpo_dataset_key: ed2_m22
   processed_dir: data/processed
   force_rebuild: false
+  pair_split:
+    # Keep train as anchor, and cap val/test to these ratios.
+    enforce_train_controlled_sizes: true
+    train_frac: 0.8
+    val_frac: 0.1
+    test_frac: 0.1
   pairing_strategy: delta_based
   min_positive_delta: 3.0
   min_delta_margin: 5.0
   delta_based:
-    components: [cross, wt_anchors]
+    components: [cross, wt_anchors, within_pos, within_neg]   #  [cross, wt_anchors, within_pos, within_neg]
     gap: 0.5
-    wt_pairs_frac: 0.1
-    cross_pairs_frac: 0.03
+    # Legacy candidate-pool controls (applied before mix selection).
+    # Keep these high to let `mix` govern final component counts.
+    wt_pairs_frac: 1.0
+    cross_pairs_frac: 1.0
+    mix:
+      mode: count   #  count | fraction
+      count:
+        within_pos: 10000
+        within_neg: 3000
+        wt_anchors: 2000
+        cross: 7000
+      fraction:
+        within_pos: 0.2
+        within_neg: 0.0
+        wt_anchors: 0.2
+        cross: 0.6
     strong_pos_threshold: 1.0
     strong_neg_threshold: -5.0
     min_score_margin: 0.1

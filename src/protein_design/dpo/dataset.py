@@ -25,6 +25,7 @@ LOG = logging.getLogger(__name__)
 
 PairingStrategy = Literal["delta_based"]
 DeltaBasedComponent = Literal["within_pos", "within_neg", "wt_anchors", "cross"]
+DeltaMixMode = Literal["count", "fraction"]
 DELTA_BASED_COMPONENTS: Tuple[DeltaBasedComponent, ...] = (
     "within_pos",
     "within_neg",
@@ -43,6 +44,9 @@ PairTuple = Tuple[PairMember, PairMember]
 
 class DeltaBasedParams(TypedDict):
     components: Tuple[DeltaBasedComponent, ...]
+    mix_mode: DeltaMixMode
+    component_pair_counts: Dict[DeltaBasedComponent, int]
+    component_pair_fractions: Dict[DeltaBasedComponent, float]
     delta_col: str
     seq_col: str
     gap: float
@@ -104,6 +108,163 @@ def _reject_legacy_pairing(pairing_strategy: str) -> None:
 
 def _next_random_state(rng: np.random.Generator) -> int:
     return int(rng.integers(0, np.iinfo(np.uint32).max, endpoint=True))
+
+
+def _zero_component_counts() -> Dict[DeltaBasedComponent, int]:
+    return {component: 0 for component in DELTA_BASED_COMPONENTS}
+
+
+def _zero_component_fractions() -> Dict[DeltaBasedComponent, float]:
+    return {component: 0.0 for component in DELTA_BASED_COMPONENTS}
+
+
+def _coerce_component_counts(
+    counts: Optional[Dict[str, int]],
+) -> Dict[DeltaBasedComponent, int]:
+    normalized = _zero_component_counts()
+    if counts is None:
+        return normalized
+    for component in DELTA_BASED_COMPONENTS:
+        if component in counts:
+            normalized[component] = max(0, int(counts[component]))
+    return normalized
+
+
+def _coerce_component_fractions(
+    fractions: Optional[Dict[str, float]],
+) -> Dict[DeltaBasedComponent, float]:
+    normalized = _zero_component_fractions()
+    if fractions is None:
+        return normalized
+    for component in DELTA_BASED_COMPONENTS:
+        if component in fractions:
+            normalized[component] = max(0.0, float(fractions[component]))
+    return normalized
+
+
+def _normalize_mix_mode(mix_mode: str) -> DeltaMixMode:
+    mode = str(mix_mode).strip().lower()
+    if mode not in {"count", "fraction"}:
+        raise ValueError(
+            "data.delta_based.mix.mode must be 'count' or 'fraction'. "
+            f"Got: {mix_mode!r}"
+        )
+    return cast(DeltaMixMode, mode)
+
+
+def _sample_pairs_without_replacement(
+    pairs: Sequence[PairTuple],
+    sample_size: int,
+    rng: np.random.Generator,
+) -> List[PairTuple]:
+    target = max(0, int(sample_size))
+    if target <= 0:
+        return []
+    if target >= len(pairs):
+        return list(pairs)
+    indices = rng.choice(len(pairs), size=target, replace=False)
+    return [pairs[int(idx)] for idx in indices]
+
+
+def _count_targets_from_fractions(
+    *,
+    components: Tuple[DeltaBasedComponent, ...],
+    available_counts: Dict[DeltaBasedComponent, int],
+    component_pair_fractions: Dict[DeltaBasedComponent, float],
+) -> Dict[DeltaBasedComponent, int]:
+    selected_positive_fractions = {
+        component: component_pair_fractions[component]
+        for component in components
+        if component_pair_fractions[component] > 0.0
+    }
+    if not selected_positive_fractions:
+        return _zero_component_counts()
+
+    selected_fraction_sum = float(sum(selected_positive_fractions.values()))
+    normalized_fractions = {
+        component: value / selected_fraction_sum
+        for component, value in selected_positive_fractions.items()
+    }
+
+    feasible_totals = []
+    for component, fraction in normalized_fractions.items():
+        available = max(0, int(available_counts[component]))
+        if fraction <= 0:
+            continue
+        feasible_totals.append(available / fraction)
+    if not feasible_totals:
+        return _zero_component_counts()
+    target_total = max(0, int(np.floor(min(feasible_totals))))
+
+    targets = _zero_component_counts()
+    remainders: List[Tuple[float, DeltaBasedComponent]] = []
+    assigned = 0
+    for component, fraction in normalized_fractions.items():
+        raw_target = fraction * float(target_total)
+        base = min(int(np.floor(raw_target)), int(available_counts[component]))
+        targets[component] = max(0, base)
+        assigned += targets[component]
+        remainders.append((raw_target - float(np.floor(raw_target)), component))
+
+    remaining = max(0, target_total - assigned)
+    if remaining > 0:
+        remainders.sort(key=lambda item: item[0], reverse=True)
+        for _, component in remainders:
+            if remaining <= 0:
+                break
+            capacity = int(available_counts[component]) - targets[component]
+            if capacity <= 0:
+                continue
+            add = min(capacity, remaining)
+            targets[component] += add
+            remaining -= add
+
+    return targets
+
+
+def _downsample_pairs_to_train_controlled_split(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    *,
+    train_frac: float,
+    val_frac: float,
+    test_frac: float,
+    rng: np.random.Generator,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    frac_sum = float(train_frac) + float(val_frac) + float(test_frac)
+    if abs(frac_sum - 1.0) >= 1e-6:
+        raise ValueError(
+            "Pair split fractions must sum to 1.0 when train-controlled split sizing is enabled. "
+            f"Got train={train_frac}, val={val_frac}, test={test_frac} (sum={frac_sum})."
+        )
+    if float(train_frac) <= 0.0:
+        raise ValueError(
+            "train_frac must be > 0 when train-controlled split sizing is enabled. "
+            f"Got: {train_frac}."
+        )
+
+    train_count = int(len(train_df))
+    if train_count <= 0:
+        return train_df, val_df.iloc[0:0].copy(), test_df.iloc[0:0].copy()
+
+    target_total = float(train_count) / float(train_frac)
+    target_val = max(0, int(np.floor(target_total * float(val_frac))))
+    target_test = max(0, int(np.floor(target_total * float(test_frac))))
+
+    def _downsample(df: pd.DataFrame, target: int) -> pd.DataFrame:
+        if target >= len(df):
+            return df
+        if target <= 0:
+            return df.iloc[0:0].copy()
+        selected = rng.choice(len(df), size=target, replace=False)
+        return df.iloc[np.sort(selected)].reset_index(drop=True)
+
+    return (
+        train_df.reset_index(drop=True),
+        _downsample(val_df, target_val),
+        _downsample(test_df, target_test),
+    )
 
 
 def _build_within_pos_pairs(
@@ -245,15 +406,45 @@ def _pair_delta_based(
         "wt_anchors": lambda: _build_wt_anchor_pairs(sequences_df, params),
         "cross": lambda: _build_cross_pairs(sequences_df, params, rng),
     }
-    all_pairs: List[Tuple[PairMember, PairMember, str]] = []
+    per_component_pairs: Dict[DeltaBasedComponent, List[PairTuple]] = {
+        component: [] for component in DELTA_BASED_COMPONENTS
+    }
     for component in params["components"]:
-        for winner, loser in builders[component]():
-            all_pairs.append((winner, loser, component))
-    return [
-        (winner, loser, component)
-        for winner, loser, component in all_pairs
-        if (winner["score"] - loser["score"]) >= float(params["min_score_margin"])
-    ]
+        raw_pairs = builders[component]()
+        per_component_pairs[component] = [
+            (winner, loser)
+            for winner, loser in raw_pairs
+            if (winner["score"] - loser["score"]) >= float(params["min_score_margin"])
+        ]
+
+    available_counts: Dict[DeltaBasedComponent, int] = {
+        component: len(per_component_pairs[component]) for component in DELTA_BASED_COMPONENTS
+    }
+    if params["mix_mode"] == "count":
+        target_counts = _zero_component_counts()
+        for component in params["components"]:
+            target_counts[component] = min(
+                int(params["component_pair_counts"][component]),
+                int(available_counts[component]),
+            )
+    elif params["mix_mode"] == "fraction":
+        target_counts = _count_targets_from_fractions(
+            components=params["components"],
+            available_counts=available_counts,
+            component_pair_fractions=params["component_pair_fractions"],
+        )
+    else:  # pragma: no cover - guarded by _normalize_mix_mode
+        raise ValueError(f"Unsupported mix mode: {params['mix_mode']!r}")
+
+    selected_pairs: List[Tuple[PairMember, PairMember, str]] = []
+    for component in params["components"]:
+        chosen_pairs = _sample_pairs_without_replacement(
+            per_component_pairs[component],
+            target_counts[component],
+            rng,
+        )
+        selected_pairs.extend((winner, loser, component) for winner, loser in chosen_pairs)
+    return selected_pairs
 
 
 def build_dpo_pairs_from_clustered_dataframe(
@@ -262,6 +453,9 @@ def build_dpo_pairs_from_clustered_dataframe(
     min_positive_delta: float = 0.0,
     min_delta_margin: float = 0.0,
     delta_components: Sequence[str] = DELTA_BASED_COMPONENTS,
+    delta_mix_mode: str = "count",
+    delta_component_pair_counts: Optional[Dict[str, int]] = None,
+    delta_component_pair_fractions: Optional[Dict[str, float]] = None,
     gap: float = 0.5,
     wt_pairs_frac: float = 0.1,
     cross_pairs_frac: float = 0.1,
@@ -279,8 +473,20 @@ def build_dpo_pairs_from_clustered_dataframe(
     missing_cols = {seq_col, delta_col}.difference(clustered_df.columns)
     if missing_cols:
         raise ValueError(f"clustered_df is missing required columns: {', '.join(sorted(missing_cols))}")
+    components = validate_delta_based_components(delta_components)
+    mix_mode = _normalize_mix_mode(delta_mix_mode)
+    component_pair_counts = _coerce_component_counts(delta_component_pair_counts)
+    component_pair_fractions = _coerce_component_fractions(delta_component_pair_fractions)
+    if delta_component_pair_counts is None and mix_mode == "count":
+        unlimited_count = np.iinfo(np.int32).max
+        for component in components:
+            component_pair_counts[component] = unlimited_count
+
     params: DeltaBasedParams = {
-        "components": validate_delta_based_components(delta_components),
+        "components": components,
+        "mix_mode": mix_mode,
+        "component_pair_counts": component_pair_counts,
+        "component_pair_fractions": component_pair_fractions,
         "delta_col": delta_col,
         "seq_col": seq_col,
         "gap": float(gap),
@@ -338,6 +544,9 @@ def build_split_pair_dataframes_from_raw(
     min_positive_delta: float = 0.0,
     min_delta_margin: float = 0.0,
     delta_components: Sequence[str] = DELTA_BASED_COMPONENTS,
+    delta_mix_mode: str = "count",
+    delta_component_pair_counts: Optional[Dict[str, int]] = None,
+    delta_component_pair_fractions: Optional[Dict[str, float]] = None,
     gap: float = 0.5,
     wt_pairs_frac: float = 0.1,
     cross_pairs_frac: float = 0.1,
@@ -350,12 +559,13 @@ def build_split_pair_dataframes_from_raw(
     test_frac: float = 0.1,
     split_hamming_distance: int = 1,
     split_stratify_bins: int = 10,
+    enforce_train_controlled_split_sizes: bool = False,
     seed: int = RANDOM_SEED,
     dms_config_path: Path | str | None = None,
     dataset_key: str = "ed2_m22",
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     del include_views, raw_csv_path, processed_dir, deduplicate_across_views
-    del train_frac, val_frac, test_frac, split_hamming_distance, split_stratify_bins
+    del split_hamming_distance, split_stratify_bins
     _reject_legacy_pairing(str(pairing_strategy))
     dms_config_path = Path(dms_config_path or (project_root() / DEFAULT_CONFIG_PATH))
     split_frames = {
@@ -375,6 +585,9 @@ def build_split_pair_dataframes_from_raw(
             min_positive_delta=min_positive_delta,
             min_delta_margin=min_delta_margin,
             delta_components=delta_components,
+            delta_mix_mode=delta_mix_mode,
+            delta_component_pair_counts=delta_component_pair_counts,
+            delta_component_pair_fractions=delta_component_pair_fractions,
             gap=gap,
             wt_pairs_frac=wt_pairs_frac,
             cross_pairs_frac=cross_pairs_frac,
@@ -386,7 +599,18 @@ def build_split_pair_dataframes_from_raw(
             source_view=split,
         )
 
-    return build("train", 0), build("val", 1), build("test", 2)
+    train_df, val_df, test_df = build("train", 0), build("val", 1), build("test", 2)
+    if bool(enforce_train_controlled_split_sizes):
+        train_df, val_df, test_df = _downsample_pairs_to_train_controlled_split(
+            train_df=train_df,
+            val_df=val_df,
+            test_df=test_df,
+            train_frac=float(train_frac),
+            val_frac=float(val_frac),
+            test_frac=float(test_frac),
+            rng=np.random.default_rng(int(seed) + 3),
+        )
+    return train_df, val_df, test_df
 
 
 def load_dpo_pair_dataframe(**kwargs) -> pd.DataFrame:
