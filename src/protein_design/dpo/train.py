@@ -1172,14 +1172,22 @@ def run_dpo(cfg: Any) -> Path:
                         "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                         "val_spearman_random": float(val_spearman["spearman_random"]),
                         "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                        "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                        "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                        "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                        "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                        "val_n_pos": int(val_spearman["n_pos"]),
+                        "val_n_neg": int(val_spearman["n_neg"]),
+                        "val_auroc": float(val_spearman["auroc"]),
                     }
                 )
                 logger.info(
-                    "Validation Spearman (step 0) | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                    "Validation Spearman (step 0) | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                     float(val_spearman["spearman_avg"]),
-                    float(val_spearman["spearman_avg_pval"]),
+                    float(val_spearman["spearman_avg_pos"]),
+                    float(val_spearman["spearman_avg_neg"]),
+                    float(val_spearman["auroc"]),
                     float(val_spearman["spearman_random"]),
-                    float(val_spearman["spearman_random_pval"]),
                 )
             except Exception as exc:
                 logger.warning("Validation Spearman evaluation failed at step 0 (%s). Skipping this metric.", exc)
@@ -1298,14 +1306,22 @@ def run_dpo(cfg: Any) -> Path:
                         "val_spearman_avg_pval": float(val_spearman["spearman_avg_pval"]),
                         "val_spearman_random": float(val_spearman["spearman_random"]),
                         "val_spearman_random_pval": float(val_spearman["spearman_random_pval"]),
+                        "val_spearman_avg_pos": float(val_spearman["spearman_avg_pos"]),
+                        "val_spearman_avg_pos_pval": float(val_spearman["spearman_avg_pos_pval"]),
+                        "val_spearman_avg_neg": float(val_spearman["spearman_avg_neg"]),
+                        "val_spearman_avg_neg_pval": float(val_spearman["spearman_avg_neg_pval"]),
+                        "val_n_pos": int(val_spearman["n_pos"]),
+                        "val_n_neg": int(val_spearman["n_neg"]),
+                        "val_auroc": float(val_spearman["auroc"]),
                     }
                 )
                 logger.info(
-                    "Validation Spearman | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                    "Validation Spearman | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                     float(val_spearman["spearman_avg"]),
-                    float(val_spearman["spearman_avg_pval"]),
+                    float(val_spearman["spearman_avg_pos"]),
+                    float(val_spearman["spearman_avg_neg"]),
+                    float(val_spearman["auroc"]),
                     float(val_spearman["spearman_random"]),
-                    float(val_spearman["spearman_random_pval"]),
                 )
             except Exception as exc:
                 logger.warning("Validation Spearman evaluation failed (%s). Skipping this metric.", exc)
@@ -1467,13 +1483,21 @@ def run_dpo(cfg: Any) -> Path:
                 "test_spearman_avg_pval": float(test_spearman["spearman_avg_pval"]),
                 "test_spearman_random": float(test_spearman["spearman_random"]),
                 "test_spearman_random_pval": float(test_spearman["spearman_random_pval"]),
+                "test_spearman_avg_pos": float(test_spearman["spearman_avg_pos"]),
+                "test_spearman_avg_pos_pval": float(test_spearman["spearman_avg_pos_pval"]),
+                "test_spearman_avg_neg": float(test_spearman["spearman_avg_neg"]),
+                "test_spearman_avg_neg_pval": float(test_spearman["spearman_avg_neg_pval"]),
+                "test_n_pos": int(test_spearman["n_pos"]),
+                "test_n_neg": int(test_spearman["n_neg"]),
+                "test_auroc": float(test_spearman["auroc"]),
             }
             logger.info(
-                "Test Spearman | avg=%.4f (p=%.2e) | random=%.4f (p=%.2e)",
+                "Test Spearman | avg=%.4f | pos=%.4f | neg=%.4f | AUROC=%.4f | random=%.4f",
                 float(test_spearman["spearman_avg"]),
-                float(test_spearman["spearman_avg_pval"]),
+                float(test_spearman["spearman_avg_pos"]),
+                float(test_spearman["spearman_avg_neg"]),
+                float(test_spearman["auroc"]),
                 float(test_spearman["spearman_random"]),
-                float(test_spearman["spearman_random_pval"]),
             )
         except Exception as exc:
             logger.warning("Test Spearman evaluation failed (%s). Skipping this metric.", exc)
@@ -1500,6 +1524,13 @@ def run_dpo(cfg: Any) -> Path:
         "test_spearman_avg_pval": None,
         "test_spearman_random": None,
         "test_spearman_random_pval": None,
+        "test_spearman_avg_pos": None,
+        "test_spearman_avg_pos_pval": None,
+        "test_spearman_avg_neg": None,
+        "test_spearman_avg_neg_pval": None,
+        "test_n_pos": None,
+        "test_n_neg": None,
+        "test_auroc": None,
         "num_train_pairs": int(len(train_df)),
         "num_val_pairs": int(len(val_df)),
         "num_test_pairs": int(len(test_df)),
@@ -1527,6 +1558,13 @@ def run_dpo(cfg: Any) -> Path:
         "test_spearman_avg_pval": None,
         "test_spearman_random": None,
         "test_spearman_random_pval": None,
+        "test_spearman_avg_pos": None,
+        "test_spearman_avg_pos_pval": None,
+        "test_spearman_avg_neg": None,
+        "test_spearman_avg_neg_pval": None,
+        "test_n_pos": None,
+        "test_n_neg": None,
+        "test_auroc": None,
         "spearman_SI06": None,
         "spearman_exp": None,
         "notes": None if cfg.wandb.notes is None else str(cfg.wandb.notes),

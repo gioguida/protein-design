@@ -370,8 +370,9 @@ def _train_evotuning(
                     log.info("New best checkpoint (ppl=%.2f) saved to %s", ppl, best_ckpt_path)
 
                 if scoring_datasets is not None:
-                    # Live mode: only spearman_avg per dataset + spearman_mean.
-                    # Drops 80+ p-value / random / flank scalars per checkpoint.
+                    # Live mode keeps headline metrics only (avg/pos/neg + AUROC
+                    # per dataset, plus spearman_mean), dropping p-values,
+                    # random-ordering, counts, and flank scalars.
                     scoring_results = run_multi_scoring_evaluation(
                         model, tokenizer, scoring_datasets,
                         device=device,
@@ -542,7 +543,7 @@ def _run_end_of_training_eval(
         payload = full_results.pop("_payload", {})
 
         # Aggregate spearman_mean for the W&B headline.
-        rhos = [v for k, v in full_results.items() if k.startswith("spearman_avg_") and "_pval_" not in k and isinstance(v, float) and np.isfinite(v) and not any(s in k for s in ("left", "right"))]
+        rhos = [v for k, v in full_results.items() if k.startswith("spearman_avg_") and "_pval_" not in k and isinstance(v, float) and np.isfinite(v) and not any(s in k for s in ("left", "right", "pos", "neg"))]
         spearman_mean = float(np.mean(rhos)) if rhos else float("nan")
         final_metrics["test_spearman_mean"] = spearman_mean
         artifacts.log({"test/spearman_mean": spearman_mean}, step=global_step)

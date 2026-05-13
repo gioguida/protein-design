@@ -135,6 +135,38 @@ def plot_spearman_evolution(
             continue
         xs, ys2 = zip(*valid)
         ax.plot(xs, ys2, color=_color(i), marker="o", markersize=4, label=name)
+
+        key_pos = f"spearman_avg_pos_{name}"
+        ys_pos = [r.get(key_pos) for r in scoring_history]
+        valid_pos = [(s, y) for s, y in zip(steps, ys_pos) if y is not None and np.isfinite(y)]
+        if valid_pos:
+            xs_p, ys_p = zip(*valid_pos)
+            ax.plot(
+                xs_p,
+                ys_p,
+                color=_color(i),
+                linestyle="--",
+                marker="^",
+                markersize=3,
+                alpha=0.7,
+                label=f"{name} (pos)",
+            )
+
+        key_neg = f"spearman_avg_neg_{name}"
+        ys_neg = [r.get(key_neg) for r in scoring_history]
+        valid_neg = [(s, y) for s, y in zip(steps, ys_neg) if y is not None and np.isfinite(y)]
+        if valid_neg:
+            xs_n, ys_n = zip(*valid_neg)
+            ax.plot(
+                xs_n,
+                ys_n,
+                color=_color(i),
+                linestyle=":",
+                marker="v",
+                markersize=3,
+                alpha=0.7,
+                label=f"{name} (neg)",
+            )
         if pretrained_baseline and name in pretrained_baseline:
             base = pretrained_baseline[name]
             if np.isfinite(base):
@@ -271,17 +303,8 @@ def plot_pll_vs_enrichment(
     if n > 5000:
         ax.hexbin(enrichment, scores, gridsize=40, cmap="Blues", mincnt=1)
     else:
-        if num_mut is not None:
-            num_mut_arr = np.asarray(num_mut)[mask]
-            unique_muts = sorted(set(int(m) for m in num_mut_arr if np.isfinite(m)))
-            for i, m in enumerate(unique_muts):
-                sel = num_mut_arr == m
-                ax.scatter(enrichment[sel], scores[sel], s=8, alpha=0.35,
-                           color=_color(i), label=f"{m} mut", linewidths=0)
-            if len(unique_muts) > 1:
-                ax.legend(loc="lower right", fontsize=8, markerscale=2)
-        else:
-            ax.scatter(enrichment, scores, s=8, alpha=0.25, color=_color(0), linewidths=0)
+        cluster_colors = np.where(enrichment > 0.0, "#e15759", "#4e79a7")
+        ax.scatter(enrichment, scores, s=8, alpha=0.25, c=cluster_colors, linewidths=0)
 
     _annotate_rho(ax, rho, pval, n)
     ax.set_xlabel("log-enrichment")
