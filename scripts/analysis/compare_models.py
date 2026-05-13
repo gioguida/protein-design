@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Compare fine-tuned models on WT/good-sequence PPL and PLL-vs-enrichment Spearman."""
+"""Compare fine-tuned models on WT/good-sequence PPL and PLL-vs-enrichment metrics.
+
+Outputs include:
+- whole-set Spearman bar plot
+- stratified Spearman bar plot (ALL/POS/NEG per dataset)
+- AUROC bar plot (per dataset)
+"""
 
 from __future__ import annotations
 
@@ -292,6 +298,44 @@ def main() -> int:
                     out_path=out_dir / "plots" / "hist_spearman_by_dataset.png",
                     title="Spearman Correlation: PLL vs Binding Enrichment (higher is better)",
                     ylabel="Spearman rho",
+                    models=model_names,
+                    values=values,
+                    legend_labels=selected_datasets,
+                )
+            strat_cols: list[str] = []
+            strat_labels: list[str] = []
+            for ds in selected_datasets:
+                ds_l = ds.lower()
+                key_all = f"spearman_{ds_l}"
+                key_pos = f"spearman_pos_{ds_l}"
+                key_neg = f"spearman_neg_{ds_l}"
+                if key_all in summary_df.columns:
+                    strat_cols.append(key_all)
+                    strat_labels.append(f"{ds} ALL")
+                if key_pos in summary_df.columns:
+                    strat_cols.append(key_pos)
+                    strat_labels.append(f"{ds} POS")
+                if key_neg in summary_df.columns:
+                    strat_cols.append(key_neg)
+                    strat_labels.append(f"{ds} NEG")
+            if strat_cols:
+                values = summary_df[strat_cols].to_numpy(dtype=float)
+                _barplot(
+                    out_path=out_dir / "plots" / "hist_spearman_stratified_by_dataset.png",
+                    title="Stratified Spearman: PLL vs Binding Enrichment (higher is better)",
+                    ylabel="Spearman rho",
+                    models=model_names,
+                    values=values,
+                    legend_labels=strat_labels,
+                )
+
+            auroc_cols = [f"auroc_{ds.lower()}" for ds in selected_datasets if f"auroc_{ds.lower()}" in summary_df]
+            if auroc_cols:
+                values = summary_df[auroc_cols].to_numpy(dtype=float)
+                _barplot(
+                    out_path=out_dir / "plots" / "hist_auroc_by_dataset.png",
+                    title="AUROC: Binder vs Non-binder by Dataset (higher is better)",
+                    ylabel="AUROC",
                     models=model_names,
                     values=values,
                     legend_labels=selected_datasets,

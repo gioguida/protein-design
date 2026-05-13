@@ -18,10 +18,11 @@ source bash_scripts/common_setup.sh
 # Format per model: "LABEL|SIZE|CHECKPOINT"
 MODELS=(
   "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
-  "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
-  "dpo_linear_warmup|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup/best.pt"
-  "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
-  "dpo_step|35M|/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_step/best.pt"
+  # "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
+  # "dpo_linear_warmup|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
+  # "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
+  "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
+  "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
 )
 
 # ----------------------------- switches --------------------------------------

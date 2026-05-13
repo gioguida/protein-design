@@ -15,15 +15,21 @@ sweep:
   n_chains: 10        # maps to beam_size for wt/dms; top-k seeds for top_dms
 
 models:
-  - name: "dpo_from_evo"
-    checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
-    model_variant: "DPO from evo"
-  - name: "evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt" 
-    model_variant: "evotuned"
-  - name: "vanilla"
-    checkpoint: "facebook/esm2_t12_35M_UR50D" 
-    model_variant: "vanilla"
+  # - name: "dpo_from_evo"
+  #   checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup" 
+  #   model_variant: "DPO from evo"
+
+  - name: "evo_dpo_low_lr_one_epoch"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr" 
+    model_variant: "evoDPO light"
+
+  # - name: "evo"
+  #   checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt" 
+  #   model_variant: "evotuned"
+
+  # - name: "vanilla"
+  #   checkpoint: "facebook/esm2_t12_35M_UR50D" 
+  #   model_variant: "vanilla"
 
 # DMS reference paths used for beam_pll_vs_dms_histogram and beam_aa_heatmap.
 # Leave null to skip DMS-dependent plots.
@@ -57,5 +63,5 @@ summary:
   top_k_for_pll: 50                 # top sequences used for mean PLL in tradeoff plot
 
 output:
-  base_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/temperature_sweep/outputs"
-  plots_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/temperature_sweep/plots"
+  base_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/beam_temperature_sweep/outputs"
+  plots_dir: "/cluster/project/infk/krause/${USER}/protein-design/reports/beam_temperature_sweep/plots"

@@ -84,6 +84,43 @@ def _render_path_template(template: str, repo_root: Path, **kwargs: str) -> Path
     return _expand(rendered, repo_root)
 
 
+def _resolve_checkpoint_ref(raw_ckpt: str, repo_root: Path) -> str:
+    """Resolve checkpoint references without breaking HF model IDs.
+
+    Accepted forms:
+    - empty string (vanilla model)
+    - absolute filesystem path to a file/dir
+    - relative filesystem path (must exist under repo_root)
+    - HuggingFace model ID (returned as-is)
+    """
+    ckpt = str(raw_ckpt or "").strip()
+    if not ckpt:
+        return ""
+
+    expanded = os.path.expandvars(os.path.expanduser(ckpt))
+    candidate = Path(expanded)
+    # Heuristic: explicit relative path markers imply filesystem path intent.
+    is_explicit_rel = expanded.startswith(".")
+    has_sep = ("/" in expanded) or ("\\" in expanded)
+    # Treat drive-letter absolute paths as filesystem paths on any OS.
+    has_drive_prefix = len(expanded) >= 2 and expanded[1] == ":"
+
+    if candidate.is_absolute() or has_drive_prefix:
+        return str(candidate)
+
+    if is_explicit_rel:
+        return str(repo_root / candidate)
+
+    if has_sep:
+        rel_path = repo_root / candidate
+        if rel_path.exists():
+            return str(rel_path)
+
+    # Keep non-path-like refs (e.g. HF IDs like facebook/esm2_t12_35M_UR50D)
+    # untouched so downstream loaders can resolve them correctly.
+    return ckpt
+
+
 def _dataset_arg(dataset_key: str) -> str:
     return dataset_key if dataset_key in BUILTIN_DMS_KEYS else "ed2"
 
@@ -356,7 +393,7 @@ def _resolve_models(cfg: dict[str, Any], repo_root: Path) -> list[ModelSpec]:
         entry = catalog[mid] or {}
         display_name = str(entry.get("display_name", "")).strip() or mid
         raw_ckpt = str(entry.get("checkpoint_path", "") or "")
-        checkpoint_path = str(_expand(raw_ckpt, repo_root)) if raw_ckpt else ""
+        checkpoint_path = _resolve_checkpoint_ref(raw_ckpt, repo_root)
         resolved.append(ModelSpec(model_id=mid, display_name=display_name, checkpoint_path=checkpoint_path))
     return resolved
 
@@ -979,6 +1016,8 @@ def main() -> int:
                     str(beam_plot_dir),
                     "--configs",
                     *overlay,
+                    "--overlay-style",
+                    "scatter",
                 ],
                 dry_run,
                 f"plot_beam_per_model_pca:{ds}",
@@ -1023,45 +1062,62 @@ def main() -> int:
             overlay_plot_cfg = plots_cfg.get("pll_vs_enrichment_overlays", {}) or {}
             overlay = list(overlay_plot_cfg.get("overlay_sampling", []) or [])
             params = dict(overlay_plot_cfg.get("params", {}) or {})
-            cmd = [
-                "uv",
-                "run",
-                "python",
-                "scripts/analysis/plot_pll_vs_enrichment_overlays.py",
-                *pll_variant_args,
-                "--datasets",
-                ds,
-                "--output-dir",
-                str(pll_overlay_dir),
-                "--include-samplers",
-                *overlay,
-            ]
-            for model in models:
-                for sid in overlay:
-                    sentry = selected_entries[sid]
-                    csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
-                    cmd.extend(["--overlay-csv", f"{sid}={model.display_name}={csv_path}"])
-            m22, si06, m22_col, si06_col = _dataset_paths(
-                cfg,
-                ds,
-                repo_root,
-                force=force,
-                materialize=not dry_run,
-            )
-            dataset_spec = f"{ds}={m22}"
-            if si06:
-                dataset_spec = f"{dataset_spec}={si06}"
-            cmd.extend([
-                "--dataset-spec",
-                dataset_spec,
-                "--dms-m22-col",
-                m22_col,
-                "--dms-si06-col",
-                si06_col,
-            ])
-            for k, v in params.items():
-                _append_flag(cmd, k, v)
-            _run(cmd, dry_run, f"plot_pll_vs_enrichment_overlays:{ds}")
+            split_modes_cfg = params.pop("split_modes", None)
+            if split_modes_cfg is None:
+                split_modes = [str(params.pop("split_mode", "full"))]
+            elif isinstance(split_modes_cfg, (list, tuple)):
+                split_modes = [str(x) for x in split_modes_cfg]
+            else:
+                split_modes = [str(split_modes_cfg)]
+            match_mode = str(params.pop("match_mode", "both"))
+            if not split_modes:
+                split_modes = ["full"]
+
+            for sm in split_modes:
+                out_dir = pll_overlay_dir / sm if len(split_modes) > 1 else pll_overlay_dir
+                cmd = [
+                    "uv",
+                    "run",
+                    "python",
+                    "scripts/analysis/plot_pll_vs_enrichment_overlays.py",
+                    *pll_variant_args,
+                    "--datasets",
+                    ds,
+                    "--output-dir",
+                    str(out_dir),
+                    "--include-samplers",
+                    *overlay,
+                    "--split-mode",
+                    sm,
+                    "--match-mode",
+                    match_mode,
+                ]
+                for model in models:
+                    for sid in overlay:
+                        sentry = selected_entries[sid]
+                        csv_path = _strategy_csv_path(sentry, sid, model, repo_root)
+                        cmd.extend(["--overlay-csv", f"{sid}={model.display_name}={csv_path}"])
+                m22, si06, m22_col, si06_col = _dataset_paths(
+                    cfg,
+                    ds,
+                    repo_root,
+                    force=force,
+                    materialize=not dry_run,
+                )
+                dataset_spec = f"{ds}={m22}"
+                if si06:
+                    dataset_spec = f"{dataset_spec}={si06}"
+                cmd.extend([
+                    "--dataset-spec",
+                    dataset_spec,
+                    "--dms-m22-col",
+                    m22_col,
+                    "--dms-si06-col",
+                    si06_col,
+                ])
+                for k, v in params.items():
+                    _append_flag(cmd, k, v)
+                _run(cmd, dry_run, f"plot_pll_vs_enrichment_overlays:{ds}:{sm}")
 
         # ----- New beam eval plots (DMS-dependent) -----
         # These run per (model × beam strategy × dataset).

@@ -11,23 +11,25 @@ sweep:
 
   # Gibbs-specific parameters
   n_chains: 15
-  n_steps: 500            # sampling steps (after burn-in)
-  burn_in: 200            # steps before recording
+  n_steps: 100          # sampling steps (after burn-in)
+  burn_in: 0            # steps before recording
   snapshot_every: 50
   max_mutations: 6        # reject steps that exceed this edit distance from WT
   start_mode: "wt"        # wt | dms
   seed: 42
 
 models:
-  - name: "dpo_from_evo"
-    checkpoint: "/cluster/project/infk/krause/${USER}/protein-design/checkpoints/dpo_linear_warmup" 
-    model_variant: "DPO from evo"
-  - name: "evo"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
-    model_variant: "evotuned"
-  - name: "vanilla"
-    checkpoint: "facebook/esm2_t12_35M_UR50D" 
-    model_variant: "vanilla"
+  - name: "evo_dpo_low_lr_one_epoch"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr" 
+    model_variant: "evoDPO light"
+
+  # - name: "evo"
+  #   checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+  #   model_variant: "evotuned"
+
+  # - name: "vanilla"
+  #   checkpoint: "facebook/esm2_t12_35M_UR50D" 
+  #   model_variant: "vanilla"
   
 
 dms:
