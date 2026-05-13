@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, rankdata, spearmanr
 from transformers import AutoTokenizer
 
 from protein_design.constants import C05_CDRH3, WT_M22_BINDING_ENRICHMENT, WILD_TYPE
@@ -52,6 +52,7 @@ SAMPLER_SPECS = [
     ("beam_fit", "beam fitness", "D", "#16a085"),
 ]
 SAMPLER_KEYS = {k for k, _, _, _ in SAMPLER_SPECS}
+ENRICHMENT_BIMODAL_THRESHOLD = 0.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plot_pll_vs_enrichment_overlays")
@@ -346,13 +347,35 @@ def make_plot(
         return
 
     fig, ax = plt.subplots(figsize=(7.6, 5.8))
-    ax.scatter(x, y, s=8, c="lightgrey", alpha=0.45, label=f"DMS (n={len(x)})", zorder=1)
+    point_colors = np.where(y > ENRICHMENT_BIMODAL_THRESHOLD, "#e15759", "#4e79a7")
+    ax.scatter(x, y, s=8, c=point_colors, alpha=0.45, label=f"DMS (n={len(x)})", zorder=1)
 
     slope, intercept = np.polyfit(x, y, 1)
     xr = np.linspace(float(np.min(x)), float(np.max(x)), 200)
     ax.plot(xr, slope * xr + intercept, color="black", linewidth=1.2, zorder=2)
     rp, pp = pearsonr(x, y)
     rs, ps = spearmanr(x, y)
+    pos_mask = y > ENRICHMENT_BIMODAL_THRESHOLD
+    neg_mask = ~pos_mask
+    n_pos = int(np.sum(pos_mask))
+    n_neg = int(np.sum(neg_mask))
+    if n_pos >= 3:
+        pos_stats = spearmanr(x[pos_mask], y[pos_mask])
+        rs_pos = float(pos_stats.statistic if hasattr(pos_stats, "statistic") else pos_stats[0])
+    else:
+        rs_pos = float("nan")
+    if n_neg >= 3:
+        neg_stats = spearmanr(x[neg_mask], y[neg_mask])
+        rs_neg = float(neg_stats.statistic if hasattr(neg_stats, "statistic") else neg_stats[0])
+    else:
+        rs_neg = float("nan")
+    if n_pos > 0 and n_neg > 0:
+        labels = pos_mask.astype(int)
+        ranks = rankdata(x)
+        auroc = (ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+        auroc = float(auroc)
+    else:
+        auroc = float("nan")
 
     legend_rows = []
     for row in sampler_rows:
@@ -410,6 +433,8 @@ def make_plot(
     text = (
         f"DMS Pearson r = {rp:.3f} (p={pp:.1e})\n"
         f"DMS Spearman rho = {rs:.3f} (p={ps:.1e})\n"
+        f"DMS Spearman pos/neg = {rs_pos:.3f}/{rs_neg:.3f} (n={n_pos}/{n_neg})\n"
+        f"DMS AUROC (binder vs non-binder) = {auroc:.3f}\n"
         + "\n".join(legend_rows)
     )
     ax.text(

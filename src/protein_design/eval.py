@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -29,6 +29,7 @@ from protein_design.constants import (
 logger = logging.getLogger(__name__)
 
 _MUT_RE = re.compile(r"^([A-Z])(\d+)([A-Z])$")
+ENRICHMENT_BIMODAL_THRESHOLD = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +427,69 @@ def evaluate_spearman(
     return float(rho), float(pval)
 
 
+def evaluate_auroc(
+    scores: np.ndarray,
+    enrichment: np.ndarray,
+    threshold: float = 0.0,
+) -> float:
+    """AUROC of PLL scores for binder classification (enrichment > threshold)."""
+    mask = np.isfinite(scores) & np.isfinite(enrichment)
+    scores_clean = np.asarray(scores[mask], dtype=float)
+    enrichment_clean = np.asarray(enrichment[mask], dtype=float)
+    labels = (enrichment_clean > threshold).astype(int)
+    n_pos = int(labels.sum())
+    n_neg = int(len(labels) - n_pos)
+    if n_pos < 1 or n_neg < 1:
+        return float("nan")
+
+    try:
+        from sklearn.metrics import roc_auc_score
+
+        return float(roc_auc_score(labels, scores_clean))
+    except Exception:
+        ranks = rankdata(scores_clean)
+        auroc = (ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+        return float(auroc)
+
+
+def evaluate_stratified_spearman(
+    scores: np.ndarray,
+    enrichment: np.ndarray,
+    threshold: float = 0.0,
+) -> dict:
+    """Spearman on positive/negative enrichment clusters and AUROC."""
+    mask_finite = np.isfinite(scores) & np.isfinite(enrichment)
+    scores_clean = np.asarray(scores[mask_finite], dtype=float)
+    enrichment_clean = np.asarray(enrichment[mask_finite], dtype=float)
+
+    pos_mask = enrichment_clean > threshold
+    neg_mask = ~pos_mask
+
+    n_pos = int(pos_mask.sum())
+    n_neg = int(neg_mask.sum())
+
+    rho_pos, pval_pos = (
+        evaluate_spearman(scores_clean[pos_mask], enrichment_clean[pos_mask])
+        if n_pos >= 3
+        else (float("nan"), float("nan"))
+    )
+    rho_neg, pval_neg = (
+        evaluate_spearman(scores_clean[neg_mask], enrichment_clean[neg_mask])
+        if n_neg >= 3
+        else (float("nan"), float("nan"))
+    )
+
+    return {
+        "n_pos": n_pos,
+        "spearman_pos": rho_pos,
+        "spearman_pos_pval": pval_pos,
+        "n_neg": n_neg,
+        "spearman_neg": rho_neg,
+        "spearman_neg_pval": pval_neg,
+        "auroc": evaluate_auroc(scores, enrichment, threshold),
+    }
+
+
 def load_scoring_data(
     data_path: str,
     n_samples: int,
@@ -522,6 +586,26 @@ def run_scoring_evaluation(
         "scores_avg": scores_avg,
         "scores_random": scores_rnd,
     }
+    stratified = evaluate_stratified_spearman(
+        scores_avg,
+        enrichment,
+        ENRICHMENT_BIMODAL_THRESHOLD,
+    )
+    results["spearman_avg_pos"] = stratified["spearman_pos"]
+    results["spearman_avg_pos_pval"] = stratified["spearman_pos_pval"]
+    results["n_pos"] = stratified["n_pos"]
+    results["spearman_avg_neg"] = stratified["spearman_neg"]
+    results["spearman_avg_neg_pval"] = stratified["spearman_neg_pval"]
+    results["n_neg"] = stratified["n_neg"]
+    results["auroc"] = stratified["auroc"]
+    logger.info(
+        "Stratified Spearman: pos rho=%.4f (n=%d) | neg rho=%.4f (n=%d) | AUROC=%.4f",
+        stratified["spearman_pos"],
+        stratified["n_pos"],
+        stratified["spearman_neg"],
+        stratified["n_neg"],
+        stratified["auroc"],
+    )
 
     if flank_ks:
         cdr_len = len(C05_CDRH3)
@@ -609,11 +693,18 @@ def run_multi_scoring_evaluation(
             scoring_mode=scoring_mode,
         )
         results[f"spearman_avg_{name}"] = ds_results["spearman_avg"]
+        results[f"spearman_avg_pos_{name}"] = ds_results["spearman_avg_pos"]
+        results[f"spearman_avg_neg_{name}"] = ds_results["spearman_avg_neg"]
+        results[f"auroc_{name}"] = ds_results["auroc"]
 
         if not live_only:
             results[f"spearman_avg_pval_{name}"] = ds_results["spearman_avg_pval"]
             results[f"spearman_random_{name}"] = ds_results["spearman_random"]
             results[f"spearman_random_pval_{name}"] = ds_results["spearman_random_pval"]
+            results[f"spearman_avg_pos_pval_{name}"] = ds_results["spearman_avg_pos_pval"]
+            results[f"n_pos_{name}"] = ds_results["n_pos"]
+            results[f"spearman_avg_neg_pval_{name}"] = ds_results["spearman_avg_neg_pval"]
+            results[f"n_neg_{name}"] = ds_results["n_neg"]
 
             for k in flank_ks:
                 for side in ("left", "right"):
@@ -646,10 +737,21 @@ def run_multi_scoring_evaluation(
                 ),
                 "rho": ds_results["spearman_avg"],
                 "pval": ds_results["spearman_avg_pval"],
+                "n_pos": ds_results["n_pos"],
+                "n_neg": ds_results["n_neg"],
+                "auroc": ds_results["auroc"],
+                "spearman_pos": ds_results["spearman_avg_pos"],
+                "spearman_neg": ds_results["spearman_avg_neg"],
             }
 
     if live_only:
-        rhos = [v for k, v in results.items() if k.startswith("spearman_avg_") and np.isfinite(v)]
+        rhos = [
+            v
+            for k, v in results.items()
+            if k.startswith("spearman_avg_")
+            and not any(k.startswith(prefix) for prefix in ("spearman_avg_pos_", "spearman_avg_neg_"))
+            and np.isfinite(v)
+        ]
         results["spearman_mean"] = float(np.mean(rhos)) if rhos else float("nan")
 
     if return_payload:

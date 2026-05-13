@@ -202,7 +202,7 @@ def _extract_final_scoring(metrics: dict, run_dir: Path | None = None) -> dict |
         # (i.e. without the `test_` prefix).
         scoring = {}
         for key, value in final_block.items():
-            if key.startswith("test_spearman_") or key.startswith("test_n_"):
+            if key.startswith("test_spearman_") or key.startswith("test_n_") or key.startswith("test_auroc_"):
                 scoring[key.removeprefix("test_")] = value
         if scoring:
             return scoring
@@ -419,6 +419,87 @@ def plot_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
     logger.info("Saved %s", out_path)
 
 
+def plot_stratified_spearman_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
+    """Grouped bar chart: x = dataset; bars per model for ALL/POS/NEG Spearman."""
+    if rows_df.empty:
+        logger.warning("No stratified Spearman rows available; skipping %s", out_path.name)
+        return
+
+    datasets = sorted(rows_df["dataset"].unique())
+    models = list(rows_df["model"].drop_duplicates())
+    categories = [("all", "rho"), ("pos", "rho_pos"), ("neg", "rho_neg")]
+    n_models = len(models)
+    n_cats = len(categories)
+
+    fig, axes = plt.subplots(
+        1,
+        len(datasets),
+        figsize=(max(6, 2.0 * max(1, len(datasets))), 5),
+        sharey=True,
+        squeeze=False,
+    )
+    width = 0.8 / max(n_models, 1)
+    x = np.arange(n_cats)
+
+    for ax, ds in zip(axes.flatten(), datasets):
+        ds_df = rows_df[rows_df["dataset"] == ds]
+        for i, model in enumerate(models):
+            sub = ds_df[ds_df["model"] == model]
+            if sub.empty:
+                vals = [np.nan, np.nan, np.nan]
+            else:
+                row = sub.iloc[0]
+                vals = [float(row.get(col, np.nan)) for _, col in categories]
+            positions = x + (i - (n_models - 1) / 2) * width
+            ax.bar(positions, vals, width=width, label=model)
+
+        ax.axhline(0.0, color="k", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels([name.upper() for name, _ in categories])
+        ax.set_title(ds)
+        ax.grid(True, axis="y", alpha=0.3)
+
+    axes[0, 0].set_ylabel("Spearman rho")
+    axes[0, -1].legend(loc="best", fontsize=8, frameon=False)
+    fig.suptitle("Stratified Spearman (ALL/POS/NEG)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", out_path)
+
+
+def plot_auroc_bar(rows_df: pd.DataFrame, out_path: Path) -> None:
+    """Grouped AUROC bar chart by dataset and model."""
+    if rows_df.empty:
+        logger.warning("No AUROC rows available; skipping %s", out_path.name)
+        return
+
+    datasets = sorted(rows_df["dataset"].unique())
+    models = list(rows_df["model"].drop_duplicates())
+    n_models = len(models)
+
+    fig, ax = plt.subplots(figsize=(max(8, 2 * len(datasets) * n_models / 3), 5))
+    width = 0.8 / max(n_models, 1)
+    x = np.arange(len(datasets))
+
+    for i, model in enumerate(models):
+        sub = rows_df[rows_df["model"] == model].set_index("dataset").reindex(datasets)
+        vals = sub["auroc"].values
+        positions = x + (i - (n_models - 1) / 2) * width
+        ax.bar(positions, vals, width=width, label=model)
+
+    ax.axhline(0.5, color="k", linewidth=0.5, linestyle="--", alpha=0.6)
+    ax.set_xticks(x)
+    ax.set_xticklabels(datasets)
+    ax.set_ylabel("AUROC")
+    ax.set_title("Binder-vs-non-binder AUROC")
+    ax.legend(loc="best", fontsize=9, frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", out_path)
+
+
 def plot_perplexity_bar(
     ppl_series: dict,
     out_path: Path,
@@ -519,6 +600,31 @@ def build_summary_rows(
                     "slice": slice_name,
                     "rho": float(rho_val) if rho_val is not None else float("nan"),
                     "pval": float(pval_val) if pval_val is not None else float("nan"),
+                    "rho_pos": (
+                        float(scoring.get(f"spearman_avg_pos_{dataset}", float("nan")))
+                        if (strategy == "avg" and slice_name == "all")
+                        else float("nan")
+                    ),
+                    "rho_neg": (
+                        float(scoring.get(f"spearman_avg_neg_{dataset}", float("nan")))
+                        if (strategy == "avg" and slice_name == "all")
+                        else float("nan")
+                    ),
+                    "auroc": (
+                        float(scoring.get(f"auroc_{dataset}", float("nan")))
+                        if (strategy == "avg" and slice_name == "all")
+                        else float("nan")
+                    ),
+                    "n_pos": (
+                        float(scoring.get(f"n_pos_{dataset}", float("nan")))
+                        if (strategy == "avg" and slice_name == "all")
+                        else float("nan")
+                    ),
+                    "n_neg": (
+                        float(scoring.get(f"n_neg_{dataset}", float("nan")))
+                        if (strategy == "avg" and slice_name == "all")
+                        else float("nan")
+                    ),
                 })
     return rows
 
@@ -688,6 +794,8 @@ def main(cfg: DictConfig) -> None:
     corpus_stem = Path(shared_ppl_fasta).stem
     headline = df[(df["strategy"] == STRATEGY) & (df["slice"] == "all")].copy()
     plot_spearman_bar(headline, out_dir / "spearman_bar.png")
+    plot_stratified_spearman_bar(headline, out_dir / "stratified_spearman_bar.png")
+    plot_auroc_bar(headline, out_dir / "auroc_bar.png")
     if flank_ks:
         flank_df = df[(df["strategy"] == STRATEGY)].copy()
         plot_flank_spearman(flank_df, out_dir / "spearman_flank.png", flank_ks)

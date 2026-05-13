@@ -241,6 +241,13 @@ def main() -> int:
             if args.run_spearman:
                 row[f"spearman_{ds.lower()}"] = float(eval_result["spearman_avg"])
                 row[f"spearman_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pval"])
+                row[f"spearman_pos_{ds.lower()}"] = float(eval_result["spearman_avg_pos"])
+                row[f"spearman_pos_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pos_pval"])
+                row[f"spearman_neg_{ds.lower()}"] = float(eval_result["spearman_avg_neg"])
+                row[f"spearman_neg_pval_{ds.lower()}"] = float(eval_result["spearman_avg_neg_pval"])
+                row[f"n_pos_{ds.lower()}"] = int(eval_result["n_pos"])
+                row[f"n_neg_{ds.lower()}"] = int(eval_result["n_neg"])
+                row[f"auroc_{ds.lower()}"] = float(eval_result["auroc"])
 
         rows.append(row)
         del model
