@@ -22,6 +22,7 @@ from protein_design.config import (
 from protein_design.dpo.train import run_dpo
 from protein_design.evotuning.config import build_data_config, build_training_config
 from protein_design.evotuning.train import run_stage
+from protein_design.lora_dpo.train import run_lora_dpo
 from protein_design.unlikelihood.train import run_unlikelihood
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,12 @@ def run_selected_task(cfg: DictConfig) -> Path:
     if runner == "dpo":
         logger.info("Dispatching to DPO runner (task=%s)", _task_name(cfg) or "dpo")
         return run_dpo(cfg)
+    if runner == "lora_dpo":
+        logger.info(
+            "Dispatching to LoRA-DPO runner (task=%s)",
+            _task_name(cfg) or "lora_dpo",
+        )
+        return run_lora_dpo(cfg)
     if runner == "unlikelihood":
         logger.info(
             "Dispatching to unlikelihood runner (task=%s)",

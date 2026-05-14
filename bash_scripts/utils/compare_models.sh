@@ -23,6 +23,7 @@ MODELS=(
   # "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
   "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
   "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
+  "dpo_high_pos|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_lowLR_cosine_2ep/best.pt"
 )
 
 # ----------------------------- switches --------------------------------------
