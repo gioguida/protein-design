@@ -1,21 +1,24 @@
 """
-Correlation between CDR-H3 PLL and M22 flu-scorer enrichment on sampled sequences.
+Correlation between CDR-H3 PLL and a target score column or M22 flu-scorer enrichment.
 
-Loads a Gibbs or beam-search CSV, computes CDR-H3 PLL under the user's ESM2
-checkpoint, then scores every sequence with the M22 flu binding oracle.  Produces
-a blue-hexbin scatter with a red OLS regression line and Spearman ρ annotation,
-matching the style used in W&B training plots.
+Loads a CSV, computes CDR-H3 PLL under the user's ESM2 checkpoint, then either:
+  (a) reads the target score from a column already present in the CSV (--score-col), or
+  (b) scores every sequence with the M22 flu binding oracle (default).
+
+Produces a blue-hexbin scatter with a red OLS regression line and Spearman ρ
+annotation, matching the style used in W&B training plots.
 
 The M22 scorer (ESM2-8M backbone + MLP head) is loaded directly from the .pt
 checkpoint without the ``esme`` library.  The esm_state_dict keys are remapped
 from esme format to transformers format at load time.
 
-Input CSV must have a ``cdrh3`` column (24-aa CDR-H3 strings).
+Input CSV must have a column with CDR-H3 strings (default: ``cdrh3``,
+override with --seq-col; e.g. ``aa`` for DMS datasets).
 
 Outputs
 -------
-<output-dir>/pll_vs_m22_score.png
-<output-dir>/pll_vs_m22_scores.csv    (cdrh3, pll, m22_score)
+<output-dir>/pll_vs_score.png
+<output-dir>/pll_vs_scores.csv    (<seq-col>, pll, score)
 """
 
 from __future__ import annotations
@@ -260,6 +263,7 @@ def plot_pll_vs_score(
     score: np.ndarray,
     model_variant: str,
     out_path: Path,
+    y_label: str = "M22 log-enrichment score",
 ) -> None:
     set_publication_style()
 
@@ -287,8 +291,8 @@ def plot_pll_vs_score(
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="none"))
 
     ax.set_xlabel("CDR-H3 PLL")
-    ax.set_ylabel("M22 log-enrichment score")
-    ax.set_title(f"PLL vs M22 scorer — {model_variant}")
+    ax.set_ylabel(y_label)
+    ax.set_title(f"PLL vs {y_label} — {model_variant}")
     ax.legend(fontsize=9)
 
     fig.savefig(out_path, dpi=150)
@@ -304,14 +308,22 @@ def plot_pll_vs_score(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sequences-csv", type=Path, required=True,
-                   help="Gibbs or beam CSV with a 'cdrh3' column.")
+                   help="Input CSV containing CDR-H3 sequences.")
+    p.add_argument("--seq-col", default="cdrh3",
+                   help="Column name for CDR-H3 sequences (default: 'cdrh3'; use 'aa' for DMS CSVs).")
+    p.add_argument("--score-col", default=None,
+                   help="Column in the input CSV to use as the y-axis score. "
+                        "If set, skips the M22 scorer entirely.")
+    p.add_argument("--y-label", default=None,
+                   help="Y-axis label for the plot. Defaults to --score-col value or "
+                        "'M22 log-enrichment score'.")
     p.add_argument("--checkpoint-path", default="",
                    help="ESM2-35M checkpoint for PLL (HF dir, .pt, or HF model ID). "
                         "Omit to use vanilla ESM2-35M.")
     p.add_argument("--model-variant", required=True,
                    help="Label used in the plot title (e.g. 'evotuned+dpo').")
     p.add_argument("--scorer-ckpt", default=DEFAULT_SCORER_CKPT,
-                   help="Path to M22 scorer .pt checkpoint.")
+                   help="Path to M22 scorer .pt checkpoint (ignored when --score-col is set).")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--max-sequences", type=int, default=None,
                    help="Cap on unique CDR-H3 sequences (useful for quick checks).")
@@ -327,11 +339,23 @@ def main() -> None:
 
     log.info("Reading sequences from %s", args.sequences_csv)
     df = pd.read_csv(args.sequences_csv)
-    if "cdrh3" not in df.columns:
-        raise ValueError(f"CSV must contain a 'cdrh3' column; got: {list(df.columns)}")
-    seqs = df["cdrh3"].dropna().astype(str).unique().tolist()
+    if args.seq_col not in df.columns:
+        raise ValueError(f"CSV must contain a {args.seq_col!r} column; got: {list(df.columns)}")
+
+    # Build unique-sequence list, preserving one score row per sequence when --score-col is set
+    seq_df = df[[args.seq_col]].copy()
+    if args.score_col is not None:
+        if args.score_col not in df.columns:
+            raise ValueError(f"--score-col {args.score_col!r} not found; got: {list(df.columns)}")
+        seq_df["_score"] = pd.to_numeric(df[args.score_col], errors="coerce")
+        seq_df = seq_df.dropna(subset=[args.seq_col, "_score"])
+        seq_df = seq_df.drop_duplicates(subset=[args.seq_col], keep="first")
+
+    seqs = seq_df[args.seq_col].astype(str).tolist()
     if args.max_sequences is not None:
         seqs = seqs[: args.max_sequences]
+        if args.score_col is not None:
+            seq_df = seq_df.iloc[: args.max_sequences]
     log.info("Scoring %d unique CDR-H3 sequences", len(seqs))
 
     # ── PLL (user's ESM2-35M checkpoint) ─────────────────────────────────────
@@ -347,24 +371,31 @@ def main() -> None:
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    # ── M22 score (ESM2-8M oracle) ────────────────────────────────────────────
-    scorer = M22Scorer(args.scorer_ckpt, device)
-    m22_scores = scorer.score_all(seqs, args.batch_size)
+    # ── y-axis scores ─────────────────────────────────────────────────────────
+    if args.score_col is not None:
+        scores = seq_df["_score"].to_numpy(dtype=np.float32)
+        y_label = args.y_label or args.score_col
+        scores_df = pd.DataFrame({args.seq_col: seqs, "pll": pll, "score": scores})
+    else:
+        scorer = M22Scorer(args.scorer_ckpt, device)
+        scores = scorer.score_all(seqs, args.batch_size)
+        y_label = args.y_label or "M22 log-enrichment score"
+        scores_df = pd.DataFrame({args.seq_col: seqs, "pll": pll, "score": scores})
 
     # ── save CSV ──────────────────────────────────────────────────────────────
-    scores_df = pd.DataFrame({"cdrh3": seqs, "pll": pll, "m22_score": m22_scores})
-    csv_path = args.output_dir / "pll_vs_m22_scores.csv"
+    csv_path = args.output_dir / "pll_vs_scores.csv"
     scores_df.to_csv(csv_path, index=False)
     log.info("Wrote %s", csv_path)
 
-    valid = np.isfinite(pll) & np.isfinite(m22_scores)
-    rho, pval = spearmanr(pll[valid], m22_scores[valid])
+    valid = np.isfinite(pll) & np.isfinite(scores)
+    rho, pval = spearmanr(pll[valid], scores[valid])
     log.info("Spearman rho=%.3f  p=%.2e  n=%d", rho, pval, int(valid.sum()))
 
     # ── plot ──────────────────────────────────────────────────────────────────
     plot_pll_vs_score(
-        pll, m22_scores, args.model_variant,
-        args.output_dir / "pll_vs_m22_score.png",
+        pll, scores, args.model_variant,
+        args.output_dir / "pll_vs_score.png",
+        y_label=y_label,
     )
 
 
