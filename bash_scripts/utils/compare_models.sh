@@ -17,7 +17,9 @@ source bash_scripts/common_setup.sh
 # ----------------------------- model specs -----------------------------------
 # Format per model: "LABEL|SIZE|CHECKPOINT"
 MODELS=(
+  "vanilla|35M|facebook/esm2_t12_35M_UR50D"
   "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+  "evo_C05|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m_c05_cdrh3_blosum25"
   # "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
   # "dpo_linear_warmup|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
   # "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"

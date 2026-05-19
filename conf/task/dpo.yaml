@@ -19,8 +19,8 @@ task:
 # 8  1e-6   0.04   3        o
 
 training:
-  batch_size: 128
-  num_epochs: 2
+  batch_size: 64
+  num_epochs: 5
   lr: 3e-6
   weight_decay: 0.0
   loss: weighted_dpo     # dpo | weighted_dpo
