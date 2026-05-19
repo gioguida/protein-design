@@ -1,0 +1,64 @@
+# @package _global_
+defaults:
+  - override /data: dpo/default
+  - override /scoring: none
+  - _self_
+
+task:
+  name: lora_dpo
+  runner: lora_dpo
+
+training:
+  batch_size: 128
+  num_epochs: 2
+  lr: 1e-4
+  weight_decay: 0.0
+  loss: weighted_dpo     # dpo | weighted_dpo
+  beta: 0.1
+  temperature: 1         # only relevant for weighted loss
+  grad_clip_norm: 1.0
+  patience: 10
+  device: cuda
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+  resume_checkpoint: null
+  evaluate_best_checkpoint: true
+  scheduler:
+    enabled: true
+    name: linear_warmup_cosine  # step | cosine | linear_warmup | linear_warmup_cosine | reduce_on_plateau
+    interval: step       # epoch | step
+    step_size: 100
+    gamma: 0.95
+    warmup_steps: 200
+    min_lr: 0.0
+    plateau_monitor: val_spearman_avg
+    plateau_mode: max
+    plateau_factor: 0.5
+    plateau_patience: 2
+    plateau_threshold: 1e-4
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules:
+    - query
+    - value
+  bias: none
+
+checkpointing:
+  dir: checkpoints
+  best_filename: best.pt
+  last_filename: last.pt
+  step_prefix: step
+  best_export_dir: ${oc.env:DPO_BEST_MODEL_DIR,null}
+  best_export_filename: best.pt
+  last_export_dir: ${oc.env:DPO_LAST_MODEL_DIR,null}
+  last_export_filename: last.pt
+
+logging:
+  preview_count: 0
+  log_every_n_steps: 20
+  history_csv: history.csv
