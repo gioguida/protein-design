@@ -1,5 +1,6 @@
 # @package _global_
 defaults:
+  - override /model: esm2_650m
   - override /data: dpo/default
   - override /scoring: none
   - _self_
@@ -7,29 +8,6 @@ defaults:
 task:
   name: lora_dpo
   runner: lora_dpo
-
-# run 2 Increase LR
-# training:
-#   lr: 5e-4
-
-# lora:
-#   r: 8
-#   alpha: 16
-#   dropout: 0.05
-#   target_modules: [query, value]
-#   bias: none
-
-# run 3 More modules
-# training:
-#   lr: 5e-4
-
-# lora:
-#   r: 8
-#   alpha: 16
-#   dropout: 0.05
-#   target_modules: [query, key, value, output]
-#   bias: none
-
 
 training:
   batch_size: 64
@@ -68,9 +46,7 @@ lora:
   dropout: 0.05
   target_modules:
     - query
-    - key
     - value
-    - attention\.output\.dense
   bias: none
 
 checkpointing:
