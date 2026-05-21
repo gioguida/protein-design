@@ -15,6 +15,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "${ROOT_DIR}"
 
+SBATCH_SCRIPT_PATH="bash_scripts/run_unlikelihood_alpha_sweep.sh"
 source bash_scripts/common_setup.sh
 
 ALPHAS=(0.1 0.3 1.0 3.0)

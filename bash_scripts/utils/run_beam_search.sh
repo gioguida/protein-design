@@ -16,6 +16,7 @@ if [[ -z "${ROOT_DIR}" ]]; then
 fi
 cd "${ROOT_DIR}"
 
+SBATCH_SCRIPT_PATH="bash_scripts/utils/run_beam_search.sh"
 if [[ -f "${ROOT_DIR}/bash_scripts/common_setup.sh" ]]; then
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/bash_scripts/common_setup.sh"

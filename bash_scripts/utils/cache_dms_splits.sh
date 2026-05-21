@@ -4,6 +4,7 @@
 #   bash bash_scripts/utils/cache_dms_splits.sh [--config conf/data/dms/default.yaml] [--force]
 
 set -euo pipefail
+SBATCH_SCRIPT_PATH="bash_scripts/utils/cache_dms_splits.sh"
 source bash_scripts/common_setup.sh
 
 DMS_CONFIG="conf/data/dms/default.yaml"

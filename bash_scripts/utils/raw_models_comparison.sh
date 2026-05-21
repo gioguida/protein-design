@@ -10,6 +10,7 @@
 #SBATCH --output=bash_scripts/logs/raw_models_comparison_%j.log
 
 set -euo pipefail
+SBATCH_SCRIPT_PATH="bash_scripts/utils/raw_models_comparison.sh"
 source bash_scripts/common_setup.sh
 
 # ----------------------------- hardcoded switches -----------------------------

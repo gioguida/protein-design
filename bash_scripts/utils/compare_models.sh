@@ -12,6 +12,7 @@
 #SBATCH --output=bash_scripts/logs/compare_models_%j.log
 
 set -euo pipefail
+SBATCH_SCRIPT_PATH="bash_scripts/utils/compare_models.sh"
 source bash_scripts/common_setup.sh
 
 # ----------------------------- model specs -----------------------------------

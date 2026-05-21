@@ -21,6 +21,7 @@
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "${ROOT_DIR}"
 
+SBATCH_SCRIPT_PATH="bash_scripts/utils/run_gibbs_array.sh"
 if [[ -f "${ROOT_DIR}/bash_scripts/common_setup.sh" ]]; then
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/bash_scripts/common_setup.sh"

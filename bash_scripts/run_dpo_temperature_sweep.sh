@@ -15,6 +15,7 @@ set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "${ROOT_DIR}"
 
+SBATCH_SCRIPT_PATH="bash_scripts/run_dpo_temperature_sweep.sh"
 source bash_scripts/common_setup.sh
 
 TEMPERATURES=(0.5  1.0  2.0  5.0  10.0)

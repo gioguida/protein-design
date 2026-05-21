@@ -1,6 +1,8 @@
 # ── Common setup sourced by every SBATCH script ──────────────────────
 # Usage: add  `source bash_scripts/common_setup.sh`  after #SBATCH directives.
 
+echo "sbatch ${SBATCH_SCRIPT_PATH:-(unknown)}${@:+ $@}"
+
 set -euo pipefail
 cd /cluster/home/${USER}/protein-design
 

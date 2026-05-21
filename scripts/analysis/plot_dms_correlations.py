@@ -33,6 +33,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3d projection)
 from scipy.stats import pearsonr, spearmanr
 
@@ -46,62 +48,116 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 
-def _stats(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, float, int]:
+def _stats(x: np.ndarray, y: np.ndarray) -> tuple[float, float, int]:
     mask = np.isfinite(x) & np.isfinite(y)
     x_c, y_c = x[mask], y[mask]
-    r, r_p = pearsonr(x_c, y_c)
-    rho, rho_p = spearmanr(x_c, y_c)
-    return r, r_p, rho, rho_p, int(mask.sum())
+    r, _ = pearsonr(x_c, y_c)
+    rho, _ = spearmanr(x_c, y_c)
+    return r, rho, int(mask.sum())
 
 
 def _stats_text(x: np.ndarray, y: np.ndarray) -> str:
-    r, r_p, rho, rho_p, n = _stats(x, y)
-    return (rf"Pearson $r$ = {r:.3f}  ($p$ = {r_p:.1e})"
+    # p-values omitted: at n>>1000 they underflow to 0 and carry no information.
+    r, rho, n = _stats(x, y)
+    return (rf"Pearson $r$ = {r:.3f}"
             "\n"
-            rf"Spearman $\rho$ = {rho:.3f}  ($p$ = {rho_p:.1e})"
+            rf"Spearman $\rho$ = {rho:.3f}"
             "\n"
             rf"$n$ = {n}")
 
 
-def _plot_2d(
-    x: np.ndarray, y: np.ndarray, *,
-    out_path: Path, x_label: str, y_label: str, title: str,
-    color_values: np.ndarray | None = None, color_label: str | None = None,
-    cmap: str = "coolwarm",
-) -> None:
-    mask = np.isfinite(x) & np.isfinite(y)
-    if color_values is not None:
-        mask &= np.isfinite(color_values)
-    x_c, y_c = x[mask], y[mask]
-
-    fig, ax = plt.subplots(figsize=(5.6, 4.5), constrained_layout=True)
-    if color_values is not None:
-        c = color_values[mask]
-        if cmap in {"coolwarm", "RdBu_r", "RdBu", "bwr", "seismic"}:
-            vmax = float(np.nanpercentile(np.abs(c), 99))
-            vmin = -vmax
-        else:
-            vmin = float(np.nanpercentile(c, 1))
-            vmax = float(np.nanpercentile(c, 99))
-        sc = ax.scatter(x_c, y_c, c=c, s=8, alpha=0.6, cmap=cmap,
-                        vmin=vmin, vmax=vmax, linewidths=0)
-        fig.colorbar(sc, ax=ax).set_label(color_label or "color")
-    else:
-        ax.scatter(x_c, y_c, s=8, alpha=0.35, color="#648FFF", linewidths=0)
-
-    coeffs = np.polyfit(x_c, y_c, 1)
-    x_line = np.linspace(x_c.min(), x_c.max(), 200)
+def _add_ols(ax, x: np.ndarray, y: np.ndarray) -> None:
+    coeffs = np.polyfit(x, y, 1)
+    x_line = np.linspace(x.min(), x.max(), 200)
     ax.plot(x_line, np.polyval(coeffs, x_line),
             color="#DC267F", linewidth=1.5, label="OLS fit")
 
-    ax.text(0.03, 0.97, _stats_text(x_c, y_c), ha="left", va="top",
+
+def _stats_box(ax, x: np.ndarray, y: np.ndarray) -> None:
+    ax.text(0.03, 0.97, _stats_text(x, y), ha="left", va="top",
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
                       alpha=0.8, edgecolor="none"))
+
+
+def _plot_hist2d(
+    x: np.ndarray, y: np.ndarray, *,
+    out_path: Path, x_label: str, y_label: str, title: str,
+    bins: int = 80, cmap: str = "viridis",
+) -> None:
+    """Single-color scatter replaced by a 2D histogram with log color scale.
+
+    Shows ~4 orders of magnitude of density. Used when color isn't already
+    encoding another variable.
+    """
+    mask = np.isfinite(x) & np.isfinite(y)
+    x_c, y_c = x[mask], y[mask]
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.5), constrained_layout=True)
+    h, _, _, im = ax.hist2d(x_c, y_c, bins=bins, cmap=cmap,
+                            norm=LogNorm(vmin=1), cmin=1)
+    fig.colorbar(im, ax=ax).set_label("count (log scale)")
+
+    _add_ols(ax, x_c, y_c)
+    _stats_box(ax, x_c, y_c)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.legend(fontsize=9, loc="lower right")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, format="pdf")
+    plt.close(fig)
+    log.info("Wrote %s", out_path)
+
+
+def _plot_scatter_marginals(
+    x: np.ndarray, y: np.ndarray, *,
+    out_path: Path, x_label: str, y_label: str, title: str,
+    color_values: np.ndarray, color_label: str,
+    cmap: str = "coolwarm", bins: int = 60,
+) -> None:
+    """Colored scatter with marginal histograms above and to the right.
+
+    Used when color is already taken (e.g. coloring by truth) — the marginal
+    histograms recover the 1D density information.
+    """
+    mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(color_values)
+    x_c, y_c, c = x[mask], y[mask], color_values[mask]
+
+    fig = plt.figure(figsize=(6.4, 5.2), constrained_layout=True)
+    ax = fig.add_subplot(111)
+
+    if cmap in {"coolwarm", "RdBu_r", "RdBu", "bwr", "seismic"}:
+        vmax = float(np.nanpercentile(np.abs(c), 99))
+        vmin = -vmax
+    else:
+        vmin = float(np.nanpercentile(c, 1))
+        vmax = float(np.nanpercentile(c, 99))
+    sc = ax.scatter(x_c, y_c, c=c, s=8, alpha=0.6, cmap=cmap,
+                    vmin=vmin, vmax=vmax, linewidths=0, rasterized=True)
+
+    _add_ols(ax, x_c, y_c)
+    _stats_box(ax, x_c, y_c)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.legend(fontsize=9, loc="lower right")
+
+    divider = make_axes_locatable(ax)
+    ax_top = divider.append_axes("top", size="18%", pad=0.05, sharex=ax)
+    ax_right = divider.append_axes("right", size="18%", pad=0.05, sharey=ax)
+    ax_cbar = divider.append_axes("right", size="4%", pad=0.45)
+
+    ax_top.hist(x_c, bins=bins, color="#888888", edgecolor="none")
+    ax_right.hist(y_c, bins=bins, orientation="horizontal",
+                  color="#888888", edgecolor="none")
+    for a in (ax_top, ax_right):
+        a.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        for s in ("top", "right", "left", "bottom"):
+            a.spines[s].set_visible(False)
+
+    fig.colorbar(sc, cax=ax_cbar).set_label(color_label)
+    ax_top.set_title(title)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, format="pdf")
     plt.close(fig)
@@ -129,9 +185,9 @@ def _plot_3d(
     ax.set_zlabel(truth_label)
     ax.set_title(title)
 
-    r_ps, _, rho_ps, _, n = _stats(p, s)
-    r_pt, _, rho_pt, _, _ = _stats(p, t)
-    r_st, _, rho_st, _, _ = _stats(s, t)
+    r_ps, rho_ps, n = _stats(p, s)
+    r_pt, rho_pt, _ = _stats(p, t)
+    r_st, rho_st, _ = _stats(s, t)
     txt = (f"PLL vs scorer:  r={r_ps:.3f}  ρ={rho_ps:.3f}\n"
            f"PLL vs truth:   r={r_pt:.3f}  ρ={rho_pt:.3f}\n"
            f"scorer vs truth: r={r_st:.3f}  ρ={rho_st:.3f}\n"
@@ -213,14 +269,16 @@ def make_plots(cfg: dict, model_name: str, dataset_key: str) -> None:
     if scorer_name is not None:
         scorer = df["score"].to_numpy(np.float64)
         scorer_label = f"{scorer_name.upper()} scorer prediction"
-        _plot_2d(
+        # Colored by truth → use scatter with marginal histograms for density.
+        _plot_scatter_marginals(
             pll, scorer,
             out_path=plots_root / "pll_vs_scorer.pdf",
             x_label=pll_label, y_label=scorer_label,
             title=f"PLL vs {scorer_name.upper()} scorer — {tag}",
             color_values=truth, color_label=truth_label, cmap="coolwarm",
         )
-        _plot_2d(
+        # Single-color → hist2d with log color scale for density.
+        _plot_hist2d(
             scorer, truth,
             out_path=plots_root / "scorer_vs_truth.pdf",
             x_label=scorer_label, y_label=truth_label,
@@ -235,7 +293,7 @@ def make_plots(cfg: dict, model_name: str, dataset_key: str) -> None:
     else:
         log.info("[%s] no scorer configured — skipping scorer plots", dataset_key)
 
-    _plot_2d(
+    _plot_hist2d(
         pll, truth,
         out_path=plots_root / "pll_vs_truth.pdf",
         x_label=pll_label, y_label=truth_label,
