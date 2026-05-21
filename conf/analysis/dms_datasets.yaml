@@ -1,0 +1,74 @@
+# Registry of DMS evaluation datasets for the analysis scripts.
+# Edit this file (not the CLI) when you want to add/swap datasets or change
+# which column is the y-axis target.
+#
+# Fields per dataset:
+#   path            : CSV with sequence + experimental enrichment columns
+#   split           : 'train' / 'val' / 'test' / 'all' — used in plot titles
+#   seq_col         : column with the 24-aa CDR-H3 string
+#   enrichment_col  : experimental log-enrichment ground truth
+#   scorer          : key into scorers: below, or null for splits with no
+#                     trained binder scorer (e.g. exp)
+#
+# scorers: ckpt + esme-loader settings that score_dms_with_esme.py needs.
+
+scorers:
+  m22:
+    checkpoint: /cluster/project/infk/krause/ssussex/flu/models/M22_best.pt
+    head_depth: 1
+    hidden_dim: 128
+    dropout: 0.0
+    aggregate: mean_pooling
+    use_context: false
+  si06:
+    checkpoint: /cluster/project/infk/krause/ssussex/flu/models/SI06_final.pt
+    head_depth: 1
+    hidden_dim: 128
+    dropout: 0.0
+    aggregate: mean_pooling
+    use_context: false
+
+datasets:
+  ed2_m22:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/val.csv
+    split: val
+    seq_col: aa
+    enrichment_col: M22_binding_enrichment_adj
+    scorer: m22
+  ed5_m22:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/val.csv
+    split: val
+    seq_col: aa
+    enrichment_col: M22_binding_enrichment_adj
+    scorer: m22
+  ed811_m22:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/val.csv
+    split: val
+    seq_col: aa
+    enrichment_col: M22_binding_enrichment_adj
+    scorer: m22
+  ed2_si06:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/val.csv
+    split: val
+    seq_col: aa
+    enrichment_col: SI06_binding_enrichment_adj
+    scorer: si06
+  ed5_si06:
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/val.csv
+    split: val
+    seq_col: aa
+    enrichment_col: SI06_binding_enrichment_adj
+    scorer: si06
+  exp:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/dms_splits/exp/exp_enrichment.csv
+    split: all
+    seq_col: aa
+    enrichment_col: exp_enrichment_adj
+    scorer: null
+
+paths:
+  # Caches go under the mdenegri project tree so the gguidarini source data
+  # stays untouched.
+  cache_root: /cluster/project/infk/krause/mdenegri/protein-design/cache
+  # Plots go into the home tree per the project convention.
+  plots_root: /cluster/home/mdenegri/protein-design/plots/dms
