@@ -61,7 +61,8 @@ def dpo_loss(
 ) -> torch.Tensor:
     """Compute mean DPO loss over one pair or a batch of pairs."""
     pair_batch = _as_pair_batch(pair)
-    losses: List[torch.Tensor] = []
+    loss_sum: torch.Tensor | None = None
+    valid_pairs = 0
 
     for winner, loser in pair_batch:
         winner_seq = _member_to_sequence(winner)
@@ -98,12 +99,14 @@ def dpo_loss(
 
         delta_score = w_masked_pll - l_masked_pll
         delta_ref_score = ref_w_masked_pll - ref_l_masked_pll
-        losses.append(-F.logsigmoid(beta * (delta_score - delta_ref_score)))
+        pair_loss = -F.logsigmoid(beta * (delta_score - delta_ref_score))
+        loss_sum = pair_loss if loss_sum is None else (loss_sum + pair_loss)
+        valid_pairs += 1
 
-    if not losses:
+    if loss_sum is None or valid_pairs == 0:
         raise ValueError("No valid non-identical winner-loser pairs in batch.")
 
-    return torch.stack(losses).mean()
+    return loss_sum / float(valid_pairs)
 
 
 def weighted_dpo_loss(
@@ -116,7 +119,8 @@ def weighted_dpo_loss(
 ) -> torch.Tensor:
     """Compute mean weighted DPO loss over one pair or a batch of pairs."""
     pair_batch = _as_pair_batch(pair)
-    losses: List[torch.Tensor] = []
+    loss_sum: torch.Tensor | None = None
+    valid_pairs = 0
 
     for winner, loser in pair_batch:
         winner_seq = _member_to_sequence(winner)
@@ -160,17 +164,19 @@ def weighted_dpo_loss(
             torch.tensor([r_w / temperature, r_l / temperature], dtype=delta_score.dtype, device=delta_score.device),
             dim=0,
         )
-        losses.append(
+        pair_loss = (
             -(
                 weights[0] * F.logsigmoid(beta * (delta_score - delta_ref_score))
                 + weights[1] * F.logsigmoid(beta * (delta_ref_score - delta_score))
             )
         )
+        loss_sum = pair_loss if loss_sum is None else (loss_sum + pair_loss)
+        valid_pairs += 1
 
-    if not losses:
+    if loss_sum is None or valid_pairs == 0:
         raise ValueError("No valid non-identical winner-loser pairs in batch.")
 
-    return torch.stack(losses).mean()
+    return loss_sum / float(valid_pairs)
 
 
 def implicit_reward(
