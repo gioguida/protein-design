@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from protein_design.constants import C05_CDRH3_START, C05_CDRH3_END, add_context  # noqa: E402
 
 ESM2_35M_ID = "facebook/esm2_t12_35M_UR50D"
+ESM2_650M_ID = "facebook/esm2_t33_650M_UR50D"
 CONFIG_PATH = REPO_ROOT / "conf" / "analysis" / "dms_datasets.yaml"
 
 _CDR_START = C05_CDRH3_START + 1   # +1 for CLS token
@@ -52,13 +53,13 @@ def _extract_state_dict(raw: dict) -> dict:
     return raw
 
 
-def _load_pt_into_mlm(pt_path: Path) -> EsmForMaskedLM:
-    log.info("Loading state-dict checkpoint %s", pt_path)
+def _load_pt_into_mlm(pt_path: Path, base_model: str) -> EsmForMaskedLM:
+    log.info("Loading state-dict checkpoint %s (base=%s)", pt_path, base_model)
     raw = torch.load(pt_path, map_location="cpu", weights_only=False)
     state = _extract_state_dict(raw)
     new_state = {k[len("model."):] if k.startswith("model.") else k: v
                  for k, v in state.items()}
-    model = EsmForMaskedLM.from_pretrained(ESM2_35M_ID)
+    model = EsmForMaskedLM.from_pretrained(base_model)
     missing, unexpected = model.load_state_dict(new_state, strict=False)
     non_optional = [m for m in missing
                     if not m.startswith("esm.contact_head.") and "position_ids" not in m]
@@ -69,19 +70,19 @@ def _load_pt_into_mlm(pt_path: Path) -> EsmForMaskedLM:
     return model
 
 
-def load_esm_for_mlm(checkpoint: str) -> EsmForMaskedLM:
+def load_esm_for_mlm(checkpoint: str, base_model: str) -> EsmForMaskedLM:
     if not checkpoint:
-        log.info("No checkpoint given — loading vanilla %s", ESM2_35M_ID)
-        return EsmForMaskedLM.from_pretrained(ESM2_35M_ID)
+        log.info("No checkpoint given — loading vanilla %s", base_model)
+        return EsmForMaskedLM.from_pretrained(base_model)
     p = Path(checkpoint)
     if p.is_file() and p.suffix == ".pt":
-        return _load_pt_into_mlm(p)
+        return _load_pt_into_mlm(p, base_model)
     if p.is_dir():
         if (p / "model.safetensors").exists() or (p / "pytorch_model.bin").exists():
             return EsmForMaskedLM.from_pretrained(str(p))
         for name in ("best.pt", "final.pt"):
             if (p / name).exists():
-                return _load_pt_into_mlm(p / name)
+                return _load_pt_into_mlm(p / name, base_model)
         raise FileNotFoundError(f"No HF weights, best.pt, or final.pt found at {checkpoint}")
     return EsmForMaskedLM.from_pretrained(checkpoint)
 
@@ -127,8 +128,12 @@ def parse_args() -> argparse.Namespace:
                    help="Folder name used in the cache path. Pick something human-readable "
                         "(e.g. evodpo_4ep_step1376).")
     p.add_argument("--checkpoint", default="",
-                   help="ESM2-35M checkpoint (HF dir, .pt, or HF model ID). "
-                        "Omit to use vanilla ESM2-35M.")
+                   help="ESM2 checkpoint (HF dir, .pt, or HF model ID). "
+                        "Omit to use the vanilla --base-model.")
+    p.add_argument("--base-model", default=ESM2_35M_ID,
+                   help=f"HF model ID for the base architecture and tokenizer. "
+                        f"Defaults to {ESM2_35M_ID}. Use {ESM2_650M_ID} for 650M "
+                        "vanilla or 650M-finetuned .pt checkpoints.")
     p.add_argument("--dataset", required=True,
                    help="Dataset key from conf/analysis/dms_datasets.yaml, or 'all'.")
     p.add_argument("--batch-size", type=int, default=32)
@@ -165,11 +170,12 @@ def main() -> None:
         return
 
     device = torch.device(args.device)
-    log.info("Loading ESM2 model for PLL: %s", args.checkpoint or "vanilla")
-    model = load_esm_for_mlm(args.checkpoint).eval().to(device)
+    log.info("Loading ESM2 model for PLL: %s (base=%s)",
+             args.checkpoint or "vanilla", args.base_model)
+    model = load_esm_for_mlm(args.checkpoint, args.base_model).eval().to(device)
     if device.type == "cuda":
         model = model.half()
-    tokenizer = AutoTokenizer.from_pretrained(ESM2_35M_ID)
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
 
     for key, out_csv in pending:
         ds = cfg["datasets"][key]
