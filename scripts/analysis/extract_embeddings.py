@@ -44,6 +44,7 @@ from Bio import SeqIO
 from tqdm import tqdm
 from transformers import AutoTokenizer, EsmModel
 
+from protein_design.checkpoint_loading import DEFAULT_ESM2_MODEL_ID, load_encoder_from_checkpoint
 from protein_design.constants import (
     C05_CDRH3,
     C05_CDRH3_END,
@@ -52,7 +53,7 @@ from protein_design.constants import (
     add_context,
 )
 
-ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
+ESM2_MODEL_ID = DEFAULT_ESM2_MODEL_ID
 SEED = 42
 EMB_DIM = 480
 SCHEMA_VERSION = "v2"  # bump when the on-disk schema changes
@@ -248,6 +249,9 @@ def _extract_state_dict(raw) -> dict:
 
 
 def load_esm_encoder(checkpoint_path: Optional[str]) -> EsmModel:
+    model, _ = load_encoder_from_checkpoint(checkpoint_path)
+    return model
+
     """Return an `EsmModel` (encoder only) from one of four checkpoint shapes.
 
     1. None → vanilla ESM2-35M from the HF hub.

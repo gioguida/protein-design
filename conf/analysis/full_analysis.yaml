@@ -23,7 +23,7 @@ models:
     dpo_from_evo:
       display_name: "EvoDPO (5 epoch)"
       checkpoint_path: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
-    dpo_light
+    dpo_light:
       display_name: "EvoDPO (light)"
       checkpoint_path: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
     

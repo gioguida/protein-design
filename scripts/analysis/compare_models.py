@@ -24,21 +24,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from omegaconf import OmegaConf
-from transformers import EsmForMaskedLM
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from protein_design.config import build_model_config
+from protein_design.checkpoint_loading import load_scorer_from_checkpoint
 from protein_design.constants import C05_CDRH3
 from protein_design.dms_splitting import dataset_spec, resolve_dataset_split
 from protein_design.eval import corpus_perplexity, run_scoring_evaluation
 from protein_design.model import ESM2Model
 
-BASE_MODEL_CONF_PATH = "conf/model/esm2_35m.yaml"
 ENRICHMENT_COL = "M22_binding_enrichment_adj"
 GOOD_THRESHOLD_DEFAULT = 5.190013461
 DATASET_TO_KEY = {"ED2": "ed2_m22", "ED5": "ed5_m22", "ED811": "ed811_m22"}
@@ -80,55 +77,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _extract_state_dict(raw: Any) -> dict[str, torch.Tensor]:
-    if isinstance(raw, dict):
-        for key in ("policy_state_dict", "model_state_dict"):
-            if key in raw and isinstance(raw[key], dict):
-                return raw[key]
-    if isinstance(raw, dict):
-        return raw
-    raise TypeError(f"Unsupported checkpoint payload type: {type(raw)}")
-
-
-def _load_pt_into_esm(model: ESM2Model, pt_path: Path) -> None:
-    raw = torch.load(pt_path, map_location="cpu")
-    state = _extract_state_dict(raw)
-    new_state: dict[str, torch.Tensor] = {}
-    for k, v in state.items():
-        new_state[k[len("model."):] if k.startswith("model.") else k] = v
-    missing, unexpected = model.model.load_state_dict(new_state, strict=False)
-    non_optional_missing = [
-        m for m in missing if not m.startswith("esm.contact_head.") and "position_ids" not in m
-    ]
-    if non_optional_missing:
-        raise RuntimeError(f"Checkpoint missing required keys: {non_optional_missing[:5]}")
-    if unexpected:
-        print(f"[warn] ignored {len(unexpected)} unexpected keys from {pt_path}")
-
-
 def _load_model(device: torch.device, checkpoint: str) -> ESM2Model:
-    cfg = OmegaConf.load(REPO_ROOT / BASE_MODEL_CONF_PATH)
-    model = ESM2Model(build_model_config(cfg, device=str(device)))
-
-    ckpt = Path(checkpoint)
-    if ckpt.is_file() and ckpt.suffix == ".pt":
-        _load_pt_into_esm(model, ckpt)
-    elif ckpt.is_dir():
-        if (ckpt / "model.safetensors").exists() or (ckpt / "pytorch_model.bin").exists():
-            model.model = EsmForMaskedLM.from_pretrained(str(ckpt))
-        else:
-            pt_path = next((ckpt / n for n in ("best.pt", "final.pt") if (ckpt / n).exists()), None)
-            if pt_path is None:
-                raise FileNotFoundError(f"No HF weights, best.pt, or final.pt found at {ckpt}")
-            _load_pt_into_esm(model, pt_path)
-    elif ckpt.is_absolute():
-        raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt}")
-    else:
-        # Allow HF model IDs.
-        model.model = EsmForMaskedLM.from_pretrained(checkpoint)
-
-    model.to(device).eval()
-    return model
+    return load_scorer_from_checkpoint(checkpoint, device=str(device))
 
 
 def _resolve_dataset_path(dataset_name: str, args: argparse.Namespace) -> tuple[Path, str]:

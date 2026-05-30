@@ -447,6 +447,24 @@ def _resolve_storage_paths(full_run_name: str) -> Dict[str, Path]:
     }
 
 
+def _resolve_mixed_precision(
+    cfg: Any,
+    device: torch.device,
+    logger: logging.Logger,
+) -> Tuple[Optional[torch.dtype], Optional[torch.amp.GradScaler], str]:
+    raw_mode = str(getattr(cfg.training, "mixed_precision", "bf16")).strip().lower()
+    if raw_mode not in {"off", "fp16", "bf16"}:
+        raise ValueError("training.mixed_precision must be one of: off, fp16, bf16.")
+    if device.type != "cuda" or raw_mode == "off":
+        return None, None, "off"
+    if raw_mode == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning("bf16 not supported on this GPU; falling back to fp16 mixed precision.")
+        raw_mode = "fp16"
+    if raw_mode == "bf16":
+        return torch.bfloat16, None, "bf16"
+    return torch.float16, torch.amp.GradScaler("cuda", enabled=True), "fp16"
+
+
 def _run_epoch(
     policy: ESM2Model,
     reference: ESM2Model,
@@ -461,12 +479,15 @@ def _run_epoch(
     logger: logging.Logger,
     log_every_n_steps: int,
     track_metrics: bool,
+    amp_dtype: Optional[torch.dtype] = None,
+    grad_scaler: Optional[torch.amp.GradScaler] = None,
     global_step: int = 0,
     wandb_mod: Optional[Any] = None,
     epoch: int = 0,
 ) -> Tuple[Dict[str, float], int]:
     is_train = optimizer is not None
     loss_name = str(loss)
+    use_amp = bool(is_train and amp_dtype is not None and policy.device.type == "cuda")
 
     if is_train:
         policy.model.train()
@@ -488,25 +509,26 @@ def _run_epoch(
             global_step += 1
 
         try:
-            if loss_name == "dpo":
-                batch_loss = dpo_loss(
-                    batch,
-                    beta=beta,
-                    scorer=policy,
-                    reference=reference,
-                    policy_use_grad=is_train,
-                )
-            elif loss_name == "weighted_dpo":
-                batch_loss = weighted_dpo_loss(
-                    batch,
-                    beta=beta,
-                    temperature=temperature,
-                    scorer=policy,
-                    reference=reference,
-                    policy_use_grad=is_train,
-                )
-            else:
-                raise ValueError(f"Unsupported loss: {loss_name}")
+            with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
+                if loss_name == "dpo":
+                    batch_loss = dpo_loss(
+                        batch,
+                        beta=beta,
+                        scorer=policy,
+                        reference=reference,
+                        policy_use_grad=is_train,
+                    )
+                elif loss_name == "weighted_dpo":
+                    batch_loss = weighted_dpo_loss(
+                        batch,
+                        beta=beta,
+                        temperature=temperature,
+                        scorer=policy,
+                        reference=reference,
+                        policy_use_grad=is_train,
+                    )
+                else:
+                    raise ValueError(f"Unsupported loss: {loss_name}")
             if track_metrics:
                 with torch.no_grad():
                     batch_metrics = batch_monitoring_metrics(
@@ -520,10 +542,19 @@ def _run_epoch(
             continue
 
         if is_train:
-            batch_loss.backward()
+            if grad_scaler is not None:
+                grad_scaler.scale(batch_loss).backward()
+            else:
+                batch_loss.backward()
             if grad_clip_norm > 0:
+                if grad_scaler is not None:
+                    grad_scaler.unscale_(optimizer)
                 clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
-            optimizer.step()
+            if grad_scaler is not None:
+                grad_scaler.step(optimizer)
+                grad_scaler.update()
+            else:
+                optimizer.step()
             if scheduler is not None and scheduler_step_on_batch:
                 scheduler.step()
 
@@ -1089,6 +1120,7 @@ def run_dpo(cfg: Any) -> Path:
     )
 
     policy, reference = _build_scorers(cfg, logger)
+    amp_dtype, grad_scaler, mixed_precision_mode = _resolve_mixed_precision(cfg, policy.device, logger)
     total_epochs = int(cfg.training.num_epochs)
     total_training_steps = len(train_loader) * total_epochs
     optimizer, scheduler = _build_optimizer_and_scheduler(
@@ -1125,6 +1157,7 @@ def run_dpo(cfg: Any) -> Path:
                 total_epochs,
                 total_training_steps,
             )
+    logger.info("Mixed precision: %s", mixed_precision_mode)
 
     ckpt_dir = output_dir / str(cfg.checkpointing.dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -1185,6 +1218,8 @@ def run_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=0,
             track_metrics=True,
+            amp_dtype=amp_dtype,
+            grad_scaler=grad_scaler,
             global_step=global_step,
             wandb_mod=None,
             epoch=0,
@@ -1340,6 +1375,8 @@ def run_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=int(cfg.logging.log_every_n_steps),
             track_metrics=False,
+            amp_dtype=amp_dtype,
+            grad_scaler=grad_scaler,
             global_step=global_step,
             wandb_mod=wandb_mod if wandb_run is not None else None,
             epoch=epoch,
@@ -1359,6 +1396,8 @@ def run_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=0,
             track_metrics=True,
+            amp_dtype=amp_dtype,
+            grad_scaler=grad_scaler,
             global_step=global_step,
             wandb_mod=None, # Typically don't log step-level val metrics online this way
             epoch=epoch,
@@ -1558,6 +1597,8 @@ def run_dpo(cfg: Any) -> Path:
         logger=logger,
         log_every_n_steps=0,
         track_metrics=True,
+        amp_dtype=amp_dtype,
+        grad_scaler=grad_scaler,
         global_step=global_step,
         wandb_mod=None,
         epoch=0,

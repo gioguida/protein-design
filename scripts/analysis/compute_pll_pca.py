@@ -53,13 +53,14 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 from transformers import AutoTokenizer, EsmForMaskedLM
 
+from protein_design.checkpoint_loading import DEFAULT_ESM2_MODEL_ID, load_mlm_from_checkpoint
 from protein_design.constants import (
     C05_CDRH3_END,
     C05_CDRH3_START,
     add_context,
 )
 
-ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
+ESM2_MODEL_ID = DEFAULT_ESM2_MODEL_ID
 SEED = 42
 DEFAULT_DMS_M22 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_M22.csv"
 DEFAULT_DMS_SI06 = "/cluster/project/infk/krause/mdenegri/protein-design/datasets/scoring/D2_SI06.csv"
@@ -94,66 +95,9 @@ def load_dms(
 # --------------------------------------------------------------------- model load
 
 
-def _extract_state_dict(raw) -> dict:
-    """Handle three .pt shapes: evotuning ('model_state_dict' wrapper, keys
-    prefixed 'model.'), DPO ('policy_state_dict' wrapper, HF-format keys), or
-    bare state dicts."""
-    if isinstance(raw, dict):
-        for key in ("policy_state_dict", "model_state_dict"):
-            if key in raw and isinstance(raw[key], dict):
-                return raw[key]
-    return raw
-
-
-def _load_pt_into_mlm(pt_path: Path) -> EsmForMaskedLM:
-    """Load a .pt state dict produced by this repo's training pipeline."""
-    log.info("Loading state-dict checkpoint %s", pt_path)
-    raw = torch.load(pt_path, map_location="cpu", weights_only=False)
-    state = _extract_state_dict(raw)
-    new_state: Dict[str, torch.Tensor] = {}
-    for k, v in state.items():
-        new_state[k[len("model."):] if k.startswith("model.") else k] = v
-    model = EsmForMaskedLM.from_pretrained(ESM2_MODEL_ID)
-    missing, unexpected = model.load_state_dict(new_state, strict=False)
-    non_optional_missing = [m for m in missing
-                            if not m.startswith("esm.contact_head.")
-                            and "position_ids" not in m]
-    if non_optional_missing:
-        raise RuntimeError(
-            f"Checkpoint missing required keys: {non_optional_missing[:5]} "
-            f"(+{max(0, len(non_optional_missing)-5)} more)"
-        )
-    if unexpected:
-        log.warning("Ignored %d unexpected keys (e.g. %s)", len(unexpected), unexpected[:3])
-    return model
-
-
 def load_esm_for_mlm(checkpoint: str) -> EsmForMaskedLM:
-    """Resolve a checkpoint string to an ``EsmForMaskedLM``.
-
-    Accepts: HF model ID, HF-format dir, dir with ``best.pt``/``final.pt``,
-    or a direct ``.pt`` file. Empty/None falls back to vanilla ESM2-35M.
-    """
-    if not checkpoint:
-        log.info("Loading vanilla ESM2 from %s", ESM2_MODEL_ID)
-        return EsmForMaskedLM.from_pretrained(ESM2_MODEL_ID)
-
-    p = Path(checkpoint)
-    if p.is_file() and p.suffix == ".pt":
-        return _load_pt_into_mlm(p)
-    if p.is_dir():
-        if (p / "model.safetensors").exists() or (p / "pytorch_model.bin").exists():
-            log.info("Loading HF-format checkpoint from %s", p)
-            return EsmForMaskedLM.from_pretrained(str(p))
-        pt_path = next((p / n for n in ("best.pt", "final.pt") if (p / n).exists()), None)
-        if pt_path is not None:
-            return _load_pt_into_mlm(pt_path)
-        raise FileNotFoundError(
-            f"No HF weights, best.pt, or final.pt found at {checkpoint}"
-        )
-    # Treat as HF model ID (e.g. 'facebook/esm2_...').
-    log.info("Loading HF model ID %s", checkpoint)
-    return EsmForMaskedLM.from_pretrained(checkpoint)
+    model, _ = load_mlm_from_checkpoint(checkpoint)
+    return model
 
 
 # --------------------------------------------------------------------- inference

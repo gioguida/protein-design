@@ -418,6 +418,7 @@ def _save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[SchedulerType],
     best_val_loss: float,
+    cfg: Any,
 ) -> None:
     adapter_state_dict = {
         key: value
@@ -430,6 +431,14 @@ def _save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
         "best_val_loss": float(best_val_loss),
+        "base_model_name": str(cfg.model.esm_model_path),
+        "lora_config": {
+            "r": int(cfg.lora.r),
+            "lora_alpha": int(cfg.lora.alpha),
+            "target_modules": list(cfg.lora.target_modules),
+            "lora_dropout": float(cfg.lora.dropout),
+            "bias": str(cfg.lora.bias),
+        },
     }
     torch.save(state, path)
 
@@ -1447,6 +1456,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         shutil.copy2(best_ckpt, root_best_ckpt)
         _save_checkpoint(
@@ -1456,6 +1466,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         step0_ckpt = ckpt_dir / f"{step_prefix}_0.pt"
         shutil.copy2(last_ckpt, step0_ckpt)
@@ -1653,6 +1664,7 @@ def run_lora_dpo(cfg: Any) -> Path:
                 optimizer=optimizer,
                 scheduler=scheduler,
                 best_val_loss=best_val_loss,
+                cfg=cfg,
             )
             shutil.copy2(best_ckpt, root_best_ckpt)
             logger.info("Updated run best checkpoint at %s", root_best_ckpt)
@@ -1666,6 +1678,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         if global_step > 0:
             step_ckpt = ckpt_dir / f"{step_prefix}_{global_step}.pt"
