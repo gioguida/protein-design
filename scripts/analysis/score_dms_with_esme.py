@@ -92,10 +92,12 @@ def main() -> None:
     if args.dataset == "all":
         dataset_keys = list(cfg["datasets"].keys())
     else:
-        if args.dataset not in cfg["datasets"]:
-            raise SystemExit(f"Unknown dataset {args.dataset!r}. "
+        keys = [k.strip() for k in args.dataset.split(",") if k.strip()]
+        unknown = [k for k in keys if k not in cfg["datasets"]]
+        if unknown:
+            raise SystemExit(f"Unknown dataset(s) {unknown!r}. "
                              f"Known: {list(cfg['datasets'])}")
-        dataset_keys = [args.dataset]
+        dataset_keys = keys
 
     # Group by scorer so we only build each scorer once.
     by_scorer: dict[str, list[tuple[str, Path]]] = {}

@@ -30,32 +30,32 @@ scorers:
 
 datasets:
   ed2_m22:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/val.csv
-    split: val
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_m22/test.csv
+    split: test
     seq_col: aa
     enrichment_col: M22_binding_enrichment_adj
     scorer: m22
   ed5_m22:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/val.csv
-    split: val
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_m22/test.csv
+    split: test
     seq_col: aa
     enrichment_col: M22_binding_enrichment_adj
     scorer: m22
   ed811_m22:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/val.csv
-    split: val
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed811_m22/test.csv
+    split: test
     seq_col: aa
     enrichment_col: M22_binding_enrichment_adj
     scorer: m22
   ed2_si06:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/val.csv
-    split: val
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed2_si06/test.csv
+    split: test
     seq_col: aa
     enrichment_col: SI06_binding_enrichment_adj
     scorer: si06
   ed5_si06:
-    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/val.csv
-    split: val
+    path: /cluster/project/infk/krause/gguidarini/protein-design/data/dms_splits/ed5_si06/test.csv
+    split: test
     seq_col: aa
     enrichment_col: SI06_binding_enrichment_adj
     scorer: si06

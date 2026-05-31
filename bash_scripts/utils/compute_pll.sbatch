@@ -8,11 +8,11 @@
 #SBATCH --time=1:00:00
 #SBATCH --output=bash_scripts/logs/compute_pll_%j.log
 
+# DEPRECATED: prefer  bash_scripts/extract.sbatch --what pll  (idempotent,
+# registry-driven, writes to $ANALYSIS_DIR/<model>/pll/). Kept as a thin alias.
+#
 # Usage:
-#   sbatch bash_scripts/utils/compute_pll.sbatch \
-#     --model-name evodpo_4ep_step1376 \
-#     --checkpoint /cluster/.../checkpoints/evodpo_4ep/step_1376.pt \
-#     --dataset all
+#   sbatch bash_scripts/utils/compute_pll.sbatch --model evo_35m --dataset all
 
 set -euo pipefail
 source bash_scripts/common_setup.sh

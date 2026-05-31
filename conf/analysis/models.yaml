@@ -1,0 +1,79 @@
+# Registry of models for the analysis / paper-figure pipeline.
+#
+# This is the SINGLE SOURCE OF TRUTH for models: both the extraction driver
+# (bash_scripts/extract.sbatch -> scripts/analysis/*.py) and the plotting
+# notebook (report/figures.ipynb) read from here. Add a model once, and it can
+# be extracted and plotted by its key.
+#
+# Artifacts for model <key> are written to a writable per-model tree:
+#     $ANALYSIS_DIR/<key>/<kind>/<name>      (+ a <name>.meta.json sidecar)
+# e.g. $ANALYSIS_DIR/evo_35m/pll/ed2_m22.csv
+# The key is independent of where the checkpoint lives, so read-only / shared
+# checkpoints (gguidarini's tree, vanilla HF models) still get a home.
+#
+# Fields per model:
+#   checkpoint  : .pt file, HF dir, or HF model ID. null -> load vanilla base_model.
+#   base_model  : HF id for architecture + tokenizer (35M vs 650M).
+#   label       : human-readable label used in plot legends.
+#   color       : hex color used consistently across figures.
+#   family      : grouping tag (vanilla / evo / c05 / dpo / ...), free-form.
+
+defaults:
+  base_model_35m: facebook/esm2_t12_35M_UR50D
+  base_model_650m: facebook/esm2_t33_650M_UR50D
+
+models:
+  vanilla_35m:
+    checkpoint: null
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "ESM2-35M"
+    color: "#999999"
+    family: vanilla
+  vanilla_650m:
+    checkpoint: null
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "ESM2-650M"
+    color: "#666666"
+    family: vanilla
+
+  evo_35m:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "Evo-35M"
+    color: "#1f77b4"
+    family: evo
+  evo_650m:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "Evo-650M"
+    color: "#17becf"
+    family: evo
+  evo_dedup_35m:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_dedup___esm2_t12_35M_UR50D__lr2e-05__ep3_48h_20260414_101859/best.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "Evo-35M (dedup)"
+    color: "#2ca02c"
+    family: evo
+
+  evo_c05_blosum25:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m_c05_cdrh3_blosum25/best.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "Evo+C05 (B25)"
+    color: "#ff7f0e"
+    family: c05
+  c05_blosum25_seed:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/c05_c05_cdrh3_blosum25__evo_seed_20260424_191020/best.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "C05 (B25, evo-seed)"
+    color: "#d62728"
+    family: c05
+
+  # Example cross-team (Giovanni's DPO) checkpoint — extend with the steps you
+  # actually compare in the paper. Lives in a read-only tree; artifacts still
+  # land under $ANALYSIS_DIR/just_dpo_4ep_step1376/.
+  just_dpo_4ep_step1376:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_4ep/step_1376.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "DPO 4ep"
+    color: "#9467bd"
+    family: dpo

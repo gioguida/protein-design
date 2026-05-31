@@ -1,20 +1,23 @@
 """
 Compute CDR-H3 pseudo-log-likelihood (PLL) for one model on one DMS dataset and
-cache the result. The plot script (plot_dms_correlations.py) reads this cache.
+cache the result in the per-model analysis tree.
 
-Cache location:
-    $cache_root/pll/<model_name>/<dataset>.csv     (cache_root from conf yaml)
+Artifact location (see protein_design.analysis.registry):
+    $ANALYSIS_DIR/<model>/pll/<dataset>.csv   (+ <dataset>.csv.meta.json)
 
 Columns written: <seq_col>, pll
-If the cache file already exists it is reused unless --force is passed.
+The artifact is reused unless its provenance (checkpoint / base_model / dataset
+path) changed or --force is passed.
+
+The model is identified by a key in conf/analysis/models.yaml, which supplies
+its checkpoint and base_model. For an ad-hoc model not in the registry, pass
+--checkpoint / --base-model explicitly.
 
 Usage:
-    uv run python scripts/analysis/compute_pll.py \
-        --model-name evodpo_4ep_step1376 \
-        --checkpoint /cluster/.../checkpoints/evodpo_4ep/step_1376.pt \
-        --dataset ed2_m22
+    uv run python scripts/analysis/compute_pll.py --model evo_35m --dataset ed2_m22
+    uv run python scripts/analysis/compute_pll.py --model evo_35m --dataset all
 
-Pass --dataset all to compute every dataset listed in the registry.
+Prefer running via: sbatch bash_scripts/extract.sbatch --what pll --model … --dataset …
 """
 
 from __future__ import annotations
@@ -27,17 +30,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import yaml
 from tqdm import tqdm
 from transformers import AutoTokenizer, EsmForMaskedLM
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from protein_design.constants import C05_CDRH3_START, C05_CDRH3_END, add_context  # noqa: E402
+from protein_design.analysis import registry  # noqa: E402
 
 ESM2_35M_ID = "facebook/esm2_t12_35M_UR50D"
 ESM2_650M_ID = "facebook/esm2_t33_650M_UR50D"
-CONFIG_PATH = REPO_ROOT / "conf" / "analysis" / "dms_datasets.yaml"
 
 _CDR_START = C05_CDRH3_START + 1   # +1 for CLS token
 _CDR_END = C05_CDRH3_END + 1
@@ -93,91 +95,106 @@ def compute_pll(
     tokenizer,
     cdrh3_strings: list[str],
     device: torch.device,
-    batch_size: int = 32,
+    batch_size: int = 256,
 ) -> np.ndarray:
-    cdr_token_positions = list(range(_CDR_START, _CDR_END))
+    """Sum of one-at-a-time masked log-probs over the 24 CDR-H3 positions.
+
+    All sequences share the same length (full VH = 138 + special tokens), so we
+    flatten every (sequence, masked-position) job into one stream and run it in
+    large batches. This keeps the GPU saturated — one big forward per batch
+    instead of 24 length-`batch_size` passes per sequence-batch — for the same
+    total FLOPs. `batch_size` here counts (sequence, position) pairs.
+    """
+    cdr_positions = list(range(_CDR_START, _CDR_END))
+    L = len(cdr_positions)
     n = len(cdrh3_strings)
-    out = np.zeros((n, len(cdr_token_positions)), dtype=np.float32)
     mask_id = tokenizer.mask_token_id
+
     full_vhs = [add_context(s) for s in cdrh3_strings]
+    spaced = [" ".join(list(s)) for s in full_vhs]
+    enc = tokenizer(spaced, return_tensors="pt", padding=True, add_special_tokens=True)
+    base_tokens = enc["input_ids"]      # (n, T) on CPU
+    base_attn = enc["attention_mask"]   # (n, T) on CPU
 
-    for start in tqdm(range(0, n, batch_size), desc="PLL"):
-        batch = full_vhs[start:start + batch_size]
-        spaced = [" ".join(list(s)) for s in batch]
-        enc = tokenizer(spaced, return_tensors="pt", padding=True, add_special_tokens=True)
-        tokens = enc["input_ids"].to(device)
-        attn = enc["attention_mask"].to(device)
-        B = tokens.shape[0]
+    # One row per (sequence, masked-position): row k -> seq k // L, pos k % L.
+    seq_idx = torch.arange(n).repeat_interleave(L)        # (n*L,)
+    pos_idx = torch.tensor(cdr_positions).repeat(n)       # (n*L,)
+    total = n * L
+    out = torch.empty(total, dtype=torch.float32)
 
-        for p_idx, token_pos in enumerate(cdr_token_positions):
-            masked = tokens.clone()
-            masked[:, token_pos] = mask_id
-            with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-                logits = model(input_ids=masked, attention_mask=attn).logits
-            log_probs = torch.log_softmax(logits.float(), dim=-1)
-            true_ids = tokens[:, token_pos]
-            picks = log_probs[torch.arange(B, device=device), token_pos, true_ids]
-            out[start:start + B, p_idx] = picks.cpu().numpy()
+    for start in tqdm(range(0, total, batch_size), desc="PLL"):
+        sl = slice(start, start + batch_size)
+        s = seq_idx[sl]
+        p = pos_idx[sl].to(device)
+        toks = base_tokens[s].to(device)    # fancy-index copies; safe to mask
+        attn = base_attn[s].to(device)
+        rows = torch.arange(toks.shape[0], device=device)
+        true_ids = toks[rows, p].clone()
+        toks[rows, p] = mask_id
+        with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            logits = model(input_ids=toks, attention_mask=attn).logits
+        sel = logits[rows, p, :].float()    # (b, V) — slice before softmax
+        log_probs = torch.log_softmax(sel, dim=-1)
+        out[sl] = log_probs[rows, true_ids].cpu()
 
-    return out.sum(axis=1)
+    return out.view(n, L).sum(dim=1).numpy()
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model-name", required=True,
-                   help="Folder name used in the cache path. Pick something human-readable "
-                        "(e.g. evodpo_4ep_step1376).")
-    p.add_argument("--checkpoint", default="",
-                   help="ESM2 checkpoint (HF dir, .pt, or HF model ID). "
-                        "Omit to use the vanilla --base-model.")
-    p.add_argument("--base-model", default=ESM2_35M_ID,
-                   help=f"HF model ID for the base architecture and tokenizer. "
-                        f"Defaults to {ESM2_35M_ID}. Use {ESM2_650M_ID} for 650M "
-                        "vanilla or 650M-finetuned .pt checkpoints.")
+    p.add_argument("--model", required=True,
+                   help="Model key from conf/analysis/models.yaml (e.g. evo_35m). "
+                        "Also the artifact folder name. Unknown keys require "
+                        "--checkpoint/--base-model.")
+    p.add_argument("--checkpoint", default=None,
+                   help="Override the registry checkpoint (HF dir, .pt, or HF id). "
+                        "Empty string forces vanilla --base-model.")
+    p.add_argument("--base-model", default=None,
+                   help=f"Override the registry base_model (HF id for architecture + "
+                        f"tokenizer), e.g. {ESM2_35M_ID} or {ESM2_650M_ID}.")
     p.add_argument("--dataset", required=True,
                    help="Dataset key from conf/analysis/dms_datasets.yaml, or 'all'.")
-    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--batch-size", type=int, default=256,
+                   help="(sequence, masked-position) pairs per forward pass. "
+                        "256 fits a 650M model in fp16 on a 20G GPU with margin; "
+                        "the 35M models can go much higher (e.g. 2048).")
     p.add_argument("--force", action="store_true",
-                   help="Recompute even if the cache file already exists.")
+                   help="Recompute even if a fresh artifact already exists.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    with CONFIG_PATH.open() as f:
-        cfg = yaml.safe_load(f)
-    cache_root = Path(cfg["paths"]["cache_root"]) / "pll" / args.model_name
-
-    if args.dataset == "all":
-        dataset_keys = list(cfg["datasets"].keys())
-    else:
-        if args.dataset not in cfg["datasets"]:
-            raise SystemExit(f"Unknown dataset {args.dataset!r}. "
-                             f"Known: {list(cfg['datasets'])}")
-        dataset_keys = [args.dataset]
+    spec = registry.resolve_model(args.model, checkpoint=args.checkpoint,
+                                  base_model=args.base_model)
+    checkpoint = spec["checkpoint"] or ""
+    base_model = spec["base_model"]
+    cfg = registry.load_datasets_cfg()
 
     pending = []
-    for key in dataset_keys:
-        out_csv = cache_root / f"{key}.csv"
-        if out_csv.exists() and not args.force:
-            log.info("[skip] %s exists — pass --force to recompute", out_csv)
+    for key in registry.dataset_keys(args.dataset):
+        out_csv = registry.artifact_path(args.model, "pll", f"{key}.csv")
+        expected = {"checkpoint": checkpoint, "base_model": base_model,
+                    "dataset_path": cfg["datasets"][key]["path"]}
+        if not registry.needs_recompute(out_csv, expected, force=args.force):
+            log.info("[skip] %s is up to date — pass --force to recompute", out_csv)
             continue
-        pending.append((key, out_csv))
+        pending.append((key, out_csv, expected))
 
     if not pending:
         log.info("Nothing to do.")
         return
 
     device = torch.device(args.device)
-    log.info("Loading ESM2 model for PLL: %s (base=%s)",
-             args.checkpoint or "vanilla", args.base_model)
-    model = load_esm_for_mlm(args.checkpoint, args.base_model).eval().to(device)
+    log.info("Loading ESM2 model %r for PLL: %s (base=%s)",
+             args.model, checkpoint or "vanilla", base_model)
+    model = load_esm_for_mlm(checkpoint, base_model).eval().to(device)
     if device.type == "cuda":
         model = model.half()
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
 
-    for key, out_csv in pending:
+    for key, out_csv, expected in pending:
         ds = cfg["datasets"][key]
         log.info("[%s] reading %s", key, ds["path"])
         df = pd.read_csv(ds["path"])
@@ -190,6 +207,7 @@ def main() -> None:
         pll = compute_pll(model, tokenizer, seqs, device, args.batch_size)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame({seq_col: seqs, "pll": pll}).to_csv(out_csv, index=False)
+        registry.write_meta(out_csv, n=len(seqs), seq_col=seq_col, **expected)
         log.info("[%s] wrote %s  (n=%d)", key, out_csv, len(seqs))
 
 
