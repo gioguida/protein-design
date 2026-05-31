@@ -5,13 +5,16 @@ Outputs include:
 - whole-set Spearman bar plot
 - stratified Spearman bar plot (ALL/POS/NEG per dataset)
 - AUROC bar plot (per dataset)
+- per-dataset grouped violin plots (all models) with enrichment-colored strips
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -21,24 +24,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from omegaconf import OmegaConf
-from transformers import EsmForMaskedLM
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from protein_design.config import build_model_config
+from protein_design.checkpoint_loading import load_scorer_from_checkpoint
 from protein_design.constants import C05_CDRH3
 from protein_design.dms_splitting import dataset_spec, resolve_dataset_split
 from protein_design.eval import corpus_perplexity, run_scoring_evaluation
 from protein_design.model import ESM2Model
 
-BASE_MODEL_CONF_PATH = "conf/model/esm2_35m.yaml"
 ENRICHMENT_COL = "M22_binding_enrichment_adj"
 GOOD_THRESHOLD_DEFAULT = 5.190013461
 DATASET_TO_KEY = {"ED2": "ed2_m22", "ED5": "ed5_m22", "ED811": "ed811_m22"}
+CACHE_SCHEMA_VERSION = 1
 
 
 def _parse_model_spec(spec: str) -> tuple[str, str, str]:
@@ -67,58 +68,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-good-ppl", action="store_true")
     p.add_argument("--run-spearman", action="store_true")
     p.add_argument("--run-plots", action="store_true")
+    p.add_argument("--run-violin-plots", action="store_true")
+    p.add_argument("--cache-root", type=Path, default=None)
+    p.add_argument("--use-cache", action="store_true")
+    p.add_argument("--write-cache", action="store_true")
+    p.add_argument("--plots-only", action="store_true")
+    p.add_argument("--force-recompute", action="store_true")
     return p.parse_args()
 
 
-def _extract_state_dict(raw: Any) -> dict[str, torch.Tensor]:
-    if isinstance(raw, dict):
-        for key in ("policy_state_dict", "model_state_dict"):
-            if key in raw and isinstance(raw[key], dict):
-                return raw[key]
-    if isinstance(raw, dict):
-        return raw
-    raise TypeError(f"Unsupported checkpoint payload type: {type(raw)}")
-
-
-def _load_pt_into_esm(model: ESM2Model, pt_path: Path) -> None:
-    raw = torch.load(pt_path, map_location="cpu")
-    state = _extract_state_dict(raw)
-    new_state: dict[str, torch.Tensor] = {}
-    for k, v in state.items():
-        new_state[k[len("model."):] if k.startswith("model.") else k] = v
-    missing, unexpected = model.model.load_state_dict(new_state, strict=False)
-    non_optional_missing = [
-        m for m in missing if not m.startswith("esm.contact_head.") and "position_ids" not in m
-    ]
-    if non_optional_missing:
-        raise RuntimeError(f"Checkpoint missing required keys: {non_optional_missing[:5]}")
-    if unexpected:
-        print(f"[warn] ignored {len(unexpected)} unexpected keys from {pt_path}")
-
-
 def _load_model(device: torch.device, checkpoint: str) -> ESM2Model:
-    cfg = OmegaConf.load(REPO_ROOT / BASE_MODEL_CONF_PATH)
-    model = ESM2Model(build_model_config(cfg, device=str(device)))
-
-    ckpt = Path(checkpoint)
-    if ckpt.is_file() and ckpt.suffix == ".pt":
-        _load_pt_into_esm(model, ckpt)
-    elif ckpt.is_dir():
-        if (ckpt / "model.safetensors").exists() or (ckpt / "pytorch_model.bin").exists():
-            model.model = EsmForMaskedLM.from_pretrained(str(ckpt))
-        else:
-            pt_path = next((ckpt / n for n in ("best.pt", "final.pt") if (ckpt / n).exists()), None)
-            if pt_path is None:
-                raise FileNotFoundError(f"No HF weights, best.pt, or final.pt found at {ckpt}")
-            _load_pt_into_esm(model, pt_path)
-    elif ckpt.is_absolute():
-        raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt}")
-    else:
-        # Allow HF model IDs.
-        model.model = EsmForMaskedLM.from_pretrained(checkpoint)
-
-    model.to(device).eval()
-    return model
+    return load_scorer_from_checkpoint(checkpoint, device=str(device))
 
 
 def _resolve_dataset_path(dataset_name: str, args: argparse.Namespace) -> tuple[Path, str]:
@@ -192,31 +152,192 @@ def _barplot(
     plt.close(fig)
 
 
+def _slugify_model_label(label: str) -> str:
+    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in label)
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out.strip("_") or "model"
+
+
+def _grouped_violin_plot(
+    *,
+    out_path: Path,
+    dataset_name: str,
+    model_labels: list[str],
+    per_model_pll: list[np.ndarray],
+    per_model_enrichment: list[np.ndarray],
+) -> None:
+    plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
+    fig, ax = plt.subplots(figsize=(max(9.0, 1.6 * len(model_labels)), 6.2))
+    cmap = plt.get_cmap("viridis")
+    rng = np.random.default_rng(42)
+    x_positions = np.arange(1, len(model_labels) + 1, dtype=float)
+
+    # Track one scatter mappable for a shared colorbar.
+    color_mappable = None
+    had_data = False
+
+    for i, (label, pll_vals_raw, enr_vals_raw) in enumerate(
+        zip(model_labels, per_model_pll, per_model_enrichment)
+    ):
+        pll_vals = np.asarray(pll_vals_raw, dtype=np.float32)
+        enr_vals = np.asarray(enr_vals_raw, dtype=np.float32)
+        valid = np.isfinite(pll_vals) & np.isfinite(enr_vals)
+        x = float(x_positions[i])
+        if not np.any(valid):
+            continue
+
+        had_data = True
+        y = pll_vals[valid]
+        c = enr_vals[valid]
+
+        parts = ax.violinplot(
+            [y],
+            positions=[x],
+            widths=0.75,
+            showmeans=False,
+            showmedians=True,
+            showextrema=False,
+        )
+        for body in parts["bodies"]:
+            body.set_facecolor("tab:blue")
+            body.set_edgecolor("black")
+            body.set_alpha(0.28)
+
+        jitter = rng.uniform(-0.20, 0.20, size=len(y))
+        color_mappable = ax.scatter(
+            np.full(len(y), x, dtype=np.float32) + jitter,
+            y,
+            c=c,
+            cmap=cmap,
+            s=10,
+            alpha=0.85,
+            edgecolors="black",
+            linewidths=0.2,
+            zorder=3,
+        )
+
+    ax.set_title(f"{dataset_name}: PLL distribution across models")
+    ax.set_xlabel("Model")
+    ax.set_ylabel("CDR-H3 PLL")
+    ax.set_xticks(x_positions, model_labels, rotation=25, ha="right")
+    ax.grid(axis="y", alpha=0.22, linewidth=0.8)
+
+    if had_data and color_mappable is not None:
+        fig.colorbar(color_mappable, ax=ax, fraction=0.028, pad=0.03, label="Binding enrichment")
+    else:
+        ax.text(0.5, 0.5, "No finite PLL/enrichment pairs", transform=ax.transAxes, ha="center", va="center")
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+
+
+def _default_cache_root() -> Path:
+    scratch = os.environ.get("SCRATCH_DIR")
+    if scratch:
+        return Path(scratch) / "protein-design" / "model_comparison_cache"
+    user = os.environ.get("USER", "unknown")
+    return Path(f"/cluster/scratch/{user}/protein-design/model_comparison_cache")
+
+
+def _normalize_checkpoint(checkpoint: str) -> str:
+    p = Path(checkpoint)
+    if p.exists():
+        try:
+            return str(p.resolve())
+        except Exception:
+            return str(p)
+    return checkpoint.strip()
+
+
+def _stable_sha(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest()
+
+
+def _model_cache_key(model_label: str, model_size: str, checkpoint: str) -> dict[str, Any]:
+    return {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "model_label": model_label,
+        "model_size": model_size,
+        "checkpoint": _normalize_checkpoint(checkpoint),
+    }
+
+
+def _dataset_cache_key(
+    *,
+    model_fp: str,
+    dataset_name: str,
+    dataset_path: Path,
+    dataset_key: str,
+    split_name: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "model_fp": model_fp,
+        "dataset_name": dataset_name,
+        "dataset_path": str(dataset_path.resolve()),
+        "dataset_key": dataset_key,
+        "split_name": split_name,
+        "scoring_mode": "cdr_pll",
+    }
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+
 def main() -> int:
     args = parse_args()
-    if not any([args.run_wt_ppl, args.run_good_ppl, args.run_spearman, args.run_plots]):
+    if not any([args.run_wt_ppl, args.run_good_ppl, args.run_spearman, args.run_plots, args.run_violin_plots]):
         raise ValueError("Enable at least one run switch.")
+    if args.run_violin_plots and not args.run_spearman:
+        raise ValueError("--run-violin-plots requires --run-spearman.")
+    if args.plots_only and not args.use_cache:
+        raise ValueError("--plots-only requires --use-cache.")
 
     out_dir = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    cache_root = args.cache_root if args.cache_root is not None else _default_cache_root()
+    cache_root = cache_root.resolve()
+    if args.write_cache:
+        cache_root.mkdir(parents=True, exist_ok=True)
 
     selected_datasets = list(dict.fromkeys(args.include_dataset))
     dataset_frames: dict[str, pd.DataFrame] = {}
     dataset_paths: dict[str, Path] = {}
     dataset_rows: dict[str, int] = {}
+    dataset_keys: dict[str, str] = {}
     for ds in selected_datasets:
         path, metric_col = _resolve_dataset_path(ds, args)
         df = _load_dataset(path, metric_col)
         dataset_frames[ds] = df
         dataset_paths[ds] = path
         dataset_rows[ds] = int(len(df))
+        dataset_keys[ds] = str(getattr(args, f"{ds.lower()}_dataset_key"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows: list[dict[str, Any]] = []
+    violin_payload: dict[str, list[dict[str, Any]]] = {ds: [] for ds in selected_datasets}
 
     model_specs = args.model
     for model_label, model_size, checkpoint in model_specs:
-        model = _load_model(device, checkpoint)
+        model_display = f"{model_label} ({model_size})"
+        model_key_payload = _model_cache_key(model_label, model_size, checkpoint)
+        model_fp = _stable_sha(model_key_payload)
+        model_cache_dir = cache_root / model_fp
+        model_metrics_path = model_cache_dir / "model_metrics.json"
+        model_meta_path = model_cache_dir / "model_meta.json"
+        model = None
         row: dict[str, Any] = {
             "model_label": model_label,
             "model_size": model_size,
@@ -225,39 +346,156 @@ def main() -> int:
         }
 
         if args.run_wt_ppl:
-            row["ppl_wt"] = float(corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True))
+            wt_loaded = False
+            if args.use_cache and not args.force_recompute and model_metrics_path.exists():
+                try:
+                    mm = _load_json(model_metrics_path)
+                    if mm.get("schema_version") == CACHE_SCHEMA_VERSION and "ppl_wt" in mm:
+                        row["ppl_wt"] = float(mm["ppl_wt"])
+                        wt_loaded = True
+                        print(f"[cache-hit] model wt metric: {model_display}")
+                except Exception as exc:
+                    print(f"[cache-warn] could not load model cache {model_metrics_path} ({exc})")
+            if not wt_loaded:
+                if args.plots_only:
+                    raise RuntimeError(
+                        f"Missing cached WT PPL for {model_display} while --plots-only is enabled."
+                    )
+                if model is None:
+                    model = _load_model(device, checkpoint)
+                row["ppl_wt"] = float(corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True))
+                if args.write_cache:
+                    _write_json(
+                        model_metrics_path,
+                        {
+                            "schema_version": CACHE_SCHEMA_VERSION,
+                            "ppl_wt": float(row["ppl_wt"]),
+                        },
+                    )
+                    _write_json(
+                        model_meta_path,
+                        {
+                            "schema_version": CACHE_SCHEMA_VERSION,
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                            "fingerprint": model_key_payload,
+                        },
+                    )
 
+        need_scoring = bool(args.run_good_ppl or args.run_spearman or args.run_violin_plots)
         for ds in selected_datasets:
             df = dataset_frames[ds]
-            eval_result = run_scoring_evaluation(
-                df=df,
-                enrichment_col=ENRICHMENT_COL,
-                batch_size=int(args.batch_size),
-                scorer=model,
-                scoring_mode="cdr_pll",
+            scores: np.ndarray | None = None
+            enrichment: np.ndarray | None = None
+            cached_metrics: dict[str, Any] | None = None
+            eval_result: dict[str, Any] | None = None
+            ds_key_payload = _dataset_cache_key(
+                model_fp=model_fp,
+                dataset_name=ds,
+                dataset_path=dataset_paths[ds],
+                dataset_key=dataset_keys[ds],
+                split_name=args.split_name,
             )
-            scores = np.asarray(eval_result["scores_avg"], dtype=np.float32)
-            enrichment = df[ENRICHMENT_COL].to_numpy(dtype=np.float32, copy=False)
+            ds_fp = _stable_sha(ds_key_payload)
+            ds_cache_dir = model_cache_dir / ds_fp
+            ds_scores_path = ds_cache_dir / "scores.npz"
+            ds_metrics_path = ds_cache_dir / "metrics.json"
+            ds_meta_path = ds_cache_dir / "meta.json"
+
+            if need_scoring and args.use_cache and not args.force_recompute:
+                try:
+                    if ds_scores_path.exists() and ds_metrics_path.exists() and ds_meta_path.exists():
+                        meta = _load_json(ds_meta_path)
+                        if meta.get("schema_version") == CACHE_SCHEMA_VERSION and meta.get("fingerprint") == ds_key_payload:
+                            arrays = np.load(ds_scores_path)
+                            scores = np.asarray(arrays["scores_avg"], dtype=np.float32)
+                            enrichment = np.asarray(arrays["enrichment"], dtype=np.float32)
+                            cached_metrics = _load_json(ds_metrics_path)
+                            print(f"[cache-hit] {model_display} | {ds}")
+                except Exception as exc:
+                    print(f"[cache-warn] could not load dataset cache for {model_display}/{ds} ({exc})")
+
+            if need_scoring and scores is None:
+                if args.plots_only:
+                    raise RuntimeError(
+                        f"Missing cached dataset score artifact for {model_display} / {ds} while --plots-only is enabled."
+                    )
+                if model is None:
+                    model = _load_model(device, checkpoint)
+                eval_result = run_scoring_evaluation(
+                    df=df,
+                    enrichment_col=ENRICHMENT_COL,
+                    batch_size=int(args.batch_size),
+                    scorer=model,
+                    scoring_mode="cdr_pll",
+                )
+                scores = np.asarray(eval_result["scores_avg"], dtype=np.float32)
+                enrichment = df[ENRICHMENT_COL].to_numpy(dtype=np.float32, copy=False).astype(np.float32, copy=False)
+                cached_metrics = {
+                    "schema_version": CACHE_SCHEMA_VERSION,
+                    "spearman_avg": float(eval_result["spearman_avg"]),
+                    "spearman_avg_pval": float(eval_result["spearman_avg_pval"]),
+                    "spearman_avg_pos": float(eval_result["spearman_avg_pos"]),
+                    "spearman_avg_pos_pval": float(eval_result["spearman_avg_pos_pval"]),
+                    "spearman_avg_neg": float(eval_result["spearman_avg_neg"]),
+                    "spearman_avg_neg_pval": float(eval_result["spearman_avg_neg_pval"]),
+                    "n_pos": int(eval_result["n_pos"]),
+                    "n_neg": int(eval_result["n_neg"]),
+                    "auroc": float(eval_result["auroc"]),
+                }
+                if args.write_cache:
+                    ds_cache_dir.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(
+                        ds_scores_path,
+                        scores_avg=scores,
+                        enrichment=np.asarray(enrichment, dtype=np.float32),
+                    )
+                    _write_json(ds_metrics_path, cached_metrics)
+                    _write_json(
+                        ds_meta_path,
+                        {
+                            "schema_version": CACHE_SCHEMA_VERSION,
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                            "fingerprint": ds_key_payload,
+                        },
+                    )
+
             sequences = df["aa"].astype(str).tolist()
 
             if args.run_good_ppl:
+                if scores is None or enrichment is None:
+                    raise RuntimeError(f"Scores unavailable for {model_display}/{ds}.")
                 mask_good = np.isfinite(enrichment) & (enrichment > float(args.good_threshold))
                 row[f"n_good_{ds.lower()}"] = int(mask_good.sum())
                 row[f"ppl_good_{ds.lower()}"] = _dataset_ppl(scores[mask_good], [s for s, m in zip(sequences, mask_good) if m])
             if args.run_spearman:
-                row[f"spearman_{ds.lower()}"] = float(eval_result["spearman_avg"])
-                row[f"spearman_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pval"])
-                row[f"spearman_pos_{ds.lower()}"] = float(eval_result["spearman_avg_pos"])
-                row[f"spearman_pos_pval_{ds.lower()}"] = float(eval_result["spearman_avg_pos_pval"])
-                row[f"spearman_neg_{ds.lower()}"] = float(eval_result["spearman_avg_neg"])
-                row[f"spearman_neg_pval_{ds.lower()}"] = float(eval_result["spearman_avg_neg_pval"])
-                row[f"n_pos_{ds.lower()}"] = int(eval_result["n_pos"])
-                row[f"n_neg_{ds.lower()}"] = int(eval_result["n_neg"])
-                row[f"auroc_{ds.lower()}"] = float(eval_result["auroc"])
+                if cached_metrics is None:
+                    raise RuntimeError(f"Spearman metrics unavailable for {model_display}/{ds}.")
+                row[f"spearman_{ds.lower()}"] = float(cached_metrics["spearman_avg"])
+                row[f"spearman_pval_{ds.lower()}"] = float(cached_metrics["spearman_avg_pval"])
+                row[f"spearman_pos_{ds.lower()}"] = float(cached_metrics["spearman_avg_pos"])
+                row[f"spearman_pos_pval_{ds.lower()}"] = float(cached_metrics["spearman_avg_pos_pval"])
+                row[f"spearman_neg_{ds.lower()}"] = float(cached_metrics["spearman_avg_neg"])
+                row[f"spearman_neg_pval_{ds.lower()}"] = float(cached_metrics["spearman_avg_neg_pval"])
+                row[f"n_pos_{ds.lower()}"] = int(cached_metrics["n_pos"])
+                row[f"n_neg_{ds.lower()}"] = int(cached_metrics["n_neg"])
+                row[f"auroc_{ds.lower()}"] = float(cached_metrics["auroc"])
+                if args.run_violin_plots:
+                    if scores is None or enrichment is None:
+                        raise RuntimeError(f"Violin payload unavailable for {model_display}/{ds}.")
+                    violin_payload[ds].append(
+                        {
+                            "model_display": model_display,
+                            "model_slug": _slugify_model_label(model_display),
+                            "scores": np.asarray(scores, dtype=np.float32),
+                            "enrichment": np.asarray(enrichment, dtype=np.float32),
+                        }
+                    )
 
         rows.append(row)
-        del model
-        if device.type == "cuda":
+        had_model = model is not None
+        if had_model:
+            del model
+        if had_model and device.type == "cuda":
             torch.cuda.empty_cache()
 
     summary_df = pd.DataFrame(rows)
@@ -340,6 +578,23 @@ def main() -> int:
                     values=values,
                     legend_labels=selected_datasets,
                 )
+    if args.run_violin_plots:
+        violin_dir = out_dir / "plots" / "violin_pll_vs_enrichment"
+        for ds in selected_datasets:
+            payload = violin_payload.get(ds, [])
+            if not payload:
+                continue
+            model_labels = [p["model_display"] for p in payload]
+            per_model_pll = [p["scores"] for p in payload]
+            per_model_enrichment = [p["enrichment"] for p in payload]
+            out_path = violin_dir / f"violin_pll_vs_enrichment_{ds.lower()}.png"
+            _grouped_violin_plot(
+                out_path=out_path,
+                dataset_name=ds,
+                model_labels=model_labels,
+                per_model_pll=per_model_pll,
+                per_model_enrichment=per_model_enrichment,
+            )
 
     payload = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -352,6 +607,12 @@ def main() -> int:
             "good_ppl": bool(args.run_good_ppl),
             "spearman": bool(args.run_spearman),
             "plots": bool(args.run_plots),
+            "violin_plots": bool(args.run_violin_plots),
+            "use_cache": bool(args.use_cache),
+            "write_cache": bool(args.write_cache),
+            "plots_only": bool(args.plots_only),
+            "force_recompute": bool(args.force_recompute),
+            "cache_root": str(cache_root),
         },
         "rows": rows,
     }

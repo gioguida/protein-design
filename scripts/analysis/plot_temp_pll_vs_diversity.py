@@ -97,6 +97,14 @@ def _mean_pairwise_hamming(seqs: list[str], max_n: int = 1000) -> float:
     return float(dist_mat[iu].mean())
 
 
+def _duplicate_count(seqs: list[str]) -> int:
+    """Count distinct sequences that appear more than once."""
+    if not seqs:
+        return 0
+    counts = pd.Series(seqs, dtype="string").value_counts(dropna=False)
+    return int((counts > 1).sum())
+
+
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +126,7 @@ def main() -> int:
     temps: list[float] = []
     mean_hammings: list[float] = []
     mean_plls: list[float] = []
+    duplicate_counts: list[int] = []
 
     for temp, csv_path in temp_csv_pairs:
         seqs = _load_final_step(csv_path)
@@ -134,11 +143,16 @@ def main() -> int:
         top_pll = float(np.sort(pll_vals)[-k:].mean())
 
         hamming = _mean_pairwise_hamming(seqs)
+        dup_count = _duplicate_count(seqs)
 
         temps.append(temp)
         mean_hammings.append(hamming)
         mean_plls.append(top_pll)
-        log.info("T=%s: mean_hamming=%.3f mean_top%d_pll=%.3f", temp, hamming, k, top_pll)
+        duplicate_counts.append(dup_count)
+        log.info(
+            "T=%s: mean_hamming=%.3f mean_top%d_pll=%.3f duplicates=%d",
+            temp, hamming, k, top_pll, dup_count,
+        )
 
     if not temps:
         log.error("No temperature points with valid data — cannot produce plot.")
@@ -148,11 +162,11 @@ def main() -> int:
     colors = [cmap(i / max(1, len(temps) - 1)) for i in range(len(temps))]
 
     fig, ax = plt.subplots(figsize=(6.5, 5.0))
-    for i, (t, x, y) in enumerate(zip(temps, mean_hammings, mean_plls)):
+    for i, (t, x, y, dup) in enumerate(zip(temps, mean_hammings, mean_plls, duplicate_counts)):
         ax.scatter(x, y, s=80, color=colors[i], edgecolors="black",
                    linewidths=0.5, zorder=3)
         ax.annotate(
-            f"T={t}",
+            f"T={t}\ndups={dup}",
             (x, y),
             textcoords="offset points", xytext=(7, 4),
             fontsize=9, color=colors[i],

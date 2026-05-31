@@ -418,6 +418,7 @@ def _save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[SchedulerType],
     best_val_loss: float,
+    cfg: Any,
 ) -> None:
     adapter_state_dict = {
         key: value
@@ -430,6 +431,14 @@ def _save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
         "best_val_loss": float(best_val_loss),
+        "base_model_name": str(cfg.model.esm_model_path),
+        "lora_config": {
+            "r": int(cfg.lora.r),
+            "lora_alpha": int(cfg.lora.alpha),
+            "target_modules": list(cfg.lora.target_modules),
+            "lora_dropout": float(cfg.lora.dropout),
+            "bias": str(cfg.lora.bias),
+        },
     }
     torch.save(state, path)
 
@@ -508,6 +517,24 @@ def _resolve_storage_paths(full_run_name: str) -> Dict[str, Path]:
     }
 
 
+def _resolve_mixed_precision(
+    cfg: Any,
+    device: torch.device,
+    logger: logging.Logger,
+) -> Tuple[Optional[torch.dtype], Optional[torch.amp.GradScaler], str]:
+    raw_mode = str(getattr(cfg.training, "mixed_precision", "bf16")).strip().lower()
+    if raw_mode not in {"off", "fp16", "bf16"}:
+        raise ValueError("training.mixed_precision must be one of: off, fp16, bf16.")
+    if device.type != "cuda" or raw_mode == "off":
+        return None, None, "off"
+    if raw_mode == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning("bf16 not supported on this GPU; falling back to fp16 mixed precision.")
+        raw_mode = "fp16"
+    if raw_mode == "bf16":
+        return torch.bfloat16, None, "bf16"
+    return torch.float16, torch.amp.GradScaler("cuda", enabled=True), "fp16"
+
+
 def _run_epoch(
     policy: ESM2Model,
     reference: ESM2Model,
@@ -522,12 +549,17 @@ def _run_epoch(
     logger: logging.Logger,
     log_every_n_steps: int,
     track_metrics: bool,
+    gradient_accumulation_steps: int = 1,
+    amp_dtype: Optional[torch.dtype] = None,
+    grad_scaler: Optional[torch.amp.GradScaler] = None,
     global_step: int = 0,
     wandb_mod: Optional[Any] = None,
     epoch: int = 0,
 ) -> Tuple[Dict[str, float], int]:
     is_train = optimizer is not None
     loss_name = str(loss)
+    grad_accum_steps = max(1, int(gradient_accumulation_steps))
+    use_amp = bool(is_train and amp_dtype is not None and policy.device.type == "cuda")
 
     if is_train:
         policy.model.train()
@@ -542,32 +574,34 @@ def _run_epoch(
     reward_accuracy_sum = 0.0
     reward_margin_sum = 0.0
     implicit_kl_sum = 0.0
+    pending_backward_steps = 0
+
+    if is_train:
+        optimizer.zero_grad(set_to_none=True)
 
     for step, batch in enumerate(dataloader, start=1):
-        if is_train:
-            optimizer.zero_grad(set_to_none=True)
-            global_step += 1
 
         try:
-            if loss_name == "dpo":
-                batch_loss = dpo_loss(
-                    batch,
-                    beta=beta,
-                    scorer=policy,
-                    reference=reference,
-                    policy_use_grad=is_train,
-                )
-            elif loss_name == "weighted_dpo":
-                batch_loss = weighted_dpo_loss(
-                    batch,
-                    beta=beta,
-                    temperature=temperature,
-                    scorer=policy,
-                    reference=reference,
-                    policy_use_grad=is_train,
-                )
-            else:
-                raise ValueError(f"Unsupported loss: {loss_name}")
+            with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
+                if loss_name == "dpo":
+                    batch_loss = dpo_loss(
+                        batch,
+                        beta=beta,
+                        scorer=policy,
+                        reference=reference,
+                        policy_use_grad=is_train,
+                    )
+                elif loss_name == "weighted_dpo":
+                    batch_loss = weighted_dpo_loss(
+                        batch,
+                        beta=beta,
+                        temperature=temperature,
+                        scorer=policy,
+                        reference=reference,
+                        policy_use_grad=is_train,
+                    )
+                else:
+                    raise ValueError(f"Unsupported loss: {loss_name}")
             if track_metrics:
                 with torch.no_grad():
                     batch_metrics = batch_monitoring_metrics(
@@ -580,15 +614,36 @@ def _run_epoch(
             skipped_batches += 1
             continue
 
+        batch_loss_value = float(batch_loss.item())
         if is_train:
-            batch_loss.backward()
-            if grad_clip_norm > 0:
-                clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
-            optimizer.step()
-            if scheduler is not None and scheduler_step_on_batch:
-                scheduler.step()
+            scaled_loss = batch_loss / float(grad_accum_steps)
+            if grad_scaler is not None:
+                grad_scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+            pending_backward_steps += 1
 
-        total_loss += float(batch_loss.item())
+            should_step_optimizer = (
+                pending_backward_steps >= grad_accum_steps
+                or step == len(dataloader)
+            )
+            if should_step_optimizer:
+                if grad_clip_norm > 0:
+                    if grad_scaler is not None:
+                        grad_scaler.unscale_(optimizer)
+                    clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
+                if grad_scaler is not None:
+                    grad_scaler.step(optimizer)
+                    grad_scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                pending_backward_steps = 0
+                global_step += 1
+                if scheduler is not None and scheduler_step_on_batch:
+                    scheduler.step()
+
+        total_loss += batch_loss_value
         num_batches += 1
         if track_metrics:
             num_pairs = float(batch_metrics["num_pairs"])
@@ -599,15 +654,17 @@ def _run_epoch(
 
         if is_train and log_every_n_steps > 0 and step % log_every_n_steps == 0:
             step_record = {
-                "step": global_step,
+                "step": global_step,  # optimizer step
+                "micro_step": step,
                 "epoch": epoch,
-                "train_step/loss": float(batch_loss.item()),
+                "train_step/loss": batch_loss_value,
             }
             if track_metrics:
                 logger.info(
-                    "step=%d train_loss=%.6f reward_acc=%.4f reward_margin=%.4f implicit_kl=%.4f",
+                    "micro_step=%d step=%d train_loss=%.6f reward_acc=%.4f reward_margin=%.4f implicit_kl=%.4f",
                     step,
-                    float(batch_loss.item()),
+                    global_step,
+                    batch_loss_value,
                     float(batch_metrics["reward_accuracy"]),
                     float(batch_metrics["reward_margin"]),
                     float(batch_metrics["implicit_kl"]),
@@ -618,10 +675,25 @@ def _run_epoch(
                     "train_step/implicit_kl": float(batch_metrics["implicit_kl"]),
                 })
             else:
-                logger.info("step=%d train_loss=%.6f", step, float(batch_loss.item()))
+                logger.info("micro_step=%d step=%d train_loss=%.6f", step, global_step, batch_loss_value)
             
             if wandb_mod is not None:
                 wandb_mod.log(step_record, step=global_step)
+
+    if is_train and pending_backward_steps > 0:
+        if grad_clip_norm > 0:
+            if grad_scaler is not None:
+                grad_scaler.unscale_(optimizer)
+            clip_grad_norm_(policy.model.parameters(), max_norm=grad_clip_norm)
+        if grad_scaler is not None:
+            grad_scaler.step(optimizer)
+            grad_scaler.update()
+        else:
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        global_step += 1
+        if scheduler is not None and scheduler_step_on_batch:
+            scheduler.step()
 
     avg_loss = total_loss / max(1, num_batches)
     if track_metrics and monitored_pairs > 0:
@@ -1151,8 +1223,11 @@ def run_lora_dpo(cfg: Any) -> Path:
 
     policy = _build_scorers(cfg, logger)
     reference = _ReferenceView(policy)
+    gradient_accumulation_steps = max(1, int(getattr(cfg.training, "gradient_accumulation_steps", 1)))
+    amp_dtype, grad_scaler, mixed_precision_mode = _resolve_mixed_precision(cfg, policy.device, logger)
     total_epochs = int(cfg.training.num_epochs)
-    total_training_steps = len(train_loader) * total_epochs
+    optimizer_steps_per_epoch = max(1, math.ceil(len(train_loader) / float(gradient_accumulation_steps)))
+    total_training_steps = optimizer_steps_per_epoch * total_epochs
     optimizer, scheduler = _build_optimizer_and_scheduler(
         cfg,
         policy,
@@ -1187,6 +1262,11 @@ def run_lora_dpo(cfg: Any) -> Path:
                 total_epochs,
                 total_training_steps,
             )
+    logger.info(
+        "Mixed precision: %s | gradient_accumulation_steps=%d",
+        mixed_precision_mode,
+        gradient_accumulation_steps,
+    )
 
     ckpt_dir = output_dir / str(cfg.checkpointing.dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,6 +1327,9 @@ def run_lora_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=0,
             track_metrics=True,
+            gradient_accumulation_steps=1,
+            amp_dtype=None,
+            grad_scaler=None,
             global_step=global_step,
             wandb_mod=None,
             epoch=0,
@@ -1373,6 +1456,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         shutil.copy2(best_ckpt, root_best_ckpt)
         _save_checkpoint(
@@ -1382,6 +1466,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         step0_ckpt = ckpt_dir / f"{step_prefix}_0.pt"
         shutil.copy2(last_ckpt, step0_ckpt)
@@ -1402,6 +1487,9 @@ def run_lora_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=int(cfg.logging.log_every_n_steps),
             track_metrics=False,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            amp_dtype=amp_dtype,
+            grad_scaler=grad_scaler,
             global_step=global_step,
             wandb_mod=wandb_mod if wandb_run is not None else None,
             epoch=epoch,
@@ -1421,6 +1509,9 @@ def run_lora_dpo(cfg: Any) -> Path:
             logger=logger,
             log_every_n_steps=0,
             track_metrics=True,
+            gradient_accumulation_steps=1,
+            amp_dtype=None,
+            grad_scaler=None,
             global_step=global_step,
             wandb_mod=None, # Typically don't log step-level val metrics online this way
             epoch=epoch,
@@ -1573,6 +1664,7 @@ def run_lora_dpo(cfg: Any) -> Path:
                 optimizer=optimizer,
                 scheduler=scheduler,
                 best_val_loss=best_val_loss,
+                cfg=cfg,
             )
             shutil.copy2(best_ckpt, root_best_ckpt)
             logger.info("Updated run best checkpoint at %s", root_best_ckpt)
@@ -1586,6 +1678,7 @@ def run_lora_dpo(cfg: Any) -> Path:
             optimizer=optimizer,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
+            cfg=cfg,
         )
         if global_step > 0:
             step_ckpt = ckpt_dir / f"{step_prefix}_{global_step}.pt"
@@ -1620,6 +1713,9 @@ def run_lora_dpo(cfg: Any) -> Path:
         logger=logger,
         log_every_n_steps=0,
         track_metrics=True,
+        gradient_accumulation_steps=1,
+        amp_dtype=None,
+        grad_scaler=None,
         global_step=global_step,
         wandb_mod=None,
         epoch=0,

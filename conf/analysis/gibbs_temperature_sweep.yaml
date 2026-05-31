@@ -19,17 +19,36 @@ sweep:
   seed: 42
 
 models:
-  - name: "evo_dpo_low_lr_one_epoch"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr" 
-    model_variant: "evoDPO light"
-
-  # - name: "evo"
-  #   checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
-  #   model_variant: "evotuned"
-
-  # - name: "vanilla"
-  #   checkpoint: "facebook/esm2_t12_35M_UR50D" 
-  #   model_variant: "vanilla"
+  - name: "vanilla"
+    checkpoint: "facebook/esm2_t12_35M_UR50D"
+    model_variant: "vanilla"
+  - name: "evotuned"
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+    model_variant: "evotuned"
+  - name: "just_dpo_1ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
+    model_variant: "just_dpo_1ep"
+  - name: "just_dpo_4ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
+    model_variant: "just_dpo_4ep"
+  - name: "just_dpo_7ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
+    model_variant: "just_dpo_7ep"
+  - name: "just_dpo_10ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
+    model_variant: "just_dpo_10ep"
+  - name: "evo_dpo_1ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
+    model_variant: "evo_dpo_1ep"
+  - name: "evo_dpo_4ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
+    model_variant: "evo_dpo_4ep"
+  - name: "evo_dpo_7ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
+    model_variant: "evo_dpo_7ep"
+  - name: "evo_dpo_10ep"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
+    model_variant: "evo_dpo_10ep"
   
 
 dms:

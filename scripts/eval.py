@@ -19,6 +19,7 @@ import torch
 from omegaconf import DictConfig
 from transformers import AutoTokenizer
 
+from protein_design.checkpoint_loading import load_scorer_from_checkpoint
 from protein_design.eval import compute_cdr_pseudo_perplexity, load_scoring_datasets, run_multi_scoring_evaluation
 from protein_design.model import ESM2Model
 from protein_design.config import build_model_config, build_scoring_config
@@ -48,17 +49,13 @@ def main(cfg: DictConfig) -> None:
     if not scoring_cfg.datasets:
         raise ValueError("No scoring datasets configured (scoring.datasets is empty).")
 
-    model_cfg = build_model_config(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    model = ESM2Model(model_cfg)
     logger.info("Loading checkpoint: %s", ckpt_path)
-    state = torch.load(ckpt_path, map_location="cpu")
-    model.load_state_dict(state["model_state_dict"])
-    model.to(device)
+    model = load_scorer_from_checkpoint(str(ckpt_path), device=str(device))
 
-    tokenizer = AutoTokenizer.from_pretrained(model_cfg.esm_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model.config.esm_model_path)
     scoring_datasets = load_scoring_datasets(
         scoring_cfg.datasets, n_samples=scoring_cfg.n_samples, seed=int(cfg.seed),
     )

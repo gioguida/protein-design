@@ -1,5 +1,6 @@
 #!/bin/bash
-# Compare fine-tuned checkpoints on WT PPL, good-sequence PPL, and Spearman.
+# Compare fine-tuned checkpoints on WT PPL, good-sequence PPL, Spearman,
+# and per-dataset PLL violin model-comparison plots.
 
 #SBATCH --job-name=compare_models
 #SBATCH --ntasks=1
@@ -18,13 +19,24 @@ source bash_scripts/common_setup.sh
 # ----------------------------- model specs -----------------------------------
 # Format per model: "LABEL|SIZE|CHECKPOINT"
 MODELS=(
+  "vanilla|35M|facebook/esm2_t12_35M_UR50D"
   "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+  # "evo_C05|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m_c05_cdrh3_blosum25"
   # "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
   # "dpo_linear_warmup|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
   # "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
-  "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
-  "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
-  "dpo_high_pos|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_lowLR_cosine_2ep/best.pt"
+  # "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
+  # "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
+  # "vanilla_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_4ep/step_1376.pt"
+  "just_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
+  "just_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
+  "just_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
+  "just_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
+  
+  "evo_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
+  "evo_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
+  "evo_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
+  "evo_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
 )
 
 # ----------------------------- switches --------------------------------------
@@ -36,6 +48,12 @@ RUN_WT_PPL=1
 RUN_GOOD_PPL=1
 RUN_SPEARMAN=1
 RUN_PLOTS=1
+RUN_VIOLIN_PLOTS=1
+USE_CACHE=1
+WRITE_CACHE=1
+PLOTS_ONLY=0
+FORCE_RECOMPUTE=0
+CACHE_ROOT=""
 
 # ----------------------------- data selection --------------------------------
 DMS_CONFIG="conf/data/dms/default.yaml"
@@ -75,6 +93,12 @@ if [[ "${RUN_WT_PPL}" == "1" ]]; then ARGS+=(--run-wt-ppl); fi
 if [[ "${RUN_GOOD_PPL}" == "1" ]]; then ARGS+=(--run-good-ppl); fi
 if [[ "${RUN_SPEARMAN}" == "1" ]]; then ARGS+=(--run-spearman); fi
 if [[ "${RUN_PLOTS}" == "1" ]]; then ARGS+=(--run-plots); fi
+if [[ "${RUN_VIOLIN_PLOTS}" == "1" ]]; then ARGS+=(--run-violin-plots); fi
+if [[ "${USE_CACHE}" == "1" ]]; then ARGS+=(--use-cache); fi
+if [[ "${WRITE_CACHE}" == "1" ]]; then ARGS+=(--write-cache); fi
+if [[ "${PLOTS_ONLY}" == "1" ]]; then ARGS+=(--plots-only); fi
+if [[ "${FORCE_RECOMPUTE}" == "1" ]]; then ARGS+=(--force-recompute); fi
+if [[ -n "${CACHE_ROOT}" ]]; then ARGS+=(--cache-root "${CACHE_ROOT}"); fi
 
 if [[ "${FORCE_SPLIT_REBUILD}" == "1" ]]; then ARGS+=(--force-split-rebuild); fi
 

@@ -37,10 +37,11 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, EsmForMaskedLM
 
+from protein_design.checkpoint_loading import DEFAULT_ESM2_MODEL_ID, load_mlm_from_checkpoint
 from protein_design.constants import C05_CDRH3, C05_CDRH3_END, C05_CDRH3_START, add_context
 
 STANDARD_AAS = "ACDEFGHIKLMNPQRSTVWY"
-ESM2_MODEL_ID = "facebook/esm2_t12_35M_UR50D"
+ESM2_MODEL_ID = DEFAULT_ESM2_MODEL_ID
 DEFAULT_HF_IDS = {"vanilla": ESM2_MODEL_ID}
 CDRH3_LEN = C05_CDRH3_END - C05_CDRH3_START
 
@@ -121,6 +122,10 @@ def _load_pt_into_mlm(pt_path: str, device: torch.device) -> EsmForMaskedLM:
 
 
 def load_model_and_tokenizer(checkpoint: str, device: torch.device):
+    model, tokenizer_ref = load_mlm_from_checkpoint(checkpoint)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_ref)
+    return tokenizer, model
+
     """Resolve ``checkpoint`` to (tokenizer, model) across HF and .pt layouts."""
     p = Path(checkpoint)
     if p.is_file() and p.suffix == ".pt":

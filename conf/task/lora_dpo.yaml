@@ -1,5 +1,6 @@
 # @package _global_
 defaults:
+  - override /model: esm2_650m
   - override /data: dpo/default
   - override /scoring: none
   - _self_
@@ -9,10 +10,12 @@ task:
   runner: lora_dpo
 
 training:
-  batch_size: 128
-  num_epochs: 2
-  lr: 1e-4
+  batch_size: 10
+  gradient_accumulation_steps: 4
+  num_epochs: 10
+  lr: 5e-4
   weight_decay: 0.0
+  mixed_precision: bf16   # off | fp16 | bf16
   loss: weighted_dpo     # dpo | weighted_dpo
   beta: 0.1
   temperature: 1         # only relevant for weighted loss
@@ -62,3 +65,4 @@ logging:
   preview_count: 0
   log_every_n_steps: 20
   history_csv: history.csv
+

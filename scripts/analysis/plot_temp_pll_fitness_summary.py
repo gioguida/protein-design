@@ -47,6 +47,7 @@ FITNESS_COL = "M22_binding_enrichment_adj"
 class TemperatureResult:
     temperature: float
     beam_total: int
+    duplicate_count: int
     beam_matched: int
     above_wt_fraction: float
     matched_pearson_r: float
@@ -170,6 +171,14 @@ def _score_sequences(
     return sequence_pll(per_pos)
 
 
+def _duplicate_count(seqs: list[str]) -> int:
+    """Count distinct sequences that appear more than once."""
+    if not seqs:
+        return 0
+    counts = pd.Series(seqs, dtype="string").value_counts(dropna=False)
+    return int((counts > 1).sum())
+
+
 def _build_temperature_result(
     *,
     temperature: float,
@@ -184,6 +193,7 @@ def _build_temperature_result(
 ) -> TemperatureResult:
     beam_seqs = _load_final_step(csv_path)
     beam_total = len(beam_seqs)
+    duplicate_count = _duplicate_count(beam_seqs)
     beam_pll = _score_sequences(model, tokenizer, beam_seqs, device, batch_size)
 
     beam_df = pd.DataFrame({"cdrh3": beam_seqs, "pll": beam_pll})
@@ -231,6 +241,7 @@ def _build_temperature_result(
     return TemperatureResult(
         temperature=temperature,
         beam_total=beam_total,
+        duplicate_count=duplicate_count,
         beam_matched=matched_count,
         above_wt_fraction=above_wt_fraction,
         matched_pearson_r=matched_pearson_r,
@@ -248,6 +259,7 @@ def _build_temperature_result(
 def _plot_fraction_above_wt(results: list[TemperatureResult], model_variant: str, out_path: Path) -> None:
     temps = np.array([r.temperature for r in results], dtype=np.float32)
     values = np.array([r.above_wt_fraction for r in results], dtype=np.float32) * 100.0
+    duplicate_counts = np.array([r.duplicate_count for r in results], dtype=np.int32)
 
     fig, ax = plt.subplots(figsize=(7.0, 4.3))
     cmap = plt.get_cmap("plasma")
@@ -264,8 +276,9 @@ def _plot_fraction_above_wt(results: list[TemperatureResult], model_variant: str
     ax.plot(temps, values, color="black", linewidth=1.2, marker="o", markersize=4.5, zorder=3)
     ax.axhline(50.0, color="grey", linestyle="--", linewidth=1.0, alpha=0.8)
 
-    for x, y in zip(temps, values):
+    for x, y, dup in zip(temps, values, duplicate_counts):
         ax.text(x, y + 1.6, f"{y:.1f}%", ha="center", va="bottom", fontsize=9)
+        ax.text(x, y + 5.4, f"dups={dup}", ha="center", va="bottom", fontsize=8, color="#333333")
 
     ax.set_xlabel("Temperature")
     ax.set_ylabel("Final-step sequences above WT PLL (%)")
@@ -435,6 +448,7 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
     values = np.array([r.topk_mean_enrichment for r in results], dtype=np.float32)
     stds = np.array([r.topk_std_enrichment for r in results], dtype=np.float32)
     matched_counts = np.array([r.topk_matched for r in results], dtype=np.int32)
+    duplicate_counts = np.array([r.duplicate_count for r in results], dtype=np.int32)
     hamming_means = np.array([r.topk_mean_hamming_dist for r in results], dtype=np.float32)
     topk_total = results[0].topk_total if results else 0
 
@@ -456,7 +470,7 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
             zorder=2,
         )
 
-    for temp, value, color, matched, mean_h in zip(temps, values, colors, matched_counts, hamming_means):
+    for temp, value, color, matched, mean_h, dup in zip(temps, values, colors, matched_counts, hamming_means, duplicate_counts):
         if np.isfinite(value):
             ax.scatter(temp, value, s=72, color=color, edgecolors="black", linewidths=0.35, zorder=3)
             ax.annotate(
@@ -475,6 +489,15 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
                 ha="center",
                 fontsize=8.0,
             )
+            ax.annotate(
+                f"dups={dup}",
+                (temp, value),
+                textcoords="offset points",
+                xytext=(0, -14),
+                ha="center",
+                fontsize=8.0,
+                color="#333333",
+            )
         else:
             ax.scatter(temp, WT_M22_BINDING_ENRICHMENT, s=60, marker="x", color=color, linewidths=1.4, zorder=3)
             ax.annotate(
@@ -484,6 +507,15 @@ def _plot_topk_recovery(results: list[TemperatureResult], model_variant: str, ou
                 xytext=(0, 19),
                 ha="center",
                 fontsize=8.5,
+            )
+            ax.annotate(
+                f"dups={dup}",
+                (temp, WT_M22_BINDING_ENRICHMENT),
+                textcoords="offset points",
+                xytext=(0, -14),
+                ha="center",
+                fontsize=8.0,
+                color="#333333",
             )
 
     ax.axhline(WT_M22_BINDING_ENRICHMENT, color="#d62728", linestyle="--", linewidth=1.1, label="WT M22 enrichment")

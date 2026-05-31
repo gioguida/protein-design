@@ -70,6 +70,8 @@ def _infer_model_label(esm_model_path: Any) -> str:
 
 def _default_wandb_run_name(cfg: Any) -> str:
     """Create default base run name used by W&B and local/archive run directories."""
+    task_cfg = getattr(cfg, "task", None)
+    task_name = str(getattr(task_cfg, "name", None) or "dpo")
     model_label = _infer_model_label(cfg.model.esm_model_path)
     pairing = str(cfg.data.pairing_strategy)
     if pairing == "delta_based":
@@ -96,7 +98,7 @@ def _default_wandb_run_name(cfg: Any) -> str:
         temp_part = f"__loss-{float(cfg.training.temperature):g}"
 
     return (
-        f"dpo__{model_label}"
+        f"{task_name}__{model_label}"
         f"__{pairing}"
         f"__{loss_name}"
         f"{temp_part}"
