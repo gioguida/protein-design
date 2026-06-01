@@ -19,8 +19,8 @@ source bash_scripts/common_setup.sh
 # ----------------------------- model specs -----------------------------------
 # Format per model: "LABEL|SIZE|CHECKPOINT"
 MODELS=(
-  "vanilla|35M|facebook/esm2_t12_35M_UR50D"
-  "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
+  # "vanilla|35M|facebook/esm2_t12_35M_UR50D"
+  # "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
   # "evo_C05|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m_c05_cdrh3_blosum25"
   # "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
   # "dpo_linear_warmup|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
@@ -28,15 +28,18 @@ MODELS=(
   # "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
   # "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
   # "vanilla_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_4ep/step_1376.pt"
-  "just_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
-  "just_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
-  "just_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
-  "just_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
-  
-  "evo_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
-  "evo_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
-  "evo_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
-  "evo_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
+  # "just_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
+  # "just_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
+  # "just_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
+  # "just_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
+  # "evo_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
+  # "evo_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
+  # "evo_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
+  # "evo_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
+  "vanilla|650M|facebook/facebook/esm2_t33_650M_UR50D"
+  # "evotuned|650M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
+  # "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
+  # "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
 )
 
 # ----------------------------- switches --------------------------------------
