@@ -360,6 +360,16 @@ def main() -> int:
             ]
             _run(jsd_cmd, dry_run, f"summary_jsd_vs_temp:{model_name}")
 
+        if bool(summary_cfg.get("novelty_analysis", False)):
+            novelty_cmd = [
+                "uv", "run", "python",
+                "scripts/analysis/plot_novelty_analysis.py",
+                *temp_csv_args,
+                "--model-variant", model_variant,
+                "--output-dir", str(summary_dir),
+            ]
+            _run(novelty_cmd, dry_run, f"summary_novelty_analysis:{model_name}")
+
     print("[done] temperature sweep completed")
     return 0
 

@@ -15,37 +15,18 @@ sweep:
   n_chains: 10        # maps to beam_size for wt/dms; top-k seeds for top_dms
 
 models:
-  - name: "vanilla"
-    checkpoint: "facebook/esm2_t12_35M_UR50D"
-    model_variant: "vanilla"
-  - name: "evotuned"
-    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
-    model_variant: "evotuned"
-  - name: "just_dpo_1ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
-    model_variant: "just_dpo_1ep"
-  - name: "just_dpo_4ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
-    model_variant: "just_dpo_4ep"
-  - name: "just_dpo_7ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
-    model_variant: "just_dpo_7ep"
-  - name: "just_dpo_10ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
-    model_variant: "just_dpo_10ep"
-  - name: "evo_dpo_1ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
-    model_variant: "evo_dpo_1ep"
-  - name: "evo_dpo_4ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
-    model_variant: "evo_dpo_4ep"
-  - name: "evo_dpo_7ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
-    model_variant: "evo_dpo_7ep"
-  - name: "evo_dpo_10ep"
-    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
-    model_variant: "evo_dpo_10ep"
-
+  - name: "vanilla_650M"
+    checkpoint: "facebook/esm2_t33_650M_UR50D"
+    model_variant: "vanilla_650M"
+  - name: "evotuned_650M"
+    checkpoint: "/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
+    model_variant: "evotuned_650M"
+  - name: "just_dpo_650M"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
+    model_variant: "just_dpo_650M"
+  - name: "evo_dpo_650M"
+    checkpoint: "/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
+    model_variant: "evo_dpo_650M"
 # DMS reference paths used for beam_pll_vs_dms_histogram and beam_aa_heatmap.
 # Leave null to skip DMS-dependent plots.
 dms:
@@ -75,6 +56,7 @@ summary:
   pll_distribution_by_temp: true    # overlaid PLL histograms, one per temperature
   entropy_heatmap: true             # position-wise Shannon entropy across temperatures
   jsd_vs_temp: true                 # mean/per-position JSD (SBS vs DMS) across temperatures
+  novelty_analysis: true            # stacked bar: generated CDRHs found vs. novel across all datasets
   top_k_for_pll: 50                 # top sequences used for mean PLL in tradeoff plot
 
 output:
