@@ -30,6 +30,8 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from protein_design.analysis.novelty import annotate_generated_csv_in_place, build_reference_index
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -132,6 +134,18 @@ def main() -> int:
         )
         return 2
 
+    reference_index: dict[str, frozenset[str]] | None = None
+
+    def _annotate_generated_csv(csv_path: Path, *, step: str) -> None:
+        nonlocal reference_index
+        if dry_run or not csv_path.exists():
+            return
+        if reference_index is None:
+            print("[novelty] building reference index for generated-sequence CSV annotation")
+            reference_index = build_reference_index(REPO_ROOT)
+        annotate_generated_csv_in_place(csv_path, reference_index=reference_index)
+        print(f"[{step}] annotated dataset membership in {csv_path}")
+
     for model_spec in models_cfg:
         model_name = str(model_spec.get("name", "model"))
         checkpoint = os.path.expandvars(os.path.expanduser(str(model_spec.get("checkpoint") or "")))
@@ -172,6 +186,7 @@ def main() -> int:
                 if dms_si06:
                     cmd.extend(["--dms-si06-path", str(dms_si06)])
             _run(cmd, dry_run, f"gibbs:{model_name}:T={t_label}")
+            _annotate_generated_csv(csv_path, step=f"annotate_csv:{model_name}:T={t_label}")
 
             # --- Per-temperature plots ---
             per_temp_dir = plots_dir / model_name / f"temp_{t_label}"
