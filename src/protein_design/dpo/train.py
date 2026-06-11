@@ -25,18 +25,15 @@ from torch.utils.data import DataLoader, Dataset
 
 
 from protein_design.dms_splitting import (
-    DEFAULT_CONFIG_PATH,
     dataset_spec,
-    project_root,
     resolve_dataset_split,
 )
 from protein_design.eval import run_scoring_evaluation
 from protein_design.utils import init_wandb, setup_train_logger
 from .dataset import (
-    DELTA_BASED_COMPONENTS,
-    build_split_pair_dataframes_from_raw,
+    build_split_pair_dataframes_from_cfg,
     default_data_paths,
-    validate_delta_based_components,
+    resolve_dms_config_path_from_cfg,
 )
 from .data_processing import build_clean_ed5_csv, build_validation_perplexity_csvs
 from .loss import batch_monitoring_metrics, dpo_loss, weighted_dpo_loss
@@ -94,71 +91,7 @@ def _pair_collate(batch: Sequence[PairTuple]) -> List[PairTuple]:
 
 
 def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    pairing_strategy = str(cfg.data.pairing_strategy)
-    if pairing_strategy != "delta_based":
-        raise ValueError("DPO only supports data.pairing_strategy='delta_based'.")
-    delta_cfg = getattr(cfg.data, "delta_based", None)
-
-    def _delta_value(name: str, default: float) -> float:
-        if delta_cfg is not None and getattr(delta_cfg, name, None) is not None:
-            return float(getattr(delta_cfg, name))
-        return float(getattr(cfg.data, name, default))
-
-    if delta_cfg is None:
-        raise ValueError("data.delta_based is required when data.pairing_strategy='delta_based'.")
-    components = validate_delta_based_components([str(component) for component in delta_cfg.components])
-
-    mix_cfg = getattr(delta_cfg, "mix", None)
-    mix_mode = "count"
-    component_pair_counts: Dict[str, int] = {}
-    component_pair_fractions: Dict[str, float] = {}
-    if mix_cfg is not None:
-        mix_mode = str(getattr(mix_cfg, "mode", "count"))
-        count_cfg = getattr(mix_cfg, "count", None)
-        fraction_cfg = getattr(mix_cfg, "fraction", None)
-        for component in DELTA_BASED_COMPONENTS:
-            if count_cfg is not None and getattr(count_cfg, component, None) is not None:
-                component_pair_counts[component] = int(getattr(count_cfg, component))
-            if fraction_cfg is not None and getattr(fraction_cfg, component, None) is not None:
-                component_pair_fractions[component] = float(getattr(fraction_cfg, component))
-
-    split_size_cfg = getattr(cfg.data, "pair_split", None)
-    enforce_train_controlled_split_sizes = False
-    pair_train_frac = 0.8
-    pair_val_frac = 0.1
-    pair_test_frac = 0.1
-    if split_size_cfg is not None:
-        enforce_train_controlled_split_sizes = bool(
-            getattr(split_size_cfg, "enforce_train_controlled_sizes", False)
-        )
-        pair_train_frac = float(getattr(split_size_cfg, "train_frac", 0.8))
-        pair_val_frac = float(getattr(split_size_cfg, "val_frac", 0.1))
-        pair_test_frac = float(getattr(split_size_cfg, "test_frac", 0.1))
-
-    return build_split_pair_dataframes_from_raw(
-        pairing_strategy=pairing_strategy,
-        include_views=[],
-        force_rebuild=bool(cfg.data.force_rebuild),
-        min_positive_delta=float(cfg.data.min_positive_delta),
-        min_delta_margin=float(cfg.data.min_delta_margin),
-        train_frac=pair_train_frac,
-        val_frac=pair_val_frac,
-        test_frac=pair_test_frac,
-        enforce_train_controlled_split_sizes=enforce_train_controlled_split_sizes,
-        delta_components=components,
-        delta_mix_mode=mix_mode,
-        delta_component_pair_counts=component_pair_counts if component_pair_counts else None,
-        delta_component_pair_fractions=component_pair_fractions if component_pair_fractions else None,
-        gap=_delta_value("gap", 0.5),
-        wt_pairs_frac=_delta_value("wt_pairs_frac", 0.1),
-        cross_pairs_frac=_delta_value("cross_pairs_frac", 0.1),
-        strong_pos_threshold=_delta_value("strong_pos_threshold", 1.0),
-        strong_neg_threshold=_delta_value("strong_neg_threshold", -5.0),
-        min_score_margin=_delta_value("min_score_margin", 0.1),
-        seed=int(cfg.seed),
-        dms_config_path=_resolve_dms_config_path(cfg),
-        dataset_key=str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")),
-    )
+    return build_split_pair_dataframes_from_cfg(cfg)
 
 
 def _build_dataloader(
@@ -1031,11 +964,7 @@ def evaluate_perplexity(
 
 
 def _resolve_dms_config_path(cfg: Any) -> Path:
-    raw = getattr(cfg.data, "dms_config", None)
-    path = Path(str(raw)) if raw is not None else project_root() / DEFAULT_CONFIG_PATH
-    if not path.is_absolute():
-        path = project_root() / path
-    return path
+    return resolve_dms_config_path_from_cfg(cfg)
 
 
 def run_dpo(cfg: Any) -> Path:

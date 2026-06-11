@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
 import numpy as np
 import pandas as pd
@@ -80,6 +80,14 @@ def default_data_paths() -> Dict[str, Path]:
     }
 
 
+def resolve_dms_config_path_from_cfg(cfg: Any) -> Path:
+    raw = getattr(cfg.data, "dms_config", None)
+    path = Path(str(raw)) if raw is not None else project_root() / DEFAULT_CONFIG_PATH
+    if not path.is_absolute():
+        path = project_root() / path
+    return path
+
+
 def validate_delta_based_components(
     components: Sequence[str],
 ) -> Tuple[DeltaBasedComponent, ...]:
@@ -150,6 +158,41 @@ def _normalize_mix_mode(mix_mode: str) -> DeltaMixMode:
             f"Got: {mix_mode!r}"
         )
     return cast(DeltaMixMode, mode)
+
+
+def _normalize_excluded_winner_positions(positions: Sequence[int]) -> Tuple[int, ...]:
+    normalized = tuple(sorted({int(position) for position in positions}))
+    invalid = [position for position in normalized if position < 1 or position > len(WILD_TYPE)]
+    if invalid:
+        raise ValueError(
+            "data.exclude_winner_mutation_positions must be within the 1-based "
+            f"CDR-H3 range 1..{len(WILD_TYPE)}. Got invalid positions: {invalid}"
+        )
+    return normalized
+
+
+def _chosen_sequence_has_excluded_mutation(
+    sequence: str,
+    excluded_positions: Sequence[int],
+) -> bool:
+    if not excluded_positions or len(sequence) != len(WILD_TYPE):
+        return False
+    return any(sequence[position - 1] != WILD_TYPE[position - 1] for position in excluded_positions)
+
+
+def _filter_pairs_by_excluded_winner_positions(
+    pairs_df: pd.DataFrame,
+    excluded_positions: Sequence[int],
+) -> pd.DataFrame:
+    normalized_positions = _normalize_excluded_winner_positions(excluded_positions)
+    if pairs_df.empty or not normalized_positions:
+        return pairs_df.reset_index(drop=True)
+
+    chosen = pairs_df["chosen_sequence"].astype(str)
+    keep_mask = ~chosen.map(
+        lambda sequence: _chosen_sequence_has_excluded_mutation(sequence, normalized_positions)
+    )
+    return pairs_df.loc[keep_mask].reset_index(drop=True)
 
 
 def _sample_pairs_without_replacement(
@@ -560,6 +603,7 @@ def build_split_pair_dataframes_from_raw(
     split_hamming_distance: int = 1,
     split_stratify_bins: int = 10,
     enforce_train_controlled_split_sizes: bool = False,
+    exclude_winner_mutation_positions: Sequence[int] = (),
     seed: int = RANDOM_SEED,
     dms_config_path: Path | str | None = None,
     dataset_key: str = "ed2_m22",
@@ -600,6 +644,18 @@ def build_split_pair_dataframes_from_raw(
         )
 
     train_df, val_df, test_df = build("train", 0), build("val", 1), build("test", 2)
+    train_df = _filter_pairs_by_excluded_winner_positions(
+        train_df,
+        exclude_winner_mutation_positions,
+    )
+    val_df = _filter_pairs_by_excluded_winner_positions(
+        val_df,
+        exclude_winner_mutation_positions,
+    )
+    test_df = _filter_pairs_by_excluded_winner_positions(
+        test_df,
+        exclude_winner_mutation_positions,
+    )
     if bool(enforce_train_controlled_split_sizes):
         train_df, val_df, test_df = _downsample_pairs_to_train_controlled_split(
             train_df=train_df,
@@ -611,6 +667,80 @@ def build_split_pair_dataframes_from_raw(
             rng=np.random.default_rng(int(seed) + 3),
         )
     return train_df, val_df, test_df
+
+
+def build_split_pair_dataframes_from_cfg(
+    cfg: Any,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    pairing_strategy = str(cfg.data.pairing_strategy)
+    if pairing_strategy != "delta_based":
+        raise ValueError("DPO only supports data.pairing_strategy='delta_based'.")
+    delta_cfg = getattr(cfg.data, "delta_based", None)
+
+    def _delta_value(name: str, default: float) -> float:
+        if delta_cfg is not None and getattr(delta_cfg, name, None) is not None:
+            return float(getattr(delta_cfg, name))
+        return float(getattr(cfg.data, name, default))
+
+    if delta_cfg is None:
+        raise ValueError("data.delta_based is required when data.pairing_strategy='delta_based'.")
+    components = validate_delta_based_components([str(component) for component in delta_cfg.components])
+
+    mix_cfg = getattr(delta_cfg, "mix", None)
+    mix_mode = "count"
+    component_pair_counts: Dict[str, int] = {}
+    component_pair_fractions: Dict[str, float] = {}
+    if mix_cfg is not None:
+        mix_mode = str(getattr(mix_cfg, "mode", "count"))
+        count_cfg = getattr(mix_cfg, "count", None)
+        fraction_cfg = getattr(mix_cfg, "fraction", None)
+        for component in DELTA_BASED_COMPONENTS:
+            if count_cfg is not None and getattr(count_cfg, component, None) is not None:
+                component_pair_counts[component] = int(getattr(count_cfg, component))
+            if fraction_cfg is not None and getattr(fraction_cfg, component, None) is not None:
+                component_pair_fractions[component] = float(getattr(fraction_cfg, component))
+
+    split_size_cfg = getattr(cfg.data, "pair_split", None)
+    enforce_train_controlled_split_sizes = False
+    pair_train_frac = 0.8
+    pair_val_frac = 0.1
+    pair_test_frac = 0.1
+    if split_size_cfg is not None:
+        enforce_train_controlled_split_sizes = bool(
+            getattr(split_size_cfg, "enforce_train_controlled_sizes", False)
+        )
+        pair_train_frac = float(getattr(split_size_cfg, "train_frac", 0.8))
+        pair_val_frac = float(getattr(split_size_cfg, "val_frac", 0.1))
+        pair_test_frac = float(getattr(split_size_cfg, "test_frac", 0.1))
+
+    return build_split_pair_dataframes_from_raw(
+        pairing_strategy=pairing_strategy,
+        include_views=[],
+        force_rebuild=bool(cfg.data.force_rebuild),
+        min_positive_delta=float(cfg.data.min_positive_delta),
+        min_delta_margin=float(cfg.data.min_delta_margin),
+        train_frac=pair_train_frac,
+        val_frac=pair_val_frac,
+        test_frac=pair_test_frac,
+        enforce_train_controlled_split_sizes=enforce_train_controlled_split_sizes,
+        exclude_winner_mutation_positions=tuple(
+            int(position)
+            for position in getattr(cfg.data, "exclude_winner_mutation_positions", ())
+        ),
+        delta_components=components,
+        delta_mix_mode=mix_mode,
+        delta_component_pair_counts=component_pair_counts if component_pair_counts else None,
+        delta_component_pair_fractions=component_pair_fractions if component_pair_fractions else None,
+        gap=_delta_value("gap", 0.5),
+        wt_pairs_frac=_delta_value("wt_pairs_frac", 0.1),
+        cross_pairs_frac=_delta_value("cross_pairs_frac", 0.1),
+        strong_pos_threshold=_delta_value("strong_pos_threshold", 1.0),
+        strong_neg_threshold=_delta_value("strong_neg_threshold", -5.0),
+        min_score_margin=_delta_value("min_score_margin", 0.1),
+        seed=int(cfg.seed),
+        dms_config_path=resolve_dms_config_path_from_cfg(cfg),
+        dataset_key=str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")),
+    )
 
 
 def load_dpo_pair_dataframe(**kwargs) -> pd.DataFrame:
