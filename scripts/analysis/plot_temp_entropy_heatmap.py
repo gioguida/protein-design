@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from protein_design.analysis.entropy import position_entropy
 from protein_design.constants import C05_CDRH3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,23 +39,6 @@ def _load_final_step(csv_path: Path) -> list[str]:
     return df.loc[df["gibbs_step"] == final_step, "cdrh3"].astype(str).tolist()
 
 
-def _position_entropy(seqs: list[str]) -> np.ndarray:
-    L = len(C05_CDRH3)
-    ent = np.zeros(L, dtype=np.float32)
-    if not seqs:
-        return ent
-    n = len(seqs)
-    for i in range(L):
-        counts: dict[str, int] = {}
-        for s in seqs:
-            aa = s[i]
-            counts[aa] = counts.get(aa, 0) + 1
-        probs = np.array([c / n for c in counts.values()], dtype=np.float32)
-        probs = probs[probs > 0]
-        ent[i] = float(-(probs * np.log2(probs)).sum())
-    return ent
-
-
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -68,7 +52,7 @@ def main() -> int:
             log.warning("No final-step sequences for T=%s (%s); skipping.", temp, csv_path)
             continue
         temps.append(temp)
-        rows.append(_position_entropy(seqs))
+        rows.append(position_entropy(seqs, expected_length=len(C05_CDRH3)))
 
     if not rows:
         raise ValueError("No valid temperature data for entropy heatmap.")
@@ -99,4 +83,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -64,6 +64,7 @@ plots/
 # Agents
 .claude
 .codex
+AGENTS.md
 memory/
 
 # OS/editor junk
@@ -86,6 +87,7 @@ htmlcov/
 pip-wheel-metadata/
 site/
 .pytest_dms_tmp
+.pytest*
 
 # Local env/version managers
 .uv/

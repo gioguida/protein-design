@@ -4,6 +4,9 @@ data:
   dpo_dataset_key: ed2_m22
   processed_dir: data/processed
   force_rebuild: false
+  # 1-based CDR-H3 positions. If a chosen/winner sequence is mutated at any of
+  # these positions relative to the WT C05 CDR-H3, that pair is removed.
+  exclude_winner_mutation_positions: []
   pair_split:
     # Keep train as anchor, and cap val/test to these ratios.
     enforce_train_controlled_sizes: true

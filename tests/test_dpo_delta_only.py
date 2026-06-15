@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from protein_design.dpo.dataset import (
+    _filter_pairs_by_excluded_winner_positions,
     _downsample_pairs_to_train_controlled_split,
     build_dpo_pairs_from_clustered_dataframe,
 )
@@ -126,3 +127,28 @@ def test_train_controlled_split_sizes_use_train_as_anchor() -> None:
     assert len(out_train) == 25000
     assert len(out_val) == 3125
     assert len(out_test) == 3125
+
+
+def test_excluded_winner_mutation_positions_remove_pairs_by_chosen_sequence() -> None:
+    pairs_df = pd.DataFrame(
+        {
+            "chosen_sequence": [
+                "AMSMQQVVSAGWERADLVGDAFDV",
+                "HMSMQQVVSAGWERADLVGDAFDV",
+                "HMSMQQVVSAGWERADLVGDAFDY",
+            ],
+            "rejected_sequence": [
+                "HMSMQQVVSAGWERADLVGDAFDV",
+                "AMSMQQVVSAGWERADLVGDAFDV",
+                "HMSMQQVVSAGWERADLVGDAFDV",
+            ],
+            "chosen_delta": [1.0, 2.0, 3.0],
+            "rejected_delta": [0.0, 0.0, 0.0],
+            "delta_margin": [1.0, 2.0, 3.0],
+        }
+    )
+
+    filtered = _filter_pairs_by_excluded_winner_positions(pairs_df, [1, 24])
+
+    assert len(filtered) == 1
+    assert filtered.iloc[0]["chosen_sequence"] == "HMSMQQVVSAGWERADLVGDAFDV"

@@ -40,6 +40,8 @@ MODELS=(
   "evotuned|650M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
    "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
    "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
+  # "just_lora_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_lora_dpo_650M/step_2200.pt"
+  # "evo_lora_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_lora_dpo_650M/step_3300.pt"
 )
 
 # ----------------------------- switches --------------------------------------
