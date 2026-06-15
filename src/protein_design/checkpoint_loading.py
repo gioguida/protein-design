@@ -26,7 +26,12 @@ _LORA_MODULE_RE = re.compile(r"\.([^.]+)\.lora_(?:A|B|embedding_A|embedding_B)\.
 
 
 def _is_local_path_like(checkpoint: str) -> bool:
-    return any(sep in checkpoint for sep in ("/", "\\")) or checkpoint.endswith(".pt")
+    return (
+        checkpoint.startswith(("/", "./", "../", "~"))
+        or checkpoint.endswith(".pt")
+        or "\\" in checkpoint
+        or checkpoint.count("/") > 1
+    )
 
 
 def _strip_model_prefix(key: str) -> str:

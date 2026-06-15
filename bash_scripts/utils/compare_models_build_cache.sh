@@ -1,8 +1,18 @@
 #!/bin/bash
-# Compare fine-tuned checkpoints on WT PPL, good-sequence PPL, Spearman,
-# and per-dataset PLL violin model-comparison plots.
+# Build the model-comparison cache one model at a time (no plots).
+#
+# Phase 1 of the two-step workflow: this populates the scratch cache
+# (WT PPL + per-dataset PLL scores / Spearman / AUROC) for each 650M model so
+# the combined comparison in compare_models.sh can read it back and run fast.
+#
+# Usage:
+#   sbatch bash_scripts/utils/compare_models_build_cache.sh        # all models, sequentially
+#   sbatch bash_scripts/utils/compare_models_build_cache.sh 0      # only MODELS[0]
+# Submitting per-index lets you run the models one by one as separate jobs;
+# each model writes to its own cache dir (keyed by label|size|checkpoint), so
+# concurrent per-index jobs do not overwrite each other.
 
-#SBATCH --job-name=compare_models
+#SBATCH --job-name=compare_models_cache
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
@@ -10,37 +20,31 @@
 #SBATCH --gres=gpumem:24g
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu
-#SBATCH --output=bash_scripts/logs/compare_models_%j.log
+#SBATCH --output=bash_scripts/logs/compare_models_cache_%j.log
 
 set -euo pipefail
-SBATCH_SCRIPT_PATH="bash_scripts/utils/compare_models.sh"
+SBATCH_SCRIPT_PATH="bash_scripts/utils/compare_models_build_cache.sh"
 source bash_scripts/common_setup.sh
 
 # ----------------------------- model specs -----------------------------------
 # Format per model: "LABEL|SIZE|CHECKPOINT"
 MODELS=(
-  # "vanilla|35M|facebook/esm2_t12_35M_UR50D"
-  # "evotuned|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt"
-  # "evo_C05|35M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m_c05_cdrh3_blosum25"
-  # "dpo_reduceLronPlateau|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_reduceLRonPlateau/best.pt"
-  # "dpo_linear_warmup|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup/best.pt"
-  # "dpo_linear_warmup_cosine|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_linear_warmup_cosine/best.pt"
-  # "dpo_step|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_step/best.pt"
-  # "dpo_one_epoch|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/dpo_one_epoch_low_lr/best.pt"
-  # "vanilla_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_4ep/step_1376.pt"
-  # "just_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_344.pt"
-  # "just_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_1376.pt"
-  # "just_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_2408.pt"
-  # "just_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo/step_3440.pt"
-  # "evo_dpo_1ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_344.pt"
-  # "evo_dpo_4ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_1376.pt"
-  # "evo_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
-  # "evo_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
-   "vanilla|650M|facebook/esm2_t33_650M_UR50D"
+  "vanilla|650M|facebook/esm2_t33_650M_UR50D"
   "evotuned|650M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
-   "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
-   "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
+  "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
+  "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
 )
+
+# Optional single-model selection by index (0-based).
+if [[ $# -ge 1 ]]; then
+  IDX="$1"
+  if ! [[ "${IDX}" =~ ^[0-9]+$ ]] || (( IDX < 0 || IDX >= ${#MODELS[@]} )); then
+    echo "[error] model index '${IDX}' out of range (0..$(( ${#MODELS[@]} - 1 )))" >&2
+    exit 1
+  fi
+  MODELS=("${MODELS[$IDX]}")
+  echo "[run] single-model build, index ${IDX}"
+fi
 
 # ----------------------------- switches --------------------------------------
 USE_ED2=1
@@ -48,11 +52,12 @@ USE_ED5=1
 USE_ED811=1
 USE_EXP=1
 
+# Compute + cache everything expensive; skip plots (those run in the combined step).
 RUN_WT_PPL=1
 RUN_GOOD_PPL=1
 RUN_SPEARMAN=1
-RUN_PLOTS=1
-RUN_VIOLIN_PLOTS=1
+RUN_PLOTS=0
+RUN_VIOLIN_PLOTS=0
 USE_CACHE=1
 WRITE_CACHE=1
 PLOTS_ONLY=0
@@ -66,14 +71,14 @@ ED2_DATASET_KEY="ed2_m22"
 ED5_DATASET_KEY="ed5_m22"
 ED811_DATASET_KEY="ed811_m22"
 EXP_DATASET_KEY="exp"
-# Reuse splits + cache built by compare_models_build_cache.sh (no rebuild here).
-FORCE_SPLIT_REBUILD=0
+FORCE_SPLIT_REBUILD=1
 GOOD_THRESHOLD=5.190013461
 
 # ----------------------------- runtime ---------------------------------------
 BATCH_SIZE=64
 STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT_DIR="/cluster/project/infk/krause/${USER}/protein-design/reports/model_comparison/${STAMP}_${SLURM_JOB_ID:-local}"
+# Append the SLURM job id so concurrent per-model jobs never share an OUT_DIR.
+OUT_DIR="/cluster/project/infk/krause/${USER}/protein-design/reports/model_comparison/cache_build_${STAMP}_${SLURM_JOB_ID:-local}"
 mkdir -p "${OUT_DIR}"
 
 ARGS=(
@@ -113,5 +118,5 @@ if [[ "${FORCE_SPLIT_REBUILD}" == "1" ]]; then ARGS+=(--force-split-rebuild); fi
 echo "[run] output dir: ${OUT_DIR}"
 echo "[run] split: ${SPLIT_NAME}"
 echo "[run] good-threshold: ${GOOD_THRESHOLD}"
+echo "[run] models: ${MODELS[*]}"
 uv run python scripts/analysis/compare_models.py "${ARGS[@]}"
-

@@ -24,6 +24,7 @@ class DatasetSpec:
     sequence_col: str
     key_metric_col: str
     split_source: Optional[str] = None
+    no_split: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ def load_dms_config(config_path: str | Path | None = None) -> DMSConfig:
             sequence_col=str(entry.get("sequence_col", "aa")),
             key_metric_col=str(entry.get("key_metric_col", "M22_binding_enrichment_adj")),
             split_source=None if entry.get("split_source") is None else str(entry.get("split_source")),
+            no_split=bool(entry.get("no_split", False)),
         )
     if not datasets:
         raise ValueError(f"No DMS datasets configured in {path}")
@@ -398,7 +400,6 @@ def ensure_dataset_splits(
                 f"{len(split_values)} memberships for {len(df)} rows."
             )
         df["_split"] = split_values
-        key_col = spec.sequence_col
     else:
         source_paths = ensure_dataset_splits(source_key, config.path, force=force)
         membership_parts = []
@@ -408,17 +409,17 @@ def ensure_dataset_splits(
             split_df["split"] = split_name
             membership_parts.append(split_df)
         membership = pd.concat(membership_parts, ignore_index=True)
-        key_col = spec.sequence_col
         split_lookup = dict(zip(membership["split_key"].astype(str), membership["split"].astype(str)))
-        df["_split"] = df[key_col].astype(str).map(split_lookup)
+        df["_split"] = df[spec.sequence_col].astype(str).map(split_lookup)
 
     out_dir = config.split.output_dir / dataset_key
     out_dir.mkdir(parents=True, exist_ok=True)
+    counts = {}
     for split_name, path in paths.items():
         split_df = df[df["_split"] == split_name].drop(columns=["_split"]).reset_index(drop=True)
         split_df.to_csv(path, index=False)
+        counts[split_name] = len(split_df)
 
-    counts = {split_name: int(pd.read_csv(path, usecols=[key_col]).shape[0]) for split_name, path in paths.items()}
     with meta_path.open("w", encoding="utf-8") as fh:
         json.dump({**expected, "counts": counts}, fh, indent=2, sort_keys=True)
     return paths
