@@ -1,0 +1,20 @@
+# @package _global_
+# Variant 3: CDR-focused single-mask with a light framework mix.
+#   train: CDR-H3 ± flank positions kept ~Bernoulli(cdr_mask_prob), plus
+#          framework positions kept ~Bernoulli(framework_mask_prob), resampled
+#          each epoch. val/test: full CDR window only (comparable with "cdr").
+# Requires the windows parquet built by scripts/data_prep/build_cdr_windows.py.
+data:
+  fasta_path: ${paths.project_dir}/data/c05/c05_cdrh3_blosum25.fasta
+  max_seq_len: 256
+  mlm_probability: 0.15
+  masking: cdr_mix
+  cdr_flank: 3
+  cdr_windows_cache: ${paths.scratch_dir}/cdr_windows/c05_cdrh3_blosum25_flank3.parquet
+  cdr_mask_prob: 0.5
+  framework_mask_prob: 0.05
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

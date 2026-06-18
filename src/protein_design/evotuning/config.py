@@ -20,6 +20,15 @@ class DataConfig:
     max_seq_len: int = 256
     mlm_probability: float = 0.15
     split: SplitConfig = field(default_factory=SplitConfig)
+    # Single-position masking mode:
+    #   None (legacy 80/10/10 MLM) | "random15" | "cdr" | "cdr_mix".
+    masking: Optional[str] = None
+    cdr_flank: int = 3
+    cdr_windows_cache: Optional[str] = None
+    # CDR modes only: per-epoch keep-prob for CDR-window positions, and (for
+    # "cdr_mix") for framework positions. See SingleMaskDataset.
+    cdr_mask_prob: float = 0.5
+    framework_mask_prob: float = 0.05
 
 
 @dataclass
@@ -35,6 +44,15 @@ class TrainingConfig:
     save_every_n_steps: Optional[int] = None
     fp16: bool = False
     resume_checkpoint: Optional[str] = None
+    # When True, run eval + checkpoint at the end of every epoch (instead of
+    # the step-based save_every_n_steps cadence). Used by the single-mask
+    # C05 variants for clean per-epoch comparison.
+    eval_per_epoch: bool = False
+    # Early stopping (requires eval_per_epoch): stop after this many consecutive
+    # per-epoch evals without a val-perplexity improvement of at least
+    # `early_stopping_min_delta`. None disables early stopping.
+    early_stopping_patience: Optional[int] = None
+    early_stopping_min_delta: float = 0.0
     # TTT-only: optimizer-step indices at which to snapshot the model
     # (LoRA adapter weights if LoRA is active, else full state_dict).
     # Empty list = no snapshots beyond final.pt.
@@ -52,11 +70,19 @@ def build_data_config(cfg: DictConfig) -> DataConfig:
             val_pct=int(split_node.get("val_pct", 5)),
             test_pct=int(split_node.get("test_pct", 5)),
         )
+    masking = cfg.data.get("masking", None)
+    masking = str(masking) if masking is not None else None
+    cdr_cache = cfg.data.get("cdr_windows_cache", None)
     return DataConfig(
         fasta_path=cfg.data.fasta_path,
         max_seq_len=int(cfg.data.max_seq_len),
         mlm_probability=float(cfg.data.mlm_probability),
         split=split_cfg,
+        masking=masking,
+        cdr_flank=int(cfg.data.get("cdr_flank", 3)),
+        cdr_windows_cache=str(cdr_cache) if cdr_cache is not None else None,
+        cdr_mask_prob=float(cfg.data.get("cdr_mask_prob", 0.5)),
+        framework_mask_prob=float(cfg.data.get("framework_mask_prob", 0.05)),
     )
 
 
@@ -73,4 +99,11 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
         fp16=bool(t.fp16),
         resume_checkpoint=t.get("resume_checkpoint", None),
         snapshot_steps=[int(s) for s in t.get("snapshot_steps", []) or []],
+        eval_per_epoch=bool(t.get("eval_per_epoch", False)),
+        early_stopping_patience=(
+            int(t.get("early_stopping_patience"))
+            if t.get("early_stopping_patience", None) is not None
+            else None
+        ),
+        early_stopping_min_delta=float(t.get("early_stopping_min_delta", 0.0)),
     )

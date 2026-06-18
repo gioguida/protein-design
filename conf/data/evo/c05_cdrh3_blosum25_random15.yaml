@@ -1,0 +1,12 @@
+# @package _global_
+# Variant 1: single-mask on 15% random positions over the whole VH (baseline).
+data:
+  fasta_path: ${paths.project_dir}/data/c05/c05_cdrh3_blosum25.fasta
+  max_seq_len: 256
+  mlm_probability: 0.15
+  masking: random15
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

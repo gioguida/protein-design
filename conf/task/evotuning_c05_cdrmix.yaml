@@ -1,0 +1,31 @@
+# @package _global_
+# Variant 3 — ESM2-650M evotuning on C05-similar VH, CDR-H3 ± 3 with a light
+# framework mix (regularized against the CDR-only overfitting of variant 2).
+defaults:
+  - override /model: esm2_650m
+  - override /data: evo/c05_cdrh3_blosum25_cdrmix
+  - override /scoring: c05
+  - _self_
+
+task:
+  name: evotuning_c05_cdrmix
+  runner: evotuning
+  stage_type: evotuning
+
+# Same regularization as the cdr variant: freeze the lower ESM2 layers.
+model:
+  freeze_first_n_layers: 24
+
+training:
+  learning_rate: 5.0e-5
+  warmup_steps: 50
+  max_epochs: 10
+  max_steps: null
+  batch_size: 64
+  gradient_accumulation_steps: 8
+  save_every_n_steps: null
+  eval_per_epoch: true
+  # Stop after 3 consecutive epochs without val-ppl improvement.
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.0
+  fp16: true

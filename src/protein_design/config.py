@@ -58,6 +58,8 @@ class ScoringConfig:
     n_samples: int = 10000
     batch_size: int = 512
     datasets: Optional[List[dict]] = None
+    # Datasets scored only once at end of training (e.g. the held-out test set).
+    final_datasets: Optional[List[dict]] = None
     flank_ks: List[int] = field(default_factory=lambda: [1, 3, 5])
     persist_test_scores: bool = True
     persist_live_scores: bool = False
@@ -122,6 +124,12 @@ def build_scoring_config(cfg: DictConfig) -> ScoringConfig:
         if cfg.scoring.datasets
         else None
     )
+    final_datasets_cfg = cfg.scoring.get("final_datasets", None)
+    final_datasets = (
+        OmegaConf.to_container(final_datasets_cfg, resolve=True)
+        if final_datasets_cfg
+        else None
+    )
     flank_ks_cfg = cfg.scoring.get("flank_ks", [1, 3, 5])
     flank_ks = [int(k) for k in flank_ks_cfg]
     test_eval_cfg = cfg.scoring.get("test_eval", None)
@@ -136,6 +144,7 @@ def build_scoring_config(cfg: DictConfig) -> ScoringConfig:
         n_samples=int(cfg.scoring.n_samples),
         batch_size=int(cfg.scoring.batch_size),
         datasets=datasets or None,
+        final_datasets=final_datasets or None,
         flank_ks=flank_ks,
         persist_test_scores=bool(cfg.scoring.get("persist_test_scores", True)),
         persist_live_scores=bool(cfg.scoring.get("persist_live_scores", False)),
