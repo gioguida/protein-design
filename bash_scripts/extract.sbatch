@@ -14,6 +14,7 @@
 # Usage:
 #   sbatch bash_scripts/extract.sbatch --what pll --model evo_35m --dataset all
 #   sbatch bash_scripts/extract.sbatch --what pll --model evo_35m --dataset ed2_m22 --force
+#   sbatch bash_scripts/extract.sbatch --what emb --model vanilla_650m --dataset all
 #
 # --what selects the extractor; remaining flags are forwarded to it unchanged.
 # Models come from conf/analysis/models.yaml, datasets from dms_datasets.yaml.
@@ -34,8 +35,11 @@ case "$WHAT" in
   pll)
     python scripts/analysis/compute_pll.py "${ARGS[@]}"
     ;;
+  emb)
+    python scripts/analysis/compute_dms_embeddings.py "${ARGS[@]}"
+    ;;
   "")
     echo "error: --what is required (e.g. --what pll)" >&2; exit 2 ;;
   *)
-    echo "error: unknown --what '$WHAT' (known: pll)" >&2; exit 2 ;;
+    echo "error: unknown --what '$WHAT' (known: pll, emb)" >&2; exit 2 ;;
 esac
