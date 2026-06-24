@@ -98,6 +98,28 @@ def _build_split_pair_dataframes(cfg: Any) -> Tuple[pd.DataFrame, pd.DataFrame, 
     return build_split_pair_dataframes_from_cfg(cfg)
 
 
+def _cap_eval_df(
+    df: Optional[pd.DataFrame],
+    cap: Optional[int],
+    *,
+    seed: int,
+    label: str,
+    logger: logging.Logger,
+) -> Optional[pd.DataFrame]:
+    """Deterministically downsample an in-loop eval frame to at most `cap` rows.
+
+    The full ed2 val pair / Spearman sets make every per-epoch validation cost
+    hours; for the low-data sweep we only need a fixed-size, low-variance monitor
+    (best-checkpoint selection), so cap them. cap<=0 or None means no cap. The
+    final ed5 test sets are never capped here (they are the reported metric).
+    """
+    if df is None or cap is None or int(cap) <= 0 or len(df) <= int(cap):
+        return df
+    capped = df.sample(n=int(cap), random_state=int(seed)).reset_index(drop=True)
+    logger.info("Capped %s for in-loop eval: %d -> %d rows", label, len(df), len(capped))
+    return capped
+
+
 def _build_dataloader(
     pairs_df: pd.DataFrame,
     batch_size: int,
@@ -1119,6 +1141,23 @@ def run_lora_dpo(cfg: Any) -> Path:
 
     logger.info("Split sizes | train=%d val=%d test=%d", len(train_df), len(val_df), len(test_df))
 
+    # In-loop val eval is per-epoch and, on the full ed2 val set, costs hours.
+    # Cap the val pair frame (val-loss / perplexity loop) to a fixed size so each
+    # epoch's monitor is fast and low-variance. Test pairs are left untouched.
+    low_data_cfg = getattr(cfg.data, "low_data", None)
+    val_pairs_cap = getattr(low_data_cfg, "val_pairs_cap", None) if low_data_cfg is not None else None
+    val_df = _cap_eval_df(
+        val_df, val_pairs_cap, seed=int(cfg.seed) + 1, label="val pairs", logger=logger
+    )
+    # The final test eval iterates ALL test PAIRS (DPO loss / perplexity diagnostics
+    # on ed2) — ~40min on the full 8876 pairs. This is NOT the reported metric: the
+    # headline test_spearman_avg comes from the separate ed5 test_spearman_df, which
+    # stays uncapped. Cap the test pairs to keep the final eval fast.
+    test_pairs_cap = getattr(low_data_cfg, "test_pairs_cap", None) if low_data_cfg is not None else None
+    test_df = _cap_eval_df(
+        test_df, test_pairs_cap, seed=int(cfg.seed) + 2, label="test pairs", logger=logger
+    )
+
     train_loader = _build_dataloader(
         train_df,
         batch_size=int(cfg.training.batch_size),
@@ -1224,6 +1263,10 @@ def run_lora_dpo(cfg: Any) -> Path:
     global_step = 0
     _ensure_validation_eval_csvs(cfg, logger)
     val_spearman_df = _load_validation_spearman_df(cfg, logger)
+    val_spearman_cap = getattr(low_data_cfg, "val_spearman_cap", None) if low_data_cfg is not None else None
+    val_spearman_df = _cap_eval_df(
+        val_spearman_df, val_spearman_cap, seed=int(cfg.seed) + 3, label="val Spearman set", logger=logger
+    )
     val_subset_spearman_dfs = _load_validation_pos_neg_spearman_dfs(cfg, logger)
     val_pos_spearman_df = val_subset_spearman_dfs.get("val_pos")
     val_neg_spearman_df = val_subset_spearman_dfs.get("val_neg")
