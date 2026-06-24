@@ -1,0 +1,42 @@
+# @package _global_
+# 35M analogue of evotuning_c05_cdrmix_v2: the cdrmix single-mask C05 evotuning
+# tuned to MAXIMISE the masked-position M22 Spearman (the DPO starting point),
+# with best_spearman.pt tracked automatically and sub-epoch eval.
+#
+# Recipe mirrors the existing 35M C05 fine-tune (evo_c05_blosum25): seed from the
+# general OAS-evotuned 35M (oas_full_evo_35m.pt) and fine-tune ALL layers
+# (freeze_first_n_layers: 0), unlike the 650M run which freezes the first 24.
+# Data/scoring are model-independent, so they are identical to the 650M task; the
+# per-position single-mask expansion keeps the epoch ~1621 micro-batches, so the
+# save_every_n_steps=480 cadence (~3 evals/epoch) carries over unchanged.
+defaults:
+  - override /model: esm2_35m
+  - override /data: evo/c05_cdrh3_blosum25_cdrmix
+  - override /scoring: c05
+  - _self_
+
+task:
+  name: evotuning_c05_cdrmix_v2_35m
+  runner: evotuning
+  stage_type: evotuning
+
+model:
+  init:
+    source: checkpoint
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_35m/oas_full_evo_35m.pt
+  freeze_first_n_layers: 0
+
+training:
+  learning_rate: 5.0e-5
+  warmup_steps: 50
+  max_epochs: 6
+  max_steps: null
+  batch_size: 64
+  gradient_accumulation_steps: 8
+  # ~3 evals/epoch (epoch is ~1621 micro-batches). Must be divisible by
+  # gradient_accumulation_steps (8). 480 % 8 == 0.
+  save_every_n_steps: 480
+  eval_per_epoch: true
+  # Select by Spearman, not ppl (val ppl keeps improving past the Spearman peak).
+  early_stopping_patience: null
+  fp16: true
