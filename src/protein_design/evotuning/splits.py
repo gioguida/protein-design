@@ -15,9 +15,22 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 Split = Literal["train", "val", "test"]
+
+
+def cdr_windows_cache_path(scratch_dir: str, fasta_path: str, flank: int) -> str:
+    """Canonical parquet-cache path for CDR-window single-masking.
+
+    Single source of truth for the naming convention shared by the cache
+    builder (scripts/data_prep/build_cdr_windows.py) and the trainer's config
+    builder (evotuning/config.py), so the cache can be auto-derived from
+    (fasta, flank) without a hand-edited YAML path per dataset/flank.
+    """
+    stem = Path(fasta_path).stem
+    return str(Path(scratch_dir) / "cdr_windows" / f"{stem}_flank{flank}.parquet")
 
 
 @dataclass(frozen=True)

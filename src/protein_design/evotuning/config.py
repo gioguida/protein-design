@@ -9,7 +9,11 @@ from typing import Optional
 
 from omegaconf import DictConfig
 
-from protein_design.evotuning.splits import SplitConfig
+from protein_design.evotuning.splits import SplitConfig, cdr_windows_cache_path
+
+# Masking modes that consume the CDR-window parquet cache (mirrors
+# data.CDR_MASK_MODES; duplicated here to avoid importing the heavy data module).
+_CDR_MASK_MODES = ("cdr", "cdr_mix")
 
 
 @dataclass
@@ -72,15 +76,26 @@ def build_data_config(cfg: DictConfig) -> DataConfig:
         )
     masking = cfg.data.get("masking", None)
     masking = str(masking) if masking is not None else None
+    cdr_flank = int(cfg.data.get("cdr_flank", 3))
     cdr_cache = cfg.data.get("cdr_windows_cache", None)
+    cdr_cache = str(cdr_cache) if cdr_cache is not None else None
+    # When the cache path is not explicitly pinned in YAML, auto-derive it from
+    # (fasta_path, cdr_flank) using the same naming convention as the cache
+    # builder. This makes sweeping cdr_flank / swapping fasta_path "just work"
+    # (as long as the matching cache has been built once) without per-flank
+    # cdr_windows_cache= overrides.
+    if cdr_cache is None and masking in _CDR_MASK_MODES:
+        cdr_cache = cdr_windows_cache_path(
+            str(cfg.paths.scratch_dir), str(cfg.data.fasta_path), cdr_flank
+        )
     return DataConfig(
         fasta_path=cfg.data.fasta_path,
         max_seq_len=int(cfg.data.max_seq_len),
         mlm_probability=float(cfg.data.mlm_probability),
         split=split_cfg,
         masking=masking,
-        cdr_flank=int(cfg.data.get("cdr_flank", 3)),
-        cdr_windows_cache=str(cdr_cache) if cdr_cache is not None else None,
+        cdr_flank=cdr_flank,
+        cdr_windows_cache=cdr_cache,
         cdr_mask_prob=float(cfg.data.get("cdr_mask_prob", 0.5)),
         framework_mask_prob=float(cfg.data.get("framework_mask_prob", 0.05)),
     )

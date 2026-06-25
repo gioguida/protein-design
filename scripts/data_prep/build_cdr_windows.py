@@ -23,6 +23,8 @@ import pandas as pd
 from Bio import SeqIO
 from dotenv import load_dotenv
 
+from protein_design.evotuning.splits import cdr_windows_cache_path
+
 # This repo keeps cluster paths in .env.local (loaded by common_setup.sh in
 # sbatch); fall back to the default .env too.
 load_dotenv(".env.local")
@@ -55,8 +57,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def cache_path(scratch_dir: str, fasta: str, flank: int) -> Path:
-    stem = Path(fasta).stem
-    return Path(scratch_dir) / "cdr_windows" / f"{stem}_flank{flank}.parquet"
+    return Path(cdr_windows_cache_path(scratch_dir, fasta, flank))
 
 
 def load_fasta(fasta: Path) -> dict[str, str]:
