@@ -34,6 +34,8 @@ def _is_local_path_like(checkpoint: str) -> bool:
         return True
     if len(checkpoint) >= 3 and checkpoint[1:3] in (":\\", ":/"):
         return True
+    if checkpoint.count("/") > 1:
+        return True
     return False
 
 

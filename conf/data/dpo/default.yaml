@@ -13,6 +13,23 @@ data:
     train_frac: 0.8
     val_frac: 0.1
     test_frac: 0.1
+  # Low-data regime: subsample the TRAIN SEQUENCE split to n_train before pairs
+  # are derived (val/test untouched, so the held-out eval is constant across N).
+  # Deterministic in (n_train, scheme, seed) -> identical sequences across base
+  # models, so evo-vs-vanilla differs only by the model. Off by default; enable
+  # per-run, e.g.:  data.low_data.enabled=true data.low_data.n_train=200
+  low_data:
+    enabled: false
+    n_train: null
+    scheme: stratified   # stratified (by enrichment) | random (sanity band)
+    stratify_bins: 10
+    seed: 0
+    # Caps on the per-epoch in-loop val eval (the full ed2 val set costs hours).
+    # null = no cap (legacy behavior). The final ed5 test eval is never capped.
+    val_pairs_cap: null      # cap on val PAIR rows (val-loss / perplexity loop)
+    val_spearman_cap: null   # cap on val Spearman sequence rows
+    test_pairs_cap: null     # cap on test PAIR rows (final DPO-loss/ppl diagnostics;
+                             # the reported ed5 test_spearman_avg is NOT capped)
   pairing_strategy: delta_based
   min_positive_delta: 3.0
   min_delta_margin: 5.0

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
 #SBATCH --gpus=1
-#SBATCH --gres=gpumem:40g
+#SBATCH --gres=gpumem:24g
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu
 #SBATCH --output=bash_scripts/logs/compare_models_%j.log
@@ -37,9 +37,9 @@ MODELS=(
   # "evo_dpo_7ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_2408.pt"
   # "evo_dpo_10ep|35M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo/step_3440.pt"
    "vanilla|650M|facebook/esm2_t33_650M_UR50D"
-  # "evotuned|650M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
-  # "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
-  # "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
+  "evotuned|650M|/cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt"
+   "just_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt"
+   "evo_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
   # "just_lora_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_lora_dpo_650M/step_2200.pt"
   # "evo_lora_dpo|650M|/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_lora_dpo_650M/step_3300.pt"
 )
@@ -48,6 +48,7 @@ MODELS=(
 USE_ED2=1
 USE_ED5=1
 USE_ED811=1
+USE_EXP=1
 
 RUN_WT_PPL=1
 RUN_GOOD_PPL=1
@@ -66,13 +67,15 @@ SPLIT_NAME="test"
 ED2_DATASET_KEY="ed2_m22"
 ED5_DATASET_KEY="ed5_m22"
 ED811_DATASET_KEY="ed811_m22"
-FORCE_SPLIT_REBUILD=1
+EXP_DATASET_KEY="exp"
+# Reuse splits + cache built by compare_models_build_cache.sh (no rebuild here).
+FORCE_SPLIT_REBUILD=0
 GOOD_THRESHOLD=5.190013461
 
 # ----------------------------- runtime ---------------------------------------
 BATCH_SIZE=64
 STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT_DIR="/cluster/project/infk/krause/${USER}/protein-design/reports/model_comparison/${STAMP}"
+OUT_DIR="/cluster/project/infk/krause/${USER}/protein-design/reports/model_comparison/${STAMP}_${SLURM_JOB_ID:-local}"
 mkdir -p "${OUT_DIR}"
 
 ARGS=(
@@ -82,6 +85,7 @@ ARGS=(
   --ed2-dataset-key "${ED2_DATASET_KEY}"
   --ed5-dataset-key "${ED5_DATASET_KEY}"
   --ed811-dataset-key "${ED811_DATASET_KEY}"
+  --exp-dataset-key "${EXP_DATASET_KEY}"
   --batch-size "${BATCH_SIZE}"
   --good-threshold "${GOOD_THRESHOLD}"
 )
@@ -93,6 +97,7 @@ done
 if [[ "${USE_ED2}" == "1" ]]; then ARGS+=(--include-dataset "ED2"); fi
 if [[ "${USE_ED5}" == "1" ]]; then ARGS+=(--include-dataset "ED5"); fi
 if [[ "${USE_ED811}" == "1" ]]; then ARGS+=(--include-dataset "ED811"); fi
+if [[ "${USE_EXP}" == "1" ]]; then ARGS+=(--include-dataset "EXP"); fi
 
 if [[ "${RUN_WT_PPL}" == "1" ]]; then ARGS+=(--run-wt-ppl); fi
 if [[ "${RUN_GOOD_PPL}" == "1" ]]; then ARGS+=(--run-good-ppl); fi

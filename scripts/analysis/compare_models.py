@@ -38,7 +38,7 @@ from protein_design.model import ESM2Model
 
 ENRICHMENT_COL = "M22_binding_enrichment_adj"
 GOOD_THRESHOLD_DEFAULT = 5.190013461
-DATASET_TO_KEY = {"ED2": "ed2_m22", "ED5": "ed5_m22", "ED811": "ed811_m22"}
+DATASET_TO_KEY = {"ED2": "ed2_m22", "ED5": "ed5_m22", "ED811": "ed811_m22", "EXP": "exp"}
 CACHE_SCHEMA_VERSION = 1
 
 
@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ed2-dataset-key", default="ed2_m22")
     p.add_argument("--ed5-dataset-key", default="ed5_m22")
     p.add_argument("--ed811-dataset-key", default="ed811_m22")
+    p.add_argument("--exp-dataset-key", default="exp")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--good-threshold", type=float, default=GOOD_THRESHOLD_DEFAULT)
     p.add_argument("--force-split-rebuild", action="store_true")
@@ -84,10 +85,14 @@ def _load_model(device: torch.device, checkpoint: str) -> ESM2Model:
 def _resolve_dataset_path(dataset_name: str, args: argparse.Namespace) -> tuple[Path, str]:
     dms_config = args.dms_config if args.dms_config.is_absolute() else REPO_ROOT / args.dms_config
     dataset_key = str(getattr(args, f"{dataset_name.lower()}_dataset_key"))
+    spec = dataset_spec(dataset_key, dms_config)
+    if spec.no_split:
+        # No-split datasets (e.g. EXP) are evaluated on the full file.
+        return spec.path, spec.key_metric_col
     path = resolve_dataset_split(
         dataset_key, args.split_name, dms_config, force=bool(args.force_split_rebuild)
     )
-    return path, dataset_spec(dataset_key, dms_config).key_metric_col
+    return path, spec.key_metric_col
 
 
 def _load_dataset(path: Path, metric_col: str) -> pd.DataFrame:

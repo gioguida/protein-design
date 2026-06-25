@@ -31,3 +31,8 @@ datasets:
     path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED811_M22_enrichment_full.csv
     sequence_col: aa
     key_metric_col: M22_binding_enrichment_adj
+  exp:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/dms_splits/exp/exp_enrichment.csv
+    sequence_col: aa
+    key_metric_col: exp_enrichment_adj
+    no_split: true

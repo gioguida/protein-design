@@ -1,0 +1,15 @@
+# @package _global_
+# Variant 2: single-mask on CDR-H3 ± 3 framework residues (full enumeration).
+# Requires the windows parquet built by scripts/data_prep/build_cdr_windows.py.
+data:
+  fasta_path: ${paths.project_dir}/data/c05/c05_cdrh3_blosum25.fasta
+  max_seq_len: 256
+  mlm_probability: 0.15
+  masking: cdr
+  cdr_flank: 3
+  cdr_windows_cache: ${paths.scratch_dir}/cdr_windows/c05_cdrh3_blosum25_flank3.parquet
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

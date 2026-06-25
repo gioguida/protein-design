@@ -18,6 +18,7 @@ from protein_design.dms_splitting import (
 )
 
 from .data_processing import ensure_delta_m22_binding_enrichment
+from .low_data import subsample_train_sequences
 from .utils import _gap_pairs
 
 RANDOM_SEED = 42
@@ -604,6 +605,10 @@ def build_split_pair_dataframes_from_raw(
     split_stratify_bins: int = 10,
     enforce_train_controlled_split_sizes: bool = False,
     exclude_winner_mutation_positions: Sequence[int] = (),
+    low_data_n_train: Optional[int] = None,
+    low_data_scheme: str = "stratified",
+    low_data_stratify_bins: int = 10,
+    low_data_seed: int = 0,
     seed: int = RANDOM_SEED,
     dms_config_path: Path | str | None = None,
     dataset_key: str = "ed2_m22",
@@ -621,6 +626,27 @@ def build_split_pair_dataframes_from_raw(
         )
         for split in ("train", "val", "test")
     }
+
+    # Low-data regime: shrink the *train sequence* split before pairs are derived,
+    # so the preference pairs reflect only the few measured variants. Val/test are
+    # untouched, keeping the held-out evaluation constant across N. Deterministic
+    # in (n, scheme, low_data_seed), hence identical sequences across base models.
+    if low_data_n_train is not None:
+        full_train = len(split_frames["train"])
+        split_frames["train"] = subsample_train_sequences(
+            split_frames["train"],
+            int(low_data_n_train),
+            scheme=str(low_data_scheme),
+            stratify_bins=int(low_data_stratify_bins),
+            seed=int(low_data_seed),
+        )
+        LOG.info(
+            "Low-data subsample: train sequences %d -> %d (scheme=%s, seed=%d)",
+            full_train,
+            len(split_frames["train"]),
+            low_data_scheme,
+            int(low_data_seed),
+        )
 
     def build(split: str, offset: int) -> pd.DataFrame:
         return build_dpo_pairs_from_clustered_dataframe(
@@ -713,6 +739,22 @@ def build_split_pair_dataframes_from_cfg(
         pair_val_frac = float(getattr(split_size_cfg, "val_frac", 0.1))
         pair_test_frac = float(getattr(split_size_cfg, "test_frac", 0.1))
 
+    # Low-data regime (off unless data.low_data.enabled). Subsamples the train
+    # sequence split to data.low_data.n_train before pairing.
+    low_data_cfg = getattr(cfg.data, "low_data", None)
+    low_data_n_train: Optional[int] = None
+    low_data_scheme = "stratified"
+    low_data_stratify_bins = 10
+    low_data_seed = 0
+    if low_data_cfg is not None and bool(getattr(low_data_cfg, "enabled", False)):
+        n_train_raw = getattr(low_data_cfg, "n_train", None)
+        if n_train_raw is None:
+            raise ValueError("data.low_data.enabled=true requires data.low_data.n_train.")
+        low_data_n_train = int(n_train_raw)
+        low_data_scheme = str(getattr(low_data_cfg, "scheme", "stratified"))
+        low_data_stratify_bins = int(getattr(low_data_cfg, "stratify_bins", 10))
+        low_data_seed = int(getattr(low_data_cfg, "seed", 0))
+
     return build_split_pair_dataframes_from_raw(
         pairing_strategy=pairing_strategy,
         include_views=[],
@@ -727,6 +769,10 @@ def build_split_pair_dataframes_from_cfg(
             int(position)
             for position in getattr(cfg.data, "exclude_winner_mutation_positions", ())
         ),
+        low_data_n_train=low_data_n_train,
+        low_data_scheme=low_data_scheme,
+        low_data_stratify_bins=low_data_stratify_bins,
+        low_data_seed=low_data_seed,
         delta_components=components,
         delta_mix_mode=mix_mode,
         delta_component_pair_counts=component_pair_counts if component_pair_counts else None,

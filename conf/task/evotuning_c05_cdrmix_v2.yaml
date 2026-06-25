@@ -1,0 +1,42 @@
+# @package _global_
+# Variant 3b — cdrmix tuned to MAXIMISE the masked-position M22 Spearman (the
+# DPO starting point), not the MLM perplexity.
+#
+# Two changes vs evotuning_c05_cdrmix:
+#   1. best_spearman.pt is now tracked automatically by the training loop
+#      (best masked-position spearman_mean), independent of best.pt (val ppl).
+#   2. Sub-epoch eval (save_every_n_steps) so the Spearman peak that falls
+#      between epoch boundaries is actually resolved. Mid-epoch evals do NOT
+#      write a full step checkpoint — only best.pt / best_spearman.pt.
+#
+# The Spearman peaks early (epoch 2-3 in the 10-epoch runs), so we run fewer
+# epochs and evaluate ~3x per epoch instead.
+defaults:
+  - override /model: esm2_650m
+  - override /data: evo/c05_cdrh3_blosum25_cdrmix
+  - override /scoring: c05
+  - _self_
+
+task:
+  name: evotuning_c05_cdrmix_v2
+  runner: evotuning
+  stage_type: evotuning
+
+model:
+  freeze_first_n_layers: 24
+
+training:
+  learning_rate: 5.0e-5
+  warmup_steps: 50
+  max_epochs: 6
+  max_steps: null
+  batch_size: 64
+  gradient_accumulation_steps: 8
+  # ~3 evals/epoch (epoch is ~1621 global steps). Must be divisible by
+  # gradient_accumulation_steps (8). 480 % 8 == 0.
+  save_every_n_steps: 480
+  eval_per_epoch: true
+  # No ppl-based early stopping: we select by Spearman, and val ppl keeps
+  # improving past the Spearman peak, so it would never stop at the right place.
+  early_stopping_patience: null
+  fp16: true

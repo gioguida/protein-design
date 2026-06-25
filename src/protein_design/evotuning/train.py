@@ -152,6 +152,170 @@ def _make_masked_batch(
 
 
 # ---------------------------------------------------------------------------
+# Single-mask (PLL-aligned) per-epoch evaluation helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_masked_spearman_datasets(
+    datasets_cfg: list[dict],
+    log: logging.Logger,
+    n_samples: Optional[int] = None,
+    seed: int = 42,
+) -> list[tuple[str, pd.DataFrame, str]]:
+    """Load DMS CSVs for masked-position Spearman (no num_mut filter).
+
+    Keeps every row with finite enrichment and a non-empty `mut` string. When
+    `n_samples` is set and a dataset has more rows, a fixed (seeded) subsample
+    is taken — used for the per-epoch val tracking so the cost stays bounded
+    and the row set is identical across epochs. The full set (n_samples=None)
+    is used for the end-of-training test evaluation.
+    """
+    out: list[tuple[str, pd.DataFrame, str]] = []
+    for ds in datasets_cfg:
+        col = ds["enrichment_col"]
+        df = pd.read_csv(ds["path"])
+        enr = pd.to_numeric(df[col], errors="coerce")
+        df = df[enr.notna()].copy()
+        df[col] = enr[enr.notna()].astype(float)
+        df["mut"] = df["mut"].astype(str).str.strip()
+        df = df[df["mut"] != ""].reset_index(drop=True)
+        if n_samples is not None and len(df) > n_samples:
+            df = df.sample(n=n_samples, random_state=seed).reset_index(drop=True)
+        log.info("Masked-Spearman dataset %r: %d rows from %s", ds["name"], len(df), ds["path"])
+        out.append((ds["name"], df, col))
+    return out
+
+
+def _eval_masked_spearman(
+    model: ESM2Model,
+    datasets: list[tuple[str, pd.DataFrame, str]],
+    batch_size: int,
+    log: logging.Logger,
+) -> dict[str, float]:
+    """Spearman of single-position-masked PLL vs. fitness for each dataset."""
+    results: dict[str, float] = {}
+    rhos: list[float] = []
+    model.eval()
+    for name, df, col in datasets:
+        scores = score_sequences_masked_positions(
+            scorer=model, df=df, wt=C05_CDRH3, batch_size=batch_size,
+        )
+        rho, pval = evaluate_spearman(scores, df[col].to_numpy(dtype=float))
+        results[f"spearman_{name}"] = float(rho)
+        rhos.append(float(rho))
+        log.info("  %s (n=%d): Spearman rho=%.4f  p=%.2e", name, len(df), rho, pval)
+    results["spearman_mean"] = float(np.mean(rhos)) if rhos else float("nan")
+    model.train()
+    return results
+
+
+def _run_periodic_eval(
+    *,
+    model: ESM2Model,
+    val_loader: Any,
+    spearman_datasets: Optional[list],
+    scoring_cfg: ScoringConfig,
+    device: torch.device,
+    global_step: int,
+    epoch: int,
+    epoch_seed: int,
+    samples_seen: int,
+    best_val_ppl: float,
+    best_ckpt_path: Optional[Path],
+    best_spearman: float,
+    best_spearman_ckpt_path: Optional[Path],
+    run_dir: Path,
+    checkpoint_dir: Path,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: torch.amp.GradScaler,
+    training_history: list,
+    scoring_history: list,
+    artifacts: RunArtifacts,
+    log: logging.Logger,
+    train_start: float,
+    ckpt_label: Optional[str] = None,
+    save_labeled_ckpt: bool = True,
+) -> tuple[float, Optional[Path], float, Optional[Path]]:
+    """End-of-epoch (or sub-epoch) eval + checkpoint for the single-mask variants.
+
+    Logs val perplexity, C05 CDR-H3 PLL perplexity, and masked-position
+    Spearman; saves an epoch/step checkpoint; tracks best.pt by val perplexity
+    and best_spearman.pt by masked-position Spearman mean (the DPO starting
+    point). Returns the (possibly updated)
+    (best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path).
+    """
+    model.eval()
+    ppl, val_loss = compute_perplexity(
+        model, val_loader, device, max_batches=max(len(val_loader), 1),
+    )
+    cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
+    artifacts.log(
+        {"val/loss": val_loss, "val/perplexity": ppl, "val/cdr_ppl": cdr_ppl, "train/epoch": epoch},
+        step=global_step,
+    )
+    log.info(
+        "Epoch %d (step %d) — val loss: %.4f — val ppl: %.2f — CDR-H3 ppl: %.2f",
+        epoch, global_step, val_loss, ppl, cdr_ppl,
+    )
+    training_history.append({
+        "step": global_step, "val_loss": val_loss, "val_perplexity": ppl,
+        "val_cdr_ppl": cdr_ppl, "epoch": epoch, "wall_time": time.time() - train_start,
+    })
+
+    spearman_mean = float("nan")
+    if spearman_datasets:
+        spear = _eval_masked_spearman(model, spearman_datasets, scoring_cfg.batch_size, log)
+        artifacts.log({f"eval/{k}": v for k, v in spear.items()}, step=global_step)
+        scoring_history.append({"step": global_step, **spear})
+        spearman_mean = float(spear["spearman_mean"])
+        log.info("Epoch %d — Spearman mean: %.4f", epoch, spearman_mean)
+
+    ckpt_state = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "samples_seen": samples_seen,
+        "epoch_seed": epoch_seed,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "val_perplexity": ppl,
+        "best_val_ppl": best_val_ppl,
+    }
+    if save_labeled_ckpt:
+        label = ckpt_label if ckpt_label is not None else f"epoch_{epoch}"
+        torch.save(ckpt_state, checkpoint_dir / f"{label}.pt")
+        log.info("Saved checkpoint to %s", checkpoint_dir / f"{label}.pt")
+    if ppl < best_val_ppl:
+        best_val_ppl = ppl
+        best_ckpt_path = run_dir / "best.pt"
+        torch.save(ckpt_state, best_ckpt_path)
+        log.info("New best checkpoint (ppl=%.2f) saved to %s", ppl, best_ckpt_path)
+    # Track the masked-position Spearman best separately: this is the checkpoint
+    # we hand to DPO, since val-ppl keeps improving past the Spearman peak.
+    if spearman_mean == spearman_mean and spearman_mean > best_spearman:  # not NaN
+        best_spearman = spearman_mean
+        best_spearman_ckpt_path = run_dir / "best_spearman.pt"
+        torch.save(ckpt_state, best_spearman_ckpt_path)
+        log.info(
+            "New best-Spearman checkpoint (spearman_mean=%.4f) saved to %s",
+            best_spearman, best_spearman_ckpt_path,
+        )
+
+    fig_curves = plot_training_curves(training_history, best_step=None)
+    artifacts.log_figure(fig_curves, "figures/training_curves", step=global_step)
+    if spearman_datasets:
+        names = [d[0] for d in spearman_datasets]
+        fig_evol = plot_spearman_evolution(scoring_history, names)
+        artifacts.log_figure(fig_evol, "figures/spearman_evolution", step=global_step)
+
+    model.train()
+    artifacts.flush()
+    return best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path
+
+
+# ---------------------------------------------------------------------------
 # Strategy: evotuning (continued MLM pretraining on a corpus)
 # ---------------------------------------------------------------------------
 
@@ -261,6 +425,10 @@ def _train_evotuning(
         tokenizer=model.tokenizer,
         skip_samples=0,
         epoch_seed=run_cfg.seed + 1,
+        masking=data_cfg.masking,
+        cdr_windows_cache=data_cfg.cdr_windows_cache,
+        cdr_mask_prob=data_cfg.cdr_mask_prob,
+        framework_mask_prob=data_cfg.framework_mask_prob,
     )
     del _initial_train_loader
 
@@ -305,7 +473,20 @@ def _train_evotuning(
 
     tokenizer = model.tokenizer
 
-    if scoring_cfg.datasets:
+    eval_per_epoch = training_cfg.eval_per_epoch
+    # Single-mask variants: per-epoch masked-position Spearman on the full
+    # eval CSV(s); the legacy step-based mutation-path scoring is disabled.
+    spearman_datasets: Optional[list] = None
+    if eval_per_epoch:
+        scoring_datasets = None
+        if scoring_cfg.datasets:
+            spearman_datasets = _load_masked_spearman_datasets(
+                scoring_cfg.datasets, log, n_samples=scoring_cfg.n_samples, seed=run_cfg.seed,
+            )
+            log.info("Per-epoch masked Spearman enabled: %d datasets", len(spearman_datasets))
+        else:
+            log.info("Per-epoch eval: no scoring.datasets configured")
+    elif scoring_cfg.datasets:
         scoring_datasets = load_scoring_datasets(
             scoring_cfg.datasets,
             n_samples=scoring_cfg.n_samples,
@@ -322,10 +503,23 @@ def _train_evotuning(
     global_step = start_global_step
     optim_step = global_step // accum_steps
     best_ckpt_path: Optional[Path] = None
+    best_spearman = float("-inf")
+    best_spearman_ckpt_path: Optional[Path] = None
 
     save_every_n_steps = training_cfg.save_every_n_steps
     max_epochs = training_cfg.max_epochs
     hit_max_steps = False
+    # Early stopping (per-epoch eval only).
+    es_patience = training_cfg.early_stopping_patience
+    es_min_delta = training_cfg.early_stopping_min_delta
+    if es_patience is not None and not eval_per_epoch:
+        log.warning(
+            "early_stopping_patience=%s ignored: requires eval_per_epoch=true.",
+            es_patience,
+        )
+        es_patience = None
+    evals_without_improvement = 0
+    early_stopped = False
     training_history = []
     scoring_history = []
     if training_cfg.resume_checkpoint:
@@ -390,7 +584,40 @@ def _train_evotuning(
                 running_loss = 0.0
                 log_steps = 0
 
-            if save_every_n_steps and global_step % save_every_n_steps == 0:
+            if eval_per_epoch and save_every_n_steps and global_step % save_every_n_steps == 0:
+                # Sub-epoch masked-position eval for the single-mask variants:
+                # resolves the Spearman peak that falls between epoch boundaries.
+                best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path = (
+                    _run_periodic_eval(
+                        model=model,
+                        val_loader=val_loader,
+                        spearman_datasets=spearman_datasets,
+                        scoring_cfg=scoring_cfg,
+                        device=device,
+                        global_step=global_step,
+                        epoch=epoch,
+                        epoch_seed=epoch_seed,
+                        samples_seen=samples_seen_this_epoch,
+                        best_val_ppl=best_val_ppl,
+                        best_ckpt_path=best_ckpt_path,
+                        best_spearman=best_spearman,
+                        best_spearman_ckpt_path=best_spearman_ckpt_path,
+                        run_dir=run_dir,
+                        checkpoint_dir=checkpoint_dir,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        scaler=scaler,
+                        training_history=training_history,
+                        scoring_history=scoring_history,
+                        artifacts=artifacts,
+                        log=log,
+                        train_start=train_start,
+                        ckpt_label=f"step_{global_step}",
+                        save_labeled_ckpt=False,
+                    )
+                )
+
+            if not eval_per_epoch and save_every_n_steps and global_step % save_every_n_steps == 0:
                 ppl, val_loss = compute_perplexity(model, val_loader, device)
                 cdr_ppl = corpus_perplexity([C05_CDRH3], scorer=model, cdr_only=True)
                 artifacts.log(
@@ -483,8 +710,57 @@ def _train_evotuning(
                 hit_max_steps = True
                 break
 
+        if eval_per_epoch:
+            prev_best_val_ppl = best_val_ppl
+            (
+                best_val_ppl,
+                best_ckpt_path,
+                best_spearman,
+                best_spearman_ckpt_path,
+            ) = _run_periodic_eval(
+                model=model,
+                val_loader=val_loader,
+                spearman_datasets=spearman_datasets,
+                scoring_cfg=scoring_cfg,
+                device=device,
+                global_step=global_step,
+                epoch=epoch,
+                epoch_seed=epoch_seed,
+                samples_seen=samples_seen_this_epoch,
+                best_val_ppl=best_val_ppl,
+                best_ckpt_path=best_ckpt_path,
+                best_spearman=best_spearman,
+                best_spearman_ckpt_path=best_spearman_ckpt_path,
+                run_dir=run_dir,
+                checkpoint_dir=checkpoint_dir,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                training_history=training_history,
+                scoring_history=scoring_history,
+                artifacts=artifacts,
+                log=log,
+                train_start=train_start,
+            )
+            if es_patience is not None:
+                if best_val_ppl < prev_best_val_ppl - es_min_delta:
+                    evals_without_improvement = 0
+                else:
+                    evals_without_improvement += 1
+                    log.info(
+                        "Early stopping: no val-ppl improvement for %d/%d evals "
+                        "(best=%.4f).",
+                        evals_without_improvement, es_patience, best_val_ppl,
+                    )
+                    if evals_without_improvement >= es_patience:
+                        log.info(
+                            "Early stopping triggered at epoch %d (patience=%d).",
+                            epoch, es_patience,
+                        )
+                        early_stopped = True
+
         artifacts.log({"train/epoch": epoch}, step=global_step)
-        if hit_max_steps:
+        if hit_max_steps or early_stopped:
             break
 
     final_path = checkpoint_dir / "final.pt"
@@ -536,9 +812,20 @@ def _train_evotuning(
         torch.save(final_state, best_ckpt_path)
         log.info("Final checkpoint is also best (ppl=%.2f)", final_ppl)
 
+    if best_spearman_ckpt_path is not None:
+        final_metrics["best_spearman"] = float(best_spearman)
+        final_metrics["best_spearman_ckpt"] = str(best_spearman_ckpt_path)
+        log.info(
+            "Best masked-position Spearman: %.4f — DPO starting checkpoint: %s",
+            best_spearman, best_spearman_ckpt_path,
+        )
+
     # ------------------------------------------------------------------
     # End-of-training comprehensive test evaluation
     # ------------------------------------------------------------------
+    masked_final_datasets: Optional[list] = None
+    if eval_per_epoch and scoring_cfg.final_datasets:
+        masked_final_datasets = _load_masked_spearman_datasets(scoring_cfg.final_datasets, log)
     _run_end_of_training_eval(
         model=model,
         tokenizer=tokenizer,
@@ -553,6 +840,7 @@ def _train_evotuning(
         artifacts=artifacts,
         log=log,
         final_metrics=final_metrics,
+        masked_final_datasets=masked_final_datasets,
     )
 
     return training_history, scoring_history, global_step, best_ckpt_path, final_metrics
@@ -573,11 +861,25 @@ def _run_end_of_training_eval(
     artifacts: RunArtifacts,
     log: logging.Logger,
     final_metrics: dict,
+    masked_final_datasets: Optional[list] = None,
 ) -> None:
     """Run test FASTA PPL + test CDR PLL + D2 Spearman/flank + D5 PLL pos/neg/wt.
 
+    When `masked_final_datasets` is provided (single-mask variants), also score
+    those held-out CSVs via masked-position Spearman and log `test/spearman_*`.
+
     Mutates `final_metrics` in place; logs scalars + figures + summary table.
     """
+    # 0. Single-mask held-out (test) masked-position Spearman.
+    if masked_final_datasets:
+        log.info("Running end-of-training masked-position Spearman on held-out test set(s)")
+        test_spear = _eval_masked_spearman(
+            model, masked_final_datasets, scoring_cfg.batch_size, log,
+        )
+        artifacts.log({f"test/{k}": v for k, v in test_spear.items()}, step=global_step)
+        for k, v in test_spear.items():
+            final_metrics[f"test_{k}"] = float(v)
+
     # 1. Test FASTA perplexity (existing behavior, kept).
     if len(test_loader.dataset) > 0:
         test_ppl, test_loss = compute_perplexity(

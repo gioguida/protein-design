@@ -68,6 +68,36 @@ models:
     color: "#d62728"
     family: c05
 
+  # 35M cdrmix single-mask C05 starting point — best_spearman.pt of the
+  # evotuning_c05_cdrmix_v2_35m 2x2 sweep (winner: lr5e-5, cdr_mask_prob 0.5;
+  # best_spearman 0.162, held-out M22_test 0.170). 35M analogue of the 650M
+  # evo_c05_cdrmix_spearman; selected by masked-position Spearman (the DPO base).
+  evo_c05_cdrmix_35m:
+    checkpoint: /cluster/scratch/mdenegri/protein-design/train/cdrmix_v2_35m_lr5.0e-5_cmp0.5_20260623_163350/best_spearman.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "Evo+C05 cdrmix"
+    color: "#bcbd22"
+    family: c05
+
+  # Best C05 single-mask cdrmix run (sweep winner by held-out M22_test:
+  # lr5e-5, cdr_mask_prob 0.7; test Spearman 0.165, best_spearman 0.170).
+  # Two checkpoints from the SAME run: best.pt is val-perplexity-selected,
+  # best_spearman.pt is masked-Spearman-selected (the DPO starting point).
+  # Comparing them in the probe surfaces representation drift (ppl-best may
+  # organize by OAS naturalness, spearman-best by M22 binding).
+  evo_c05_cdrmix:
+    checkpoint: /cluster/scratch/mdenegri/protein-design/train/cdrmix_v2_lr5.0e-5_cmp0.7_20260617_191840/best.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "C05 cdrmix (best.pt)"
+    color: "#8c564b"
+    family: c05
+  evo_c05_cdrmix_spearman:
+    checkpoint: /cluster/scratch/mdenegri/protein-design/train/cdrmix_v2_lr5.0e-5_cmp0.7_20260617_191840/best_spearman.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "C05 cdrmix (best-Spearman)"
+    color: "#e377c2"
+    family: c05
+
   # Example cross-team (Giovanni's DPO) checkpoint — extend with the steps you
   # actually compare in the paper. Lives in a read-only tree; artifacts still
   # land under $ANALYSIS_DIR/just_dpo_4ep_step1376/.
