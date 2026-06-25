@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wt-cdrh3", default=C05_CDRH3)
     p.add_argument("--max-pairs", type=int, default=1000,
                    help="Cap sequences for pairwise Hamming (O(N^2)) computation.")
+    p.add_argument("--sampler-label", default="beam")
+    p.add_argument("--output-name", default="beam_diversity_diagnostics.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -151,13 +153,13 @@ def main() -> int:
     ax2.set_xlim(left=-0.5)
 
     fig.suptitle(
-        f"Beam search diversity diagnostics (model: {args.model_variant})\n"
+        f"{args.sampler_label.strip().title()} diversity diagnostics (model: {args.model_variant})\n"
         f"n={len(seqs)} sequences (final step)",
         fontsize=12,
     )
     fig.tight_layout()
 
-    out_path = args.output_dir / "beam_diversity_diagnostics.png"
+    out_path = args.output_dir / args.output_name
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)

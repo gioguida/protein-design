@@ -1,0 +1,28 @@
+sweep:
+  temperatures: [0.5, 1.0, 2.0]
+  n_sequences: 500
+  seed: 42
+  enrichment_threshold: null
+
+dataset: "ed2_m22"
+dms_config: "conf/data/dms/default.yaml"
+local_splits_dir: "data/dms_splits"
+
+plots:
+  diversity_diagnostics: true
+  aa_heatmap: true
+  sequence_logo: true
+  edit_distance: true
+  pairwise_hamming: true
+  summary_csv: true
+
+summary:
+  entropy_heatmap: true
+  jsd_vs_temp: true
+
+output:
+  base_dir: "outputs/baseline_sampler"
+  plots_dir: "outputs/baseline_sampler/plots"
+
+dms_reference:
+  max_dms: 500

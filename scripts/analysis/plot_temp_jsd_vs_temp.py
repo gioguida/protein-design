@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-variant", required=True)
     p.add_argument("--dms-m22", type=Path, required=True)
     p.add_argument("--max-dms", type=int, default=500)
+    p.add_argument("--sampler-label", default="SBS")
+    p.add_argument("--output-name", default="temp_jsd_vs_temp.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -127,10 +129,13 @@ def main() -> int:
     ax1.set_title("Per-position JSD trajectories (24 positions)")
     ax1.grid(alpha=0.2)
 
-    fig.suptitle(f"SBS vs DMS divergence across temperatures (model: {args.model_variant})")
+    fig.suptitle(
+        f"{args.sampler_label.strip().title()} vs DMS divergence across temperatures "
+        f"(model: {args.model_variant})"
+    )
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
 
-    out_path = args.output_dir / "temp_jsd_vs_temp.png"
+    out_path = args.output_dir / args.output_name
     fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
@@ -139,4 +144,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

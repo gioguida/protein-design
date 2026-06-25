@@ -674,6 +674,13 @@ def parse_args() -> argparse.Namespace:
                    help="Cap on number of chains shown in the early-trajectory plots.")
     p.add_argument("--skip-early", action="store_true",
                    help="Skip the early-trajectory diagnostic plots and summary slice.")
+    p.add_argument("--skip-pll", action="store_true",
+                   help="Skip model loading and all PLL-based diagnostics; keep only model-free plots.")
+    p.add_argument("--skip-pairwise-hamming", action="store_true")
+    p.add_argument("--skip-edit-distance", action="store_true")
+    p.add_argument("--skip-sequence-logo", action="store_true")
+    p.add_argument("--skip-position-mutation-freq", action="store_true")
+    p.add_argument("--skip-summary-csv", action="store_true")
     p.add_argument(
         "--sampler-label",
         default="gibbs",
@@ -695,25 +702,29 @@ def main() -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
 
-    dataset_paths = DMS_DATASETS[args.dms_dataset]
-    dms_m22_path = args.dms_m22 if args.dms_m22 is not None else dataset_paths.get("m22")
-    dms_si06_path = args.dms_si06 if args.dms_si06 is not None else dataset_paths.get("si06")
-    if dms_m22_path is None:
-        log.warning("DMS dataset %s has no M22 assay — M22 plots will be skipped", args.dms_dataset)
-    if dms_si06_path is None:
-        log.warning("DMS dataset %s has no SI06 assay — SI06 plots will be skipped", args.dms_dataset)
-    log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22_path, dms_si06_path)
-    log.info("Loading DMS reference (max %d) …", args.max_dms)
-    dms_cdrh3, dms_m22, dms_si06 = load_dms(
-        Path(dms_m22_path) if dms_m22_path else None,
-        Path(dms_si06_path) if dms_si06_path else None,
-        args.max_dms,
-        m22_col=args.dms_m22_col,
-        si06_col=args.dms_si06_col,
-    )
-    log.info("DMS: %d sequences", len(dms_cdrh3))
-
-    tokenizer = AutoTokenizer.from_pretrained(ESM2_MODEL_ID)
+    dms_cdrh3: List[str] = []
+    dms_m22 = np.array([], dtype=np.float32)
+    dms_si06 = np.array([], dtype=np.float32)
+    tokenizer = None
+    if not args.skip_pll:
+        dataset_paths = DMS_DATASETS[args.dms_dataset]
+        dms_m22_path = args.dms_m22 if args.dms_m22 is not None else dataset_paths.get("m22")
+        dms_si06_path = args.dms_si06 if args.dms_si06 is not None else dataset_paths.get("si06")
+        if dms_m22_path is None:
+            log.warning("DMS dataset %s has no M22 assay — M22 plots will be skipped", args.dms_dataset)
+        if dms_si06_path is None:
+            log.warning("DMS dataset %s has no SI06 assay — SI06 plots will be skipped", args.dms_dataset)
+        log.info("DMS dataset: %s (M22=%s, SI06=%s)", args.dms_dataset, dms_m22_path, dms_si06_path)
+        log.info("Loading DMS reference (max %d) …", args.max_dms)
+        dms_cdrh3, dms_m22, dms_si06 = load_dms(
+            Path(dms_m22_path) if dms_m22_path else None,
+            Path(dms_si06_path) if dms_si06_path else None,
+            args.max_dms,
+            m22_col=args.dms_m22_col,
+            si06_col=args.dms_si06_col,
+        )
+        log.info("DMS: %d sequences", len(dms_cdrh3))
+        tokenizer = AutoTokenizer.from_pretrained(ESM2_MODEL_ID)
 
     # Group entries by label so each model is loaded once; DMS + WT PLL are
     # computed per label and shared across that label's configs.
@@ -735,21 +746,24 @@ def main() -> int:
         if any(ck != checkpoint for ck, _, _ in entries):
             log.warning("Multiple checkpoints for label=%s; using %s", label, checkpoint)
         log.info("=== %s (%d configs) ===", label, len(entries))
+        model = None
+        dms_pll = np.array([], dtype=np.float32)
+        wt_pll = float("nan")
+        if not args.skip_pll:
+            model = load_esm_for_mlm(checkpoint).eval().to(device)
+            for p_ in model.parameters():
+                p_.requires_grad = False
+            if device.type == "cuda":
+                model = model.half()
 
-        model = load_esm_for_mlm(checkpoint).eval().to(device)
-        for p_ in model.parameters():
-            p_.requires_grad = False
-        if device.type == "cuda":
-            model = model.half()
-
-        dms_per_pos = per_position_cdr_log_probs(
-            model, tokenizer, dms_cdrh3, device, args.batch_size,
-        )
-        dms_pll = sequence_pll(dms_per_pos)
-        wt_per_pos = per_position_cdr_log_probs(
-            model, tokenizer, [C05_CDRH3], device, args.batch_size,
-        )
-        wt_pll = float(sequence_pll(wt_per_pos)[0])
+            dms_per_pos = per_position_cdr_log_probs(
+                model, tokenizer, dms_cdrh3, device, args.batch_size,
+            )
+            dms_pll = sequence_pll(dms_per_pos)
+            wt_per_pos = per_position_cdr_log_probs(
+                model, tokenizer, [C05_CDRH3], device, args.batch_size,
+            )
+            wt_pll = float(sequence_pll(wt_per_pos)[0])
 
         for _, gibbs_csv, config in entries:
             log.info("--- %s | config=%s ---", label, config)
@@ -760,11 +774,13 @@ def main() -> int:
             gibbs_step = gdf["gibbs_step"].to_numpy(dtype=np.int32)
             log.info("Gibbs samples: %d (median edit distance from WT = %d)",
                      len(gibbs_cdrh3), int(np.median(n_mutations)) if len(n_mutations) else 0)
-
-            gibbs_per_pos = per_position_cdr_log_probs(
-                model, tokenizer, gibbs_cdrh3, device, args.batch_size,
-            )
-            gibbs_pll = sequence_pll(gibbs_per_pos)
+            if args.skip_pll:
+                gibbs_pll = np.full(len(gibbs_cdrh3), np.nan, dtype=np.float32)
+            else:
+                gibbs_per_pos = per_position_cdr_log_probs(
+                    model, tokenizer, gibbs_cdrh3, device, args.batch_size,
+                )
+                gibbs_pll = sequence_pll(gibbs_per_pos)
 
             cdrh3_chars = np.array([list(s) for s in gibbs_cdrh3])  # (N, 24)
             pos_mut_freq = (cdrh3_chars != wt_arr[None, :]).mean(axis=0).astype(np.float32)
@@ -795,21 +811,26 @@ def main() -> int:
                 "n_gibbs_samples": int(len(gibbs_cdrh3)),
                 "edit_dist_median": float(np.median(n_mutations)) if len(n_mutations) else 0.0,
                 "edit_dist_max": int(n_mutations.max()) if len(n_mutations) else 0,
-                "gibbs_pll_median": float(np.median(gibbs_pll)) if len(gibbs_pll) else float("nan"),
-                "dms_pll_median": float(np.median(dms_pll)),
+                "gibbs_pll_median": float(np.nanmedian(gibbs_pll)) if len(gibbs_pll) else float("nan"),
+                "dms_pll_median": float(np.nanmedian(dms_pll)) if len(dms_pll) else float("nan"),
                 "wt_pll": float(wt_pll),
                 "delta_pll_gibbs_minus_dms": (
-                    float(np.median(gibbs_pll) - np.median(dms_pll)) if len(gibbs_pll) else float("nan")
+                    float(np.nanmedian(gibbs_pll) - np.nanmedian(dms_pll))
+                    if len(gibbs_pll) and len(dms_pll)
+                    else float("nan")
                 ),
                 "delta_pll_gibbs_minus_wt": (
-                    float(np.median(gibbs_pll) - wt_pll) if len(gibbs_pll) else float("nan")
+                    float(np.nanmedian(gibbs_pll) - wt_pll)
+                    if len(gibbs_pll) and not np.isnan(wt_pll)
+                    else float("nan")
                 ),
                 "max_pos_mut_freq": float(pos_mut_freq.max()) if len(pos_mut_freq) else 0.0,
                 "top_alt_per_position": " ".join(top_alts),
             })
 
-        del model
-        if device.type == "cuda":
+        if model is not None:
+            del model
+        if model is not None and device.type == "cuda":
             torch.cuda.empty_cache()
 
     configs_present = sorted({cfg for _, cfg in per_variant.keys()})
@@ -823,45 +844,50 @@ def main() -> int:
             log.warning("No data for slice=%s — skipping plots", slice_suffix or "full")
             return
 
-        for fkey, flabel in FITNESS_ROWS:
-            readout = "M22" if fkey == "dms_m22" else "SI06"
-            all_nan = all(
-                np.isnan(pv[k][fkey]).all() for k in pv
-                if fkey in pv[k] and pv[k][fkey].size
-            )
-            if all_nan:
-                log.info("Skipping %s violin (slice=%s) — no %s values in dataset",
-                         readout, slice_suffix or "full", fkey)
-                continue
-            plot_pll_violin_grid(
-                pv, labels_local, configs_local, fkey, flabel,
-                args.output_dir / f"{sampler_prefix}_pll_dist_{readout}{slice_suffix}.png",
-                sampler_title,
-            )
-        plot_pll_trajectory(pv, labels_local, configs_local,
-                            args.output_dir / f"{sampler_prefix}_pll_trajectory{slice_suffix}.png",
-                            sampler_title)
-        plot_pairwise_hamming(pv, labels_local, configs_local,
-                              args.output_dir / f"{sampler_prefix}_pairwise_hamming{slice_suffix}.png",
-                              sampler_title)
-        plot_edit_distance(pv, labels_local, configs_local,
-                           args.output_dir / f"{sampler_prefix}_edit_distance{slice_suffix}.png",
-                           sampler_title)
+        if not args.skip_pll:
+            for fkey, flabel in FITNESS_ROWS:
+                readout = "M22" if fkey == "dms_m22" else "SI06"
+                all_nan = all(
+                    np.isnan(pv[k][fkey]).all() for k in pv
+                    if fkey in pv[k] and pv[k][fkey].size
+                )
+                if all_nan:
+                    log.info("Skipping %s violin (slice=%s) — no %s values in dataset",
+                             readout, slice_suffix or "full", fkey)
+                    continue
+                plot_pll_violin_grid(
+                    pv, labels_local, configs_local, fkey, flabel,
+                    args.output_dir / f"{sampler_prefix}_pll_dist_{readout}{slice_suffix}.png",
+                    sampler_title,
+                )
+            plot_pll_trajectory(pv, labels_local, configs_local,
+                                args.output_dir / f"{sampler_prefix}_pll_trajectory{slice_suffix}.png",
+                                sampler_title)
+        if not args.skip_pairwise_hamming:
+            plot_pairwise_hamming(pv, labels_local, configs_local,
+                                  args.output_dir / f"{sampler_prefix}_pairwise_hamming{slice_suffix}.png",
+                                  sampler_title)
+        if not args.skip_edit_distance:
+            plot_edit_distance(pv, labels_local, configs_local,
+                               args.output_dir / f"{sampler_prefix}_edit_distance{slice_suffix}.png",
+                               sampler_title)
 
         for cfg in configs_local:
             cfg_subset = {label: pv[(label, cfg)]
                           for label in labels_local if (label, cfg) in pv}
             cfg_part = f"_{cfg}" if len(configs_local) > 1 else ""
-            plot_sequence_logo(
-                cfg_subset,
-                args.output_dir / f"{sampler_prefix}_sequence_logo{slice_suffix}{cfg_part}.png",
-                sampler_title,
-            )
-            plot_position_mutation_freq(
-                cfg_subset,
-                args.output_dir / f"{sampler_prefix}_position_mutation_freq{slice_suffix}{cfg_part}.png",
-                sampler_title,
-            )
+            if not args.skip_sequence_logo:
+                plot_sequence_logo(
+                    cfg_subset,
+                    args.output_dir / f"{sampler_prefix}_sequence_logo{slice_suffix}{cfg_part}.png",
+                    sampler_title,
+                )
+            if not args.skip_position_mutation_freq:
+                plot_position_mutation_freq(
+                    cfg_subset,
+                    args.output_dir / f"{sampler_prefix}_position_mutation_freq{slice_suffix}{cfg_part}.png",
+                    sampler_title,
+                )
 
     _emit_plots(per_variant, "")
 
@@ -877,11 +903,12 @@ def main() -> int:
         else:
             log.warning("Early slice empty across all cells — skipping early plots")
 
-    summary_df = pd.DataFrame(summary_rows)
-    summary_path = args.output_dir / f"{sampler_prefix}_summary.csv"
-    summary_df.to_csv(summary_path, index=False)
-    log.info("Wrote %s\n%s", summary_path,
-             summary_df.drop(columns=["top_alt_per_position"]).round(3).to_string())
+    if not args.skip_summary_csv:
+        summary_df = pd.DataFrame(summary_rows)
+        summary_path = args.output_dir / f"{sampler_prefix}_summary.csv"
+        summary_df.to_csv(summary_path, index=False)
+        log.info("Wrote %s\n%s", summary_path,
+                 summary_df.drop(columns=["top_alt_per_position"]).round(3).to_string())
     return 0
 
 

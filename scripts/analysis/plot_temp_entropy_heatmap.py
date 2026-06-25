@@ -21,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--temp-csv", action="append", required=True, help="T=CSV_PATH")
     p.add_argument("--model-variant", required=True)
+    p.add_argument("--sampler-label", default="sampler")
+    p.add_argument("--output-name", default="temp_entropy_heatmap.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -69,12 +71,15 @@ def main() -> int:
     ax.set_yticklabels([str(t) for t in temps])
     ax.set_xlabel("CDR-H3 position (WT residue)")
     ax.set_ylabel("Temperature")
-    ax.set_title(f"Position-wise CDR-H3 entropy across temperatures (model: {args.model_variant})")
+    ax.set_title(
+        f"Position-wise CDR-H3 entropy across temperatures "
+        f"({args.sampler_label.strip().title()}, model: {args.model_variant})"
+    )
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Shannon entropy (bits)")
     fig.tight_layout()
 
-    out_path = args.output_dir / "temp_entropy_heatmap.png"
+    out_path = args.output_dir / args.output_name
     fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)

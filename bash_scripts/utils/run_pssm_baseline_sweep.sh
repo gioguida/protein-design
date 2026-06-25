@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH --job-name=pssm_temp_sweep
+#SBATCH --time=1:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem-per-cpu=8G
+#SBATCH --output=bash_scripts/logs/pssm_baseline_sweep_%j.out
+
+set -euo pipefail
+
+ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "${ROOT_DIR}"
+
+SBATCH_SCRIPT_PATH="bash_scripts/utils/run_pssm_baseline_sweep.sh"
+if [[ -f "${ROOT_DIR}/bash_scripts/common_setup.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/bash_scripts/common_setup.sh"
+fi
+cd "${ROOT_DIR}"
+
+ANALYSIS_CONFIG="${ANALYSIS_CONFIG:-conf/analysis/pssm_baseline_sweep.yaml}"
+DRY_RUN="${DRY_RUN:-0}"
+
+ARGS=(--config "${ANALYSIS_CONFIG}")
+if [[ "${DRY_RUN}" == "1" ]]; then
+  ARGS+=(--dry-run)
+fi
+
+uv run python scripts/analysis/run_pssm_baseline_sweep.py "${ARGS[@]}"

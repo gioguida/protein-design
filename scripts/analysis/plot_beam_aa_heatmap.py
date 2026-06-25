@@ -54,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dms-si06-col", default="SI06_binding_enrichment_adj")
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--model-variant", required=True)
+    p.add_argument("--sampler-label", default="SBS")
+    p.add_argument("--output-name", default="beam_aa_heatmap.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -117,7 +119,7 @@ def main() -> int:
     )
 
     for ax, freq_mat, label, n in [
-        (axes[0], beam_freq, f"SBS-generated (n={len(beam_seqs)})", len(beam_seqs)),
+        (axes[0], beam_freq, f"{args.sampler_label.strip().title()} generated (n={len(beam_seqs)})", len(beam_seqs)),
         (axes[1], dms_freq, f"DMS (n={len(dms_cdrh3)})", len(dms_cdrh3)),
     ]:
         im = ax.imshow(freq_mat, vmin=0.0, vmax=1.0, cmap="viridis", aspect="auto")
@@ -131,11 +133,11 @@ def main() -> int:
         ax.set_title(label, fontsize=11)
 
     fig.suptitle(
-        f"Amino acid frequency: SBS-generated vs DMS (model: {args.model_variant})",
+        f"Amino acid frequency: {args.sampler_label.strip().title()} generated vs DMS (model: {args.model_variant})",
         fontsize=13,
     )
 
-    out_path = args.output_dir / "beam_aa_heatmap.png"
+    out_path = args.output_dir / args.output_name
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
