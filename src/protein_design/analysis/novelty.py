@@ -15,39 +15,53 @@ class ReferenceSource:
     label: str
     path: Path
     seq_col: str
+    split: str
 
 
 def iter_reference_sources(repo_root: Path) -> list[ReferenceSource]:
     """Return the sequence sources used for novelty checks.
 
-    The configured DMS datasets are the primary source of truth. We also scan
-    the legacy local raw/split directories to preserve the broader behavior of
-    the existing novelty plot.
+    The configured DMS datasets are the primary source of truth. The config
+    points each dataset at a single split (the test split, used for scoring),
+    but for novelty we want the *whole* dataset, so we expand every configured
+    dataset to all the split CSVs that live alongside it (train/val/test). Each
+    source records its ``split`` (the file stem) so callers can restrict the
+    index to e.g. train-only when measuring training-set memorization.
+
+    We also scan the legacy local raw/split directories to preserve the broader
+    behavior of the existing novelty plot.
     """
     sources: list[ReferenceSource] = []
     seen: set[tuple[str, str]] = set()
 
-    def _add(label: str, path: Path, seq_col: str) -> None:
+    def _add(label: str, path: Path, seq_col: str, split: str) -> None:
         key = (str(path), seq_col)
         if key in seen:
             return
         seen.add(key)
-        sources.append(ReferenceSource(label=label, path=path, seq_col=seq_col))
+        sources.append(ReferenceSource(label=label, path=path, seq_col=seq_col, split=split))
 
     cfg = load_datasets_cfg()
     for dataset_key, ds in (cfg.get("datasets", {}) or {}).items():
-        path = Path(str(ds["path"]))
+        configured = Path(str(ds["path"]))
         seq_col = str(ds.get("seq_col", "aa"))
-        _add(dataset_key, path, seq_col)
+        # Expand to every split CSV sitting next to the configured file so the
+        # reference reflects the whole dataset, not just the configured split.
+        siblings = sorted(configured.parent.glob("*.csv")) if configured.parent.exists() else []
+        if not siblings:
+            siblings = [configured]
+        for csv_path in siblings:
+            split = csv_path.stem  # 'train' / 'val' / 'test' / 'exp_enrichment' / ...
+            _add(f"{dataset_key}:{split}", csv_path, seq_col, split)
 
     raw_dir = repo_root / "data" / "raw"
     for csv_path in sorted(raw_dir.glob("*.csv")):
-        _add(f"raw:{csv_path.stem}", csv_path, "aa")
+        _add(f"raw:{csv_path.stem}", csv_path, "aa", csv_path.stem)
 
     splits_dir = repo_root / "data" / "dms_splits"
     for csv_path in sorted(splits_dir.rglob("*.csv")):
         rel = csv_path.relative_to(splits_dir).with_suffix("")
-        _add(f"split:{rel.as_posix()}", csv_path, "aa")
+        _add(f"split:{rel.as_posix()}", csv_path, "aa", rel.name)
 
     return sources
 
@@ -72,13 +86,21 @@ def _read_unique_sequences(source: ReferenceSource, logger: logging.Logger | Non
 def build_reference_index(
     repo_root: Path,
     *,
+    splits: set[str] | None = None,
     logger: logging.Logger | None = None,
 ) -> dict[str, frozenset[str]]:
-    """Map sequence -> dataset labels where it appears."""
+    """Map sequence -> dataset labels where it appears.
+
+    ``splits`` optionally restricts the reference to sources whose split name is
+    in the given set (e.g. ``{"train"}`` to measure training-set memorization).
+    ``None`` (the default) includes every split — i.e. the whole dataset.
+    """
     logger = logger or logging.getLogger(__name__)
     seq_to_labels: dict[str, set[str]] = defaultdict(set)
 
     for source in iter_reference_sources(repo_root):
+        if splits is not None and source.split not in splits:
+            continue
         seqs = _read_unique_sequences(source, logger=logger)
         for seq in seqs:
             seq_to_labels[seq].add(source.label)

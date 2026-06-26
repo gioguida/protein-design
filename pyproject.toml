@@ -32,3 +32,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/protein_design"]
+
+[dependency-groups]
+dev = [
+    "adjusttext>=1.4.0",
+    "nbconvert>=7.17.1",
+]

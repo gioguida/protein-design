@@ -1,0 +1,45 @@
+# PSSM baseline temperature sweep for the PSSM-vs-DPO-650M comparison.
+#
+# Mirrors conf/analysis/pssm_baseline_sweep.yaml but:
+#   - filters the train split by the WT M22 binding enrichment (threshold is
+#     resolved from protein_design.constants.WT_M22_BINDING_ENRICHMENT by
+#     run_pssm_baseline_sweep.py — NOT hardcoded here),
+#   - uses n_sequences=5000 per temperature (CPU-only, cheap) so T=0.9 doubles
+#     as the headline PSSM baseline compared 1:1 against the DPO 650M set.
+#     5000 = the beam-search filtered comparison set size (gibbs_step 2..11 x
+#     500 beam members), so both libraries have the same total sample size,
+#   - includes T=0.9 in the temperature list (the temperature used for the DPO
+#     beam search), and
+#   - writes all artifacts under a dedicated scratch dir so it does not clobber
+#     outputs/baseline_sampler from earlier runs.
+sweep:
+  # Low temps (0.1-0.3) added to probe whether a low temperature — where the
+  # sampler collapses toward the per-position consensus — maximises the M22
+  # scorer score. 0.9 stays in the list (matches the DPO beam temperature).
+  temperatures: [0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0, 1.3, 1.6, 2.0]
+  n_sequences: 5000
+  seed: 42
+  enrichment_threshold: WT_M22_BINDING_ENRICHMENT
+
+dataset: "ed2_m22"
+dms_config: "conf/data/dms/default.yaml"
+local_splits_dir: "data/dms_splits"
+
+plots:
+  diversity_diagnostics: true
+  aa_heatmap: true
+  sequence_logo: true
+  edit_distance: true
+  pairwise_hamming: true
+  summary_csv: true
+
+summary:
+  entropy_heatmap: true
+  jsd_vs_temp: true
+
+output:
+  base_dir: "/cluster/scratch/mdenegri/protein-design/pssm_vs_dpo_650m/pssm_sweep"
+  plots_dir: "/cluster/scratch/mdenegri/protein-design/pssm_vs_dpo_650m/pssm_sweep/plots"
+
+dms_reference:
+  max_dms: 500

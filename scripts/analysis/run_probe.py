@@ -65,6 +65,10 @@ def main() -> None:
                         "learning curve; both = everything (default: full)")
     p.add_argument("--n-repeats", type=int, default=5,
                    help="learning-curve: random train subsets averaged per size")
+    p.add_argument("--out-name", default="learning_curve",
+                   help="basename for the learning-curve outputs in report/figures/ "
+                        "(default: learning_curve -> learning_curve.csv/.pdf). Use a "
+                        "distinct name to avoid clobbering an existing comparison.")
     args = p.parse_args()
 
     datasets = "all" if args.datasets == "all" else _csv_list(args.datasets)
@@ -103,13 +107,13 @@ def main() -> None:
                                     ridge_alpha=args.ridge_alpha, seed=args.seed)
         if lc.empty:
             raise SystemExit("No learning-curve rows — emb artifacts missing?")
-        lc_path = F.FIGURES_DIR / "learning_curve.csv"
+        lc_path = F.FIGURES_DIR / f"{args.out_name}.csv"
         lc_path.parent.mkdir(parents=True, exist_ok=True)
         lc.to_csv(lc_path, index=False)
         print(f"Saved: {lc_path}")
         print(lc.round(3).to_string(index=False))
         fig = F.plot_learning_curve(args.models, datasets, df=lc)
-        F.save_fig(fig, "learning_curve")
+        F.save_fig(fig, args.out_name)
 
 
 if __name__ == "__main__":

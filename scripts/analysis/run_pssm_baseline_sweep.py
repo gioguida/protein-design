@@ -16,8 +16,32 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from protein_design import constants
 from protein_design.dms_splitting import dataset_spec
 from protein_design.pssm_baseline import resolve_train_split_with_fallback
+
+
+def _resolve_enrichment_threshold(value):
+    """Resolve the config's enrichment_threshold.
+
+    A number (or numeric string) is used as-is. A non-numeric string is treated
+    as the name of a constant in ``protein_design.constants`` (so configs can
+    say ``WT_M22_BINDING_ENRICHMENT`` instead of hardcoding the number). None
+    disables the filter.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            if not hasattr(constants, value):
+                raise SystemExit(
+                    f"enrichment_threshold {value!r} is not a numeric value nor a "
+                    f"name in protein_design.constants"
+                )
+            return float(getattr(constants, value))
+    return float(value)
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,7 +97,7 @@ def main() -> int:
     temperatures = [float(temp) for temp in sweep_cfg.get("temperatures", [1.0])]
     n_sequences = int(sweep_cfg.get("n_sequences", 500))
     seed = int(sweep_cfg.get("seed", 42))
-    enrichment_threshold = sweep_cfg.get("enrichment_threshold")
+    enrichment_threshold = _resolve_enrichment_threshold(sweep_cfg.get("enrichment_threshold"))
 
     dataset_key = str(cfg.get("dataset", "ed2_m22"))
     dms_config = str(cfg.get("dms_config", "conf/data/dms/default.yaml"))

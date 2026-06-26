@@ -98,6 +98,17 @@ models:
     color: "#e377c2"
     family: c05
 
+  # Vanilla ESM2-35M seeded cdrmix C05 evotuning — winner of the 81-run
+  # screening sweep (lr8e-5, cdr_mask_prob 0.6, cdr_flank 5, fmp 0.05,
+  # salt oas-v1; confirmed on oas-v2/v3; best.pt = val-ppl-selected).
+  # Isolates the effect of C05 cdrmix fine-tune without prior OAS evotuning.
+  vanilla_cdrmix_35m:
+    checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/vanilla_cdrmix_35m/vanilla_cdrmix_35m.pt
+    base_model: facebook/esm2_t12_35M_UR50D
+    label: "Vanilla+cdrmix 35M"
+    color: "#00bcd4"
+    family: c05
+
   # Example cross-team (Giovanni's DPO) checkpoint — extend with the steps you
   # actually compare in the paper. Lives in a read-only tree; artifacts still
   # land under $ANALYSIS_DIR/just_dpo_4ep_step1376/.
@@ -106,4 +117,13 @@ models:
     base_model: facebook/esm2_t12_35M_UR50D
     label: "DPO 4ep"
     color: "#9467bd"
+    family: dpo
+
+  # Giovanni's DPO 650M checkpoint (base ESM2-650M) — the "best model" generator
+  # in the PSSM-vs-DPO comparison (report/meetings/pssm_vs_dpo_650m_comparison.ipynb).
+  just_dpo_650m_step8250:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "DPO 650M (step 8250)"
+    color: "#393b79"
     family: dpo

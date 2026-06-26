@@ -396,6 +396,16 @@ def plot_sequence_logo(
                     ax.text(p_idx, y + freq / 2, aa, ha="center", va="center",
                             fontsize=8, fontweight="bold", color="black")
                 y += freq
+            # Pool the long tail of residues each below `min_freq` into one grey
+            # "other" block so the column still sums to 1 (otherwise diverse
+            # positions leave a misleading gap at the top of the bar).
+            remainder = 1.0 - y
+            if remainder > 1e-3:
+                ax.add_patch(
+                    plt.Rectangle((p_idx - 0.42, y), 0.84, remainder,
+                                  facecolor="0.8", edgecolor="white",
+                                  linewidth=0.4, alpha=0.85, hatch="///")
+                )
 
         ax.set_xlim(-0.6, P - 0.4)
         ax.set_ylim(0.0, 1.02)
@@ -409,9 +419,15 @@ def plot_sequence_logo(
     axes[-1, 0].set_xticklabels([f"{i + 1}\n{a}" for i, a in enumerate(C05_CDRH3)],
                                 fontsize=8)
     axes[-1, 0].set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
+    other_handle = plt.Rectangle((0, 0), 1, 1, facecolor="0.8", edgecolor="white",
+                                 alpha=0.85, hatch="///",
+                                 label=f"other (pooled residues each < {min_freq:.0%})")
+    axes[0, 0].legend(handles=[other_handle], loc="lower right", fontsize=7,
+                      framealpha=0.9)
     fig.suptitle(
         f"Sequence logo — per-position AA frequency in {sampler_title} samples\n"
-        "(tall single letters indicate collapse onto one consensus residue)",
+        "(tall single letters indicate collapse onto one consensus residue; "
+        "grey = pooled rare residues)",
         fontsize=11,
     )
     fig.tight_layout()
@@ -473,7 +489,7 @@ def plot_pairwise_hamming(
                 ax.set_ylabel(f"{cfg}\npair count", fontsize=9)
             ax.set_xlim(-0.5, P + 0.5)
 
-    fig.suptitle(f"Pairwise Hamming among {sampler_title} CDR-H3s — collapse → mass at 0",
+    fig.suptitle(f"Pairwise Hamming among {sampler_title} CDR-H3s",
                  fontsize=12)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -686,6 +702,12 @@ def parse_args() -> argparse.Namespace:
         default="gibbs",
         help="Label used in plot titles and output filename prefix (e.g. gibbs, beam).",
     )
+    p.add_argument(
+        "--format",
+        default="png",
+        choices=["png", "pdf"],
+        help="Output image format for the plots (default: png). Use pdf for vector figures.",
+    )
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
 
@@ -695,6 +717,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     sampler_prefix = args.sampler_label.strip().lower().replace(" ", "_")
     sampler_title = args.sampler_label.strip().title() or "Gibbs"
+    ext = args.format
 
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -857,19 +880,19 @@ def main() -> int:
                     continue
                 plot_pll_violin_grid(
                     pv, labels_local, configs_local, fkey, flabel,
-                    args.output_dir / f"{sampler_prefix}_pll_dist_{readout}{slice_suffix}.png",
+                    args.output_dir / f"{sampler_prefix}_pll_dist_{readout}{slice_suffix}.{ext}",
                     sampler_title,
                 )
             plot_pll_trajectory(pv, labels_local, configs_local,
-                                args.output_dir / f"{sampler_prefix}_pll_trajectory{slice_suffix}.png",
+                                args.output_dir / f"{sampler_prefix}_pll_trajectory{slice_suffix}.{ext}",
                                 sampler_title)
         if not args.skip_pairwise_hamming:
             plot_pairwise_hamming(pv, labels_local, configs_local,
-                                  args.output_dir / f"{sampler_prefix}_pairwise_hamming{slice_suffix}.png",
+                                  args.output_dir / f"{sampler_prefix}_pairwise_hamming{slice_suffix}.{ext}",
                                   sampler_title)
         if not args.skip_edit_distance:
             plot_edit_distance(pv, labels_local, configs_local,
-                               args.output_dir / f"{sampler_prefix}_edit_distance{slice_suffix}.png",
+                               args.output_dir / f"{sampler_prefix}_edit_distance{slice_suffix}.{ext}",
                                sampler_title)
 
         for cfg in configs_local:
@@ -879,13 +902,13 @@ def main() -> int:
             if not args.skip_sequence_logo:
                 plot_sequence_logo(
                     cfg_subset,
-                    args.output_dir / f"{sampler_prefix}_sequence_logo{slice_suffix}{cfg_part}.png",
+                    args.output_dir / f"{sampler_prefix}_sequence_logo{slice_suffix}{cfg_part}.{ext}",
                     sampler_title,
                 )
             if not args.skip_position_mutation_freq:
                 plot_position_mutation_freq(
                     cfg_subset,
-                    args.output_dir / f"{sampler_prefix}_position_mutation_freq{slice_suffix}{cfg_part}.png",
+                    args.output_dir / f"{sampler_prefix}_position_mutation_freq{slice_suffix}{cfg_part}.{ext}",
                     sampler_title,
                 )
 
