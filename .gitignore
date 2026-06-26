@@ -106,3 +106,7 @@ Pipfile.lock
 # Known accidental local files
 ion.python-versionq
 tmp32_hai5v
+
+# Regenerated comparison figures (keep CSVs only)
+report/figures/pssm_vs_dpo_650m/*.png
+report/figures/pssm_vs_dpo_650m/*.pdf
