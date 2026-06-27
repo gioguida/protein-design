@@ -424,16 +424,42 @@ def plot_sequence_logo(
                                  label=f"other (pooled residues each < {min_freq:.0%})")
     axes[0, 0].legend(handles=[other_handle], loc="lower right", fontsize=7,
                       framealpha=0.9)
-    fig.suptitle(
-        f"Sequence logo — per-position AA frequency in {sampler_title} samples\n"
-        "(tall single letters indicate collapse onto one consensus residue; "
-        "grey = pooled rare residues)",
-        fontsize=11,
-    )
+    fig.suptitle("Per position AA frequency", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
+
+
+def _add_count_labels(ax, counts, patches):
+    """Write each non-empty bar's integer count vertically on top of the bar.
+
+    Returns the created Text objects so the caller can expand the y-limit to
+    keep the (rotated, possibly tall) labels inside the axes.
+    """
+    ymax = counts.max() if len(counts) else 0
+    texts = []
+    if ymax:
+        for c, p in zip(counts, patches):
+            if c <= 0:
+                continue
+            texts.append(ax.text(p.get_x() + p.get_width() / 2, c + ymax * 0.01,
+                                  f"{int(c)}", rotation="vertical", ha="center",
+                                  va="bottom", fontsize=7, color="0.25"))
+    return texts
+
+
+def _labels_top_data_y(ax, texts):
+    """Highest point (in data y) reached by ``texts`` on ``ax``, or None.
+
+    Requires the figure to have been drawn so a renderer is available.
+    """
+    if not texts:
+        return None
+    renderer = ax.figure.canvas.get_renderer()
+    inv = ax.transData.inverted()
+    return max(inv.transform((0, t.get_window_extent(renderer).ymax))[1]
+               for t in texts)
 
 
 def plot_pairwise_hamming(
@@ -455,6 +481,8 @@ def plot_pairwise_hamming(
     P = len(C05_CDRH3)
     rng = np.random.default_rng(SEED)
 
+    label_groups: List[Tuple[plt.Axes, list]] = []
+    dmax_global = 0
     for row, cfg in enumerate(configs):
         for col, v in enumerate(labels):
             ax = axes[row, col]
@@ -478,20 +506,31 @@ def plot_pairwise_hamming(
             dist = P - eq.sum(axis=2)
             iu = np.triu_indices(n, k=1)
             d_flat = dist[iu]
+            dmax_global = max(dmax_global, int(d_flat.max()))
 
-            ax.hist(d_flat, bins=range(0, P + 2), align="left",
-                    color="tab:purple", edgecolor="white", linewidth=0.4)
+            counts, _, patches = ax.hist(
+                d_flat, bins=range(0, P + 2), align="left",
+                color="tab:purple", edgecolor="white", linewidth=0.4)
+            label_groups.append((ax, _add_count_labels(ax, counts, patches)))
             if row == 0:
                 ax.set_title(f"{v}", fontsize=10)
             if row == n_rows - 1:
                 ax.set_xlabel("pairwise Hamming")
             if col == 0:
                 ax.set_ylabel(f"{cfg}\npair count", fontsize=9)
-            ax.set_xlim(-0.5, P + 0.5)
 
-    fig.suptitle(f"Pairwise Hamming among {sampler_title} CDR-H3s",
-                 fontsize=12)
+    # Trim the shared x-axis to one past the largest observed distance.
+    axes[0, 0].set_xlim(-0.5, dmax_global + 1.5)
+    fig.suptitle("Pairwise Hamming distance among CDRH3s", fontsize=12)
     fig.tight_layout()
+    # Measure label heights AFTER tight_layout so the axes are at their final
+    # pixel size, then expand the shared y-axis so the rotated count labels stay
+    # inside the axes (the fixed-height labels span more data units once the
+    # axes are shrunk by tight_layout).
+    fig.canvas.draw()
+    tops = [t for ax, ts in label_groups if (t := _labels_top_data_y(ax, ts))]
+    if tops:
+        axes[0, 0].set_ylim(top=max(tops) * 1.05)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
@@ -509,6 +548,7 @@ def plot_edit_distance(
     n_rows = len(configs)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 3.2 * n_rows),
                              squeeze=False)
+    label_groups: List[Tuple[plt.Axes, list]] = []
     for row, cfg in enumerate(configs):
         for col, v in enumerate(labels):
             ax = axes[row, col]
@@ -520,8 +560,10 @@ def plot_edit_distance(
             if not len(nm):
                 ax.axis("off")
                 continue
-            ax.hist(nm, bins=range(0, int(nm.max()) + 2), color="tab:green",
-                    edgecolor="white", linewidth=0.4, align="left")
+            counts, _, patches = ax.hist(
+                nm, bins=range(0, int(nm.max()) + 2), color="tab:green",
+                edgecolor="white", linewidth=0.4, align="left")
+            label_groups.append((ax, _add_count_labels(ax, counts, patches)))
             if row == 0:
                 ax.set_title(v, fontsize=11)
             if row == n_rows - 1:
@@ -529,8 +571,15 @@ def plot_edit_distance(
             if col == 0:
                 ax.set_ylabel(f"{cfg}\ncount", fontsize=9)
             ax.set_xlim(left=-0.5)
-    fig.suptitle(f"{sampler_title} samples — edit distance from C05 WT CDR-H3", fontsize=12)
+    fig.suptitle("Edit distance from C05 WT CDR-H3", fontsize=12)
     fig.tight_layout()
+    # Expand each y-axis AFTER tight_layout (final axes size) so the rotated
+    # count labels stay inside the axes.
+    fig.canvas.draw()
+    for ax, ts in label_groups:
+        top = _labels_top_data_y(ax, ts)
+        if top is not None:
+            ax.set_ylim(top=top * 1.05)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out_path)
@@ -553,7 +602,7 @@ def plot_position_mutation_freq(
     ax.set_xticks(range(P))
     ax.set_xticklabels([f"{i + 1}\n{a}" for i, a in enumerate(C05_CDRH3)], fontsize=8)
     ax.set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
-    ax.set_title(f"Per-position mutation frequency in {sampler_title} samples", fontsize=11)
+    ax.set_title("Per-position mutation frequency", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)

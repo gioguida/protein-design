@@ -72,8 +72,7 @@ def main() -> int:
     ax.set_xlabel("CDR-H3 position (WT residue)")
     ax.set_ylabel("Temperature")
     ax.set_title(
-        f"Position-wise CDR-H3 entropy across temperatures "
-        f"({args.sampler_label.strip().title()}, model: {args.model_variant})"
+        f"Position-wise CDR-H3 entropy across temperatures ({args.model_variant} model)"
     )
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Shannon entropy (bits)")
