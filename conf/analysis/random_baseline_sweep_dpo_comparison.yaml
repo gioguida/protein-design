@@ -1,0 +1,51 @@
+# Random library-mutant baseline trust-radius sweep for the random-vs-DPO-650M
+# comparison.
+#
+# Mirrors conf/analysis/pssm_baseline_sweep_dpo_comparison.yaml but the "dumb"
+# generator has no temperature -- its only knob is the trust radius (the cap on
+# edits from WT). So we sweep trust_radius instead.
+#   - the per-position alphabet is built from the SAME train split the PSSM
+#     baseline used (ed2_m22, filtered by WT M22 binding enrichment, resolved
+#     from protein_design.constants.WT_M22_BINDING_ENRICHMENT by
+#     run_random_baseline_sweep.py -- NOT hardcoded here), so the ONLY difference
+#     between the two baselines is the sampling scheme,
+#   - n_sequences=5000 per radius (CPU-only, cheap); radius=11 doubles as the
+#     headline random baseline compared 1:1 against the DPO 650M set. 5000 = the
+#     beam-search filtered comparison set size (gibbs_step 2..11 x 500 beam
+#     members), so both libraries have the same total sample size,
+#   - radius=11 matches the DPO beam search --n-steps (11), and
+#   - writes all artifacts under a dedicated scratch dir.
+sweep:
+  # Trust radius = max edits from WT. 11 matches the DPO beam --n-steps; smaller
+  # radii probe whether staying closer to WT maximises the M22 scorer score
+  # (the analogue of the PSSM low-temperature probe).
+  trust_radii: [2, 4, 6, 8, 11]
+  n_sequences: 5000
+  seed: 42
+  # Keep duplicates (default) so the library matches the PSSM baseline sample
+  # size. Set true for the Lorenz dedup-to-unique behavior.
+  unique_only: false
+  enrichment_threshold: WT_M22_BINDING_ENRICHMENT
+
+dataset: "ed2_m22"
+dms_config: "conf/data/dms/default.yaml"
+local_splits_dir: "data/dms_splits"
+
+plots:
+  diversity_diagnostics: true
+  aa_heatmap: true
+  sequence_logo: true
+  edit_distance: true
+  pairwise_hamming: true
+  summary_csv: true
+
+summary:
+  entropy_heatmap: true
+  jsd_vs_temp: true
+
+output:
+  base_dir: "/cluster/scratch/mdenegri/protein-design/random_vs_dpo_650m/random_sweep"
+  plots_dir: "/cluster/scratch/mdenegri/protein-design/random_vs_dpo_650m/random_sweep/plots"
+
+dms_reference:
+  max_dms: 500
