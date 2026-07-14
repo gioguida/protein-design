@@ -17,7 +17,7 @@ from protein_design.dms_splitting import (
     resolve_dataset_split,
 )
 
-from .data_processing import ensure_delta_m22_binding_enrichment
+from .data_processing import WT_M22_BINDING_ENRICHMENT, ensure_delta_m22_binding_enrichment
 from .low_data import subsample_train_sequences
 from .utils import _gap_pairs
 
@@ -56,6 +56,7 @@ class DeltaBasedParams(TypedDict):
     strong_pos_threshold: float
     strong_neg_threshold: float
     min_score_margin: float
+    wild_type: str
     rng: np.random.Generator
 
 
@@ -161,13 +162,16 @@ def _normalize_mix_mode(mix_mode: str) -> DeltaMixMode:
     return cast(DeltaMixMode, mode)
 
 
-def _normalize_excluded_winner_positions(positions: Sequence[int]) -> Tuple[int, ...]:
+def _normalize_excluded_winner_positions(
+    positions: Sequence[int],
+    wild_type: str = WILD_TYPE,
+) -> Tuple[int, ...]:
     normalized = tuple(sorted({int(position) for position in positions}))
-    invalid = [position for position in normalized if position < 1 or position > len(WILD_TYPE)]
+    invalid = [position for position in normalized if position < 1 or position > len(wild_type)]
     if invalid:
         raise ValueError(
             "data.exclude_winner_mutation_positions must be within the 1-based "
-            f"CDR-H3 range 1..{len(WILD_TYPE)}. Got invalid positions: {invalid}"
+            f"CDR-H3 range 1..{len(wild_type)}. Got invalid positions: {invalid}"
         )
     return normalized
 
@@ -175,23 +179,25 @@ def _normalize_excluded_winner_positions(positions: Sequence[int]) -> Tuple[int,
 def _chosen_sequence_has_excluded_mutation(
     sequence: str,
     excluded_positions: Sequence[int],
+    wild_type: str = WILD_TYPE,
 ) -> bool:
-    if not excluded_positions or len(sequence) != len(WILD_TYPE):
+    if not excluded_positions or len(sequence) != len(wild_type):
         return False
-    return any(sequence[position - 1] != WILD_TYPE[position - 1] for position in excluded_positions)
+    return any(sequence[position - 1] != wild_type[position - 1] for position in excluded_positions)
 
 
 def _filter_pairs_by_excluded_winner_positions(
     pairs_df: pd.DataFrame,
     excluded_positions: Sequence[int],
+    wild_type: str = WILD_TYPE,
 ) -> pd.DataFrame:
-    normalized_positions = _normalize_excluded_winner_positions(excluded_positions)
+    normalized_positions = _normalize_excluded_winner_positions(excluded_positions, wild_type)
     if pairs_df.empty or not normalized_positions:
         return pairs_df.reset_index(drop=True)
 
     chosen = pairs_df["chosen_sequence"].astype(str)
     keep_mask = ~chosen.map(
-        lambda sequence: _chosen_sequence_has_excluded_mutation(sequence, normalized_positions)
+        lambda sequence: _chosen_sequence_has_excluded_mutation(sequence, normalized_positions, wild_type)
     )
     return pairs_df.loc[keep_mask].reset_index(drop=True)
 
@@ -372,7 +378,7 @@ def _build_wt_anchor_pairs(cluster_df: pd.DataFrame, params: DeltaBasedParams) -
         .sort_values(delta_col, ascending=False)
         .reset_index(drop=True)
     )
-    wt = {"aa": WILD_TYPE, "score": 0.0}
+    wt = {"aa": params["wild_type"], "score": 0.0}
     all_pairs: List[PairTuple] = []
     num_wt = int(params["wt_pairs_frac"] * n)
     num_pos_wt = num_wt // 2
@@ -506,6 +512,7 @@ def build_dpo_pairs_from_clustered_dataframe(
     strong_pos_threshold: float = 1.0,
     strong_neg_threshold: float = -5.0,
     min_score_margin: float = 0.1,
+    wild_type: str = WILD_TYPE,
     rng: Optional[np.random.Generator] = None,
     random_seed: int = RANDOM_SEED,
     source_view: str = "base",
@@ -539,6 +546,7 @@ def build_dpo_pairs_from_clustered_dataframe(
         "strong_pos_threshold": float(strong_pos_threshold),
         "strong_neg_threshold": float(strong_neg_threshold),
         "min_score_margin": float(min_score_margin),
+        "wild_type": str(wild_type),
         "rng": rng if rng is not None else np.random.default_rng(int(random_seed)),
     }
     pair_rows = []
@@ -576,7 +584,8 @@ def _load_split_dataframe(
     df = pd.read_csv(split_path)
     if spec.key_metric_col != "M22_binding_enrichment_adj":
         df["M22_binding_enrichment_adj"] = pd.to_numeric(df[spec.key_metric_col], errors="coerce")
-    return ensure_delta_m22_binding_enrichment(df)
+    wt_value = spec.wt_metric_value if spec.wt_metric_value is not None else WT_M22_BINDING_ENRICHMENT
+    return ensure_delta_m22_binding_enrichment(df, wt_binding_enrichment=wt_value)
 
 
 def build_split_pair_dataframes_from_raw(
@@ -612,6 +621,7 @@ def build_split_pair_dataframes_from_raw(
     seed: int = RANDOM_SEED,
     dms_config_path: Path | str | None = None,
     dataset_key: str = "ed2_m22",
+    wild_type: str = WILD_TYPE,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     del include_views, raw_csv_path, processed_dir, deduplicate_across_views
     del split_hamming_distance, split_stratify_bins
@@ -664,6 +674,7 @@ def build_split_pair_dataframes_from_raw(
             strong_pos_threshold=strong_pos_threshold,
             strong_neg_threshold=strong_neg_threshold,
             min_score_margin=min_score_margin,
+            wild_type=wild_type,
             rng=np.random.default_rng(int(seed) + offset),
             random_seed=int(seed) + offset,
             source_view=split,
@@ -673,14 +684,17 @@ def build_split_pair_dataframes_from_raw(
     train_df = _filter_pairs_by_excluded_winner_positions(
         train_df,
         exclude_winner_mutation_positions,
+        wild_type,
     )
     val_df = _filter_pairs_by_excluded_winner_positions(
         val_df,
         exclude_winner_mutation_positions,
+        wild_type,
     )
     test_df = _filter_pairs_by_excluded_winner_positions(
         test_df,
         exclude_winner_mutation_positions,
+        wild_type,
     )
     if bool(enforce_train_controlled_split_sizes):
         train_df, val_df, test_df = _downsample_pairs_to_train_controlled_split(
@@ -711,6 +725,10 @@ def build_split_pair_dataframes_from_cfg(
     if delta_cfg is None:
         raise ValueError("data.delta_based is required when data.pairing_strategy='delta_based'.")
     components = validate_delta_based_components([str(component) for component in delta_cfg.components])
+
+    dpo_dataset_key = str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22"))
+    train_spec = dataset_spec(dpo_dataset_key, resolve_dms_config_path_from_cfg(cfg))
+    wild_type = train_spec.wt_sequence if train_spec.wt_sequence is not None else WILD_TYPE
 
     mix_cfg = getattr(delta_cfg, "mix", None)
     mix_mode = "count"
@@ -785,7 +803,8 @@ def build_split_pair_dataframes_from_cfg(
         min_score_margin=_delta_value("min_score_margin", 0.1),
         seed=int(cfg.seed),
         dms_config_path=resolve_dms_config_path_from_cfg(cfg),
-        dataset_key=str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")),
+        dataset_key=dpo_dataset_key,
+        wild_type=wild_type,
     )
 
 

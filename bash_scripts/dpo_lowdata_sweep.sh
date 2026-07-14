@@ -25,7 +25,11 @@ cd "/cluster/home/${USER}/protein-design"
 MODELS="vanilla_650m,evo_650m,evo_c05_cdrmix,evo_c05_cdrmix_spearman"
 N_GRID="50,100,200,500,1000,2000,5000"
 SEEDS="0,1,2"
-EPOCHS=3
+# High ceiling + task-level patience-based early stopping (now selecting the
+# best checkpoint by val_spearman_avg, see dpo/train.py & lora_dpo/train.py)
+# instead of a fixed small epoch budget -- low-N runs used to get too few
+# gradient steps (e.g. N=20 => ~6 steps at EPOCHS=3) to train meaningfully.
+EPOCHS=50
 RUN_SEED=42
 MODEL_PRESET="esm2_650m" # conf/model preset (esm2_650m | esm2_35m | ...); must
                          # match the registry base_model size of the chosen keys
@@ -40,6 +44,10 @@ VAL_SPEARMAN_CAP=2000
 # test_spearman_avg is computed separately and stays uncapped.
 TEST_PAIRS_CAP=1000
 DRY_RUN=0
+BASE_SUFFIX=""          # appended to run.base_name (e.g. "_splitseed101") so
+                         # sweeps over external split seeds -- same (model,n,seed)
+                         # grid, different data.*.dataset_key -- can't collide on
+                         # run name (only the timestamp would otherwise disambiguate).
 EXTRA_OVERRIDES=()
 
 while [[ $# -gt 0 ]]; do
@@ -55,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --val-pairs-cap) VAL_PAIRS_CAP="$2"; shift 2 ;;
     --val-spearman-cap) VAL_SPEARMAN_CAP="$2"; shift 2 ;;
     --test-pairs-cap) TEST_PAIRS_CAP="$2"; shift 2 ;;
+    --base-suffix) BASE_SUFFIX="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *)         EXTRA_OVERRIDES+=("$1"); shift ;;
   esac
@@ -111,7 +120,7 @@ for key in "${MODEL_ARR[@]}"; do
   ckpt="${CKPT[$key]}"
   for n in "${N_ARR[@]}"; do
     for s in "${SEED_ARR[@]}"; do
-      base_name="lowdata_${key}_n${n}_s${s}"
+      base_name="lowdata_${key}_n${n}_s${s}${BASE_SUFFIX}"
       overrides=(
         "task=${TASK}"
         "model=${MODEL_PRESET}"

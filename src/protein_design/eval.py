@@ -422,7 +422,7 @@ def score_sequences_cdr_pll(
                 batch_idxs = idxs[start:end]
                 pll_scores = scorer.pseudo_log_likelihood(
                     batch,
-                    cdr_only=True,
+                    cdr_only=bool(getattr(scorer.config, "use_context", True)),
                     use_grad=False,
                 )
                 scores[batch_idxs] = pll_scores.detach().float().cpu().numpy()

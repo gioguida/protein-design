@@ -38,8 +38,11 @@ case "$WHAT" in
   emb)
     python scripts/analysis/compute_dms_embeddings.py "${ARGS[@]}"
     ;;
+  zeroshot_full)
+    python scripts/analysis/score_zeroshot_full_dataset.py "${ARGS[@]}"
+    ;;
   "")
     echo "error: --what is required (e.g. --what pll)" >&2; exit 2 ;;
   *)
-    echo "error: unknown --what '$WHAT' (known: pll, emb)" >&2; exit 2 ;;
+    echo "error: unknown --what '$WHAT' (known: pll, emb, zeroshot_full)" >&2; exit 2 ;;
 esac

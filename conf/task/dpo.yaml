@@ -11,7 +11,10 @@ task:
 
 training:
   batch_size: 8
-  num_epochs: 5
+  # High ceiling; patience below is what actually decides how long training
+  # runs. Checkpoint selection prefers val_spearman_avg (higher is better,
+  # see dpo/train.py), falling back to val_loss when unavailable.
+  num_epochs: 50
   lr: 3e-6
   weight_decay: 0.0
   mixed_precision: bf16   # off | fp16 | bf16
@@ -19,7 +22,7 @@ training:
   beta: 0.1
   temperature: 1         # only relevant for weighted loss
   grad_clip_norm: 1.0
-  patience: 10
+  patience: 5
   device: cuda
   num_workers: 8
   pin_memory: true

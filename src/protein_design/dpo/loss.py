@@ -243,8 +243,14 @@ def implicit_KL_divergence(
     reference: ESM2Model
 ) -> torch.Tensor:
     """Compute the implicit KL divergence for a single sequence."""
-    masked_pll = scorer.pseudo_log_likelihood([sequence], use_grad=False).squeeze(0)
-    ref_masked_pll = reference.pseudo_log_likelihood([sequence], use_grad=False).squeeze(0)
+    scorer_cdr_only = bool(getattr(scorer.config, "use_context", True))
+    reference_cdr_only = bool(getattr(reference.config, "use_context", True))
+    masked_pll = scorer.pseudo_log_likelihood(
+        [sequence], cdr_only=scorer_cdr_only, use_grad=False
+    ).squeeze(0)
+    ref_masked_pll = reference.pseudo_log_likelihood(
+        [sequence], cdr_only=reference_cdr_only, use_grad=False
+    ).squeeze(0)
     kl_divergence = (masked_pll - ref_masked_pll)
     return kl_divergence
 

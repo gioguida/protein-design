@@ -9,6 +9,32 @@ split:
   stratify_bins: 10
 
 datasets:
+  cetuximab_h:
+    # AbAgym EGFR_2013_Cetuximab, heavy-chain-only single mutants (559 rows) --
+    # see scripts/data_prep/build_cetuximab_h.py and
+    # data/AbAgym/CETUXIMAB_DPO_GUIDE.md. Full 220-aa VH+CH1 mutant sequences
+    # (no separate CDR/context split like C05 -- mutations span all 3 heavy
+    # CDRs). key_metric_col is `neg_DMS_score` = -DMS_score, since AbAgym's
+    # raw DMS_score has negative=enhanced-binding (preferred); negating it
+    # matches this project's convention of positive=preferred. wt_sequence is
+    # the WT heavy chain (PDB 1yy9, chain H); wt_metric_value=0.0 because the
+    # unmutated WT has an implicit (unmeasured) DMS_score of 0 by assay
+    # construction, so no delta shift is needed on top of the sign flip.
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/AbAgym_cetuximab_h_mutants.csv
+    sequence_col: aa
+    key_metric_col: neg_DMS_score
+    wt_sequence: "QVQLKQSGPGLVQPSQSLSITCTVSGFSLTNYGVHWVRQSPGKGLEWLGVIWSGGNTDYNTPFTSRLSINKDNSKSQVFFKMNSLQSNDTAIYYCARALTYYDYEFAYWGQGTLVTVSAASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPK"
+    wt_metric_value: 0.0
+  ed1_m22:
+    # Combined single-mutant (num_mut==1) pool from ED2_M22/ED5_M22/ED811_M22
+    # raw files -- see scripts/data_prep/build_ed1_m22.py. ED2_M22 alone is a
+    # complete saturation scan (24 CDR-H3 positions x 19 subs = 456 rows) and
+    # is a strict superset of the ED1 rows found in the other two pools, so
+    # this combined file equals ED2_M22's own ED1 rows (source_pool column
+    # records provenance either way).
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/ED1_M22_binding_enrichment_combined.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj
   ed2_m22:
     path: /cluster/project/infk/krause/gguidarini/protein-design/data/raw/ED2_M22_binding_enrichment.csv
     sequence_col: aa

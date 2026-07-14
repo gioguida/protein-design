@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,11 @@ class DatasetSpec:
     key_metric_col: str
     split_source: Optional[str] = None
     no_split: bool = False
+    # Dataset-specific wildtype override for the DPO pipeline. None -> callers
+    # fall back to the C05 CDR-H3 constants (protein_design.constants.WILD_TYPE
+    # / WT_M22_BINDING_ENRICHMENT), preserving existing behavior for ed*_m22.
+    wt_sequence: Optional[str] = None
+    wt_metric_value: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -119,10 +125,48 @@ def load_dms_config(config_path: str | Path | None = None) -> DMSConfig:
             key_metric_col=str(entry.get("key_metric_col", "M22_binding_enrichment_adj")),
             split_source=None if entry.get("split_source") is None else str(entry.get("split_source")),
             no_split=bool(entry.get("no_split", False)),
+            wt_sequence=None if entry.get("wt_sequence") is None else str(entry.get("wt_sequence")),
+            wt_metric_value=None if entry.get("wt_metric_value") is None else float(entry.get("wt_metric_value")),
         )
     if not datasets:
         raise ValueError(f"No DMS datasets configured in {path}")
     return DMSConfig(path=path, split=split, datasets=datasets)
+
+
+_EXTERNAL_SPLIT_SEED_RE = re.compile(r"^(?P<base_key>.+)_splitseed(?P<seed>\d+)$")
+
+
+def _resolve_dataset_key(dataset_key: str, config: DMSConfig) -> Tuple[str, DMSConfig]:
+    """Resolve dataset_key, transparently supporting external-split keys.
+
+    A key of the form '<base_key>_splitseed<N>' need not appear in the YAML:
+    it reuses <base_key>'s DatasetSpec (same path/columns/WT) but re-instantiates
+    the FULL train/val/test split with split.seed=N, written to an isolated
+    <output_dir>/<base_key>_splitseed<N>/ directory. This is a second,
+    orthogonal axis of variation from data.low_data.seed (which subsamples an
+    already-fixed train split) -- it never touches <output_dir>/<base_key>/,
+    the canonical seed=42 split every other run relies on.
+    """
+    if dataset_key in config.datasets:
+        return dataset_key, config
+    match = _EXTERNAL_SPLIT_SEED_RE.match(dataset_key)
+    if not match:
+        raise KeyError(f"Unknown DMS dataset key {dataset_key!r}. Available: {sorted(config.datasets)}")
+    base_key, seed_str = match.group("base_key"), match.group("seed")
+    if base_key not in config.datasets:
+        raise KeyError(f"Unknown DMS dataset key {dataset_key!r} (base key {base_key!r} not found).")
+    base_spec = config.datasets[base_key]
+    if base_spec.split_source is not None:
+        raise ValueError(
+            f"External split seeds are only supported for datasets that are their own "
+            f"split_source; {base_key!r} has split_source={base_spec.split_source!r}."
+        )
+    ext_spec = replace(base_spec, key=dataset_key)
+    ext_split = replace(config.split, seed=int(seed_str))
+    ext_datasets = dict(config.datasets)
+    ext_datasets[dataset_key] = ext_spec
+    ext_config = replace(config, split=ext_split, datasets=ext_datasets)
+    return dataset_key, ext_config
 
 
 def dms_config_path_from_cfg(cfg: Any) -> Path:
@@ -373,8 +417,7 @@ def ensure_dataset_splits(
     force: bool = False,
 ) -> Dict[str, Path]:
     config = load_dms_config(config_path)
-    if dataset_key not in config.datasets:
-        raise KeyError(f"Unknown DMS dataset key {dataset_key!r}. Available: {sorted(config.datasets)}")
+    dataset_key, config = _resolve_dataset_key(dataset_key, config)
     spec = config.datasets[dataset_key]
     source_key = spec.split_source or dataset_key
     if source_key not in config.datasets:
@@ -439,4 +482,5 @@ def resolve_dataset_split(
 
 def dataset_spec(dataset_key: str, config_path: str | Path | None = None) -> DatasetSpec:
     config = load_dms_config(config_path)
+    dataset_key, config = _resolve_dataset_key(dataset_key, config)
     return config.datasets[dataset_key]

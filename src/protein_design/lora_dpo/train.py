@@ -226,6 +226,10 @@ class _ReferenceView:
     def model(self) -> Any:
         return self
 
+    @property
+    def config(self) -> Any:
+        return self._model.config
+
 
 def _build_scorers(cfg: Any, logger: logging.Logger) -> ESM2Model:
     model_cfg = ModelConfig(
@@ -700,7 +704,7 @@ def _compute_chosen_perplexity(dataloader: DataLoader, scorer: ESM2Model) -> flo
                     continue
                 pll_scores = scorer.pseudo_log_likelihood(
                     seq_group,
-                    cdr_only=True,
+                    cdr_only=bool(getattr(scorer.config, "use_context", True)),
                     use_grad=False,
                 )
                 total_pll += float(pll_scores.sum().item())
@@ -866,10 +870,12 @@ def _load_validation_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional
         )
         return None
 
+    train_spec = dataset_spec(str(getattr(cfg.data, "dpo_dataset_key", "ed2_m22")), _resolve_dms_config_path(cfg))
+    val_wt = train_spec.wt_sequence if train_spec.wt_sequence is not None else WILD_TYPE
     return {
         "ppl/val_pos": val_pos,
         "ppl/val_neg": val_neg,
-        "ppl/val_wt": [WILD_TYPE],
+        "ppl/val_wt": [val_wt],
     }
 
 
@@ -982,10 +988,11 @@ def _load_test_pll_eval_sets(cfg: Any, logger: logging.Logger) -> Optional[Dict[
     test_pos = clean_df[clean_df["M22_binding_enrichment_adj"] > pos_threshold]["aa"].tolist()
     test_neg = clean_df[clean_df["M22_binding_enrichment_adj"] < 0.0]["aa"].tolist()
 
+    test_wt = test_spec.wt_sequence if test_spec.wt_sequence is not None else WILD_TYPE
     return {
         "ppl/test_pos": test_pos,
         "ppl/test_neg": test_neg,
-        "ppl/test_wt": [WILD_TYPE],
+        "ppl/test_wt": [test_wt],
     }
 
 
@@ -1057,7 +1064,7 @@ def _corpus_perplexity_for_sequences(
                 batch = seq_group[start : start + batch_size]
                 pll_scores = scorer.pseudo_log_likelihood(
                     batch,
-                    cdr_only=True,
+                    cdr_only=bool(getattr(scorer.config, "use_context", True)),
                     use_grad=False,
                 )
                 total_pll += float(pll_scores.sum().item())
@@ -1421,6 +1428,23 @@ def run_lora_dpo(cfg: Any) -> Path:
             wandb_mod.log(step0_record, step=global_step)
 
         best_val_loss = float(step0_record["val_loss"])
+        # Prefer selecting the "best" checkpoint by held-out ranking quality
+        # (val_spearman_avg, higher is better) since that's what we actually
+        # report on test. Falls back to val_loss (lower is better) whenever a
+        # dataset doesn't support the cdr_pll Spearman eval (val_spearman_df
+        # is None / evaluation failed), preserving the old behavior there.
+        selection_metric_name = (
+            "val_spearman_avg"
+            if math.isfinite(step0_record.get("val_spearman_avg", float("nan")))
+            else "val_loss"
+        )
+        selection_higher_is_better = selection_metric_name == "val_spearman_avg"
+        best_selection_value = float(step0_record[selection_metric_name])
+        logger.info(
+            "Checkpoint selection metric: %s (%s)",
+            selection_metric_name,
+            "higher is better" if selection_higher_is_better else "lower is better",
+        )
         _save_checkpoint(
             best_ckpt,
             epoch=0,
@@ -1625,8 +1649,13 @@ def run_lora_dpo(cfg: Any) -> Path:
         if wandb_run is not None:
             wandb_mod.log(epoch_record, step=global_step)
 
-        improved = epoch_record["val_loss"] < best_val_loss
+        current_selection_value = epoch_record.get(selection_metric_name, float("nan"))
+        if selection_higher_is_better:
+            improved = math.isfinite(current_selection_value) and current_selection_value > best_selection_value
+        else:
+            improved = current_selection_value < best_selection_value
         if improved:
+            best_selection_value = current_selection_value
             best_val_loss = epoch_record["val_loss"]
             epochs_without_improvement = 0
             _save_checkpoint(
@@ -1795,7 +1824,13 @@ def run_lora_dpo(cfg: Any) -> Path:
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    best_epoch = min(history, key=lambda row: float(row["val_loss"])) if history else None
+    def _selection_key(row: Dict[str, float]) -> float:
+        value = float(row.get(selection_metric_name, float("nan")))
+        if not math.isfinite(value):
+            return float("-inf") if selection_higher_is_better else float("inf")
+        return -value if selection_higher_is_better else value
+
+    best_epoch = min(history, key=_selection_key) if history else None
     val_ppl = None if best_epoch is None else best_epoch.get("val_perplexity")
     if isinstance(val_ppl, float) and math.isnan(val_ppl):
         val_ppl = None
