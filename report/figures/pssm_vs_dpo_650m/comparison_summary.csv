@@ -1,3 +1,0 @@
-variant,config,slice,n_gibbs_samples,edit_dist_median,edit_dist_max,gibbs_pll_median,dms_pll_median,wt_pll,delta_pll_gibbs_minus_dms,delta_pll_gibbs_minus_wt,max_pos_mut_freq,top_alt_per_position
-pssm,default,full,5000,1.0,7,,,,,,0.16899999976158142,S(44) R(128) T(72) L(49) M(13) S(62) I(31) P(91) G(113) V(64) S(48) V(4) Q(13) N(38) G(76) S(58) R(35) L(66) A(33) N(14) G(52) L(96) S(43) S(78)
-dpo,default,full,5000,6.0,11,,,,,,0.9452000260353088,S(19) R(2363) T(349) L(3016) - A(2050) I(10) P(3351) G(2857) V(14) A(130) A(3) T(24) N(10) G(882) G(960) R(6) A(3328) - - S(49) L(315) N(1) I(486)
