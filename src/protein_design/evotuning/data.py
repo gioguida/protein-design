@@ -15,8 +15,22 @@ logger = logging.getLogger(__name__)
 
 # Masking modes that use the single-position [MASK] mechanism (PLL-aligned).
 SINGLE_MASK_MODES = ("random15", "cdr", "cdr_mix")
+HYBRID_MODE = "hybrid"
 # Modes that draw positions from the CDR-H3 window (need `cdr_windows`).
-CDR_MASK_MODES = ("cdr", "cdr_mix")
+CDR_MASK_MODES = ("cdr", "cdr_mix", HYBRID_MODE)
+
+# How the selected position's token is replaced, orthogonal to which mode
+# picked the position:
+#   "always"         - always substitute [MASK] (current/default behavior).
+#   "bert_80_10_10"  - literal BERT-style: 80% [MASK], 10% random amino acid,
+#                       10% left as the true residue. Loss is computed against
+#                       the true residue in all three cases (labels are set
+#                       the same way regardless of the substitution chosen).
+MASK_REPLACE_STRATEGIES = ("always", "bert_80_10_10")
+_REPLACE_MASK, _REPLACE_RANDOM, _REPLACE_KEEP = 0, 1, 2
+_REPLACE_PROBS = (0.8, 0.1, 0.1)
+# 20 canonical amino acids (no X) — same alphabet as pssm_baseline.STANDARD_AAS.
+STANDARD_AA_LETTERS = "ACDEFGHIKLMNPQRSTVWY"
 
 
 class OASFastaDataset(Dataset):
@@ -161,6 +175,14 @@ class SingleMaskDataset(Dataset):
         deterministically (no framework) so `cdr_ppl` is a stable, comparable
         pseudo-perplexity over all CDR positions — identical for "cdr" and
         "cdr_mix" runs.
+
+    Replacement (orthogonal to position selection above): `mask_replace_strategy`
+    controls what the selected token is replaced with. "always" (default)
+    always substitutes [MASK]. "bert_80_10_10" substitutes [MASK] 80% of the
+    time, a random amino acid 10% of the time, and leaves the true residue in
+    place 10% of the time — the label is always the true residue regardless.
+    The replace-mode draw is seeded the same way position selection is (fixed
+    seed for val/test, epoch_seed for train), so it's reproducible.
     """
 
     def __init__(
@@ -176,9 +198,12 @@ class SingleMaskDataset(Dataset):
         resample: bool = False,
         cdr_mask_prob: float = 0.5,
         framework_mask_prob: float = 0.05,
+        mask_replace_strategy: str = "always",
     ) -> None:
         if masking not in SINGLE_MASK_MODES:
             raise ValueError(f"Unknown single-mask mode: {masking!r}")
+        if mask_replace_strategy not in MASK_REPLACE_STRATEGIES:
+            raise ValueError(f"Unknown mask_replace_strategy: {mask_replace_strategy!r}")
         self.sequences = sequences
         self.seq_ids = seq_ids
         self.tokenizer = tokenizer
@@ -190,10 +215,34 @@ class SingleMaskDataset(Dataset):
         self.cdr_windows = cdr_windows or {}
         self.mask_token_id = int(tokenizer.mask_token_id)
         self.resample = bool(resample)
+        self.mask_replace_strategy = mask_replace_strategy
+        self._aa_token_ids = np.asarray(
+            [tokenizer.convert_tokens_to_ids(aa) for aa in STANDARD_AA_LETTERS], dtype=np.int64,
+        )
         # Max residues that fit alongside BOS/EOS.
         self._max_residues = max_seq_len - 2
         self.index: list[tuple[int, int]] = []
+        self.replace_modes = np.zeros(0, dtype=np.int8)
+        self.replace_aa_ids = np.zeros(0, dtype=np.int64)
         self.set_epoch(epoch_seed)
+
+    def _assign_replace_modes(self, n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+        """Draw (replace_mode, random_aa_id) for `n` masked positions.
+
+        replace_mode is 0=[MASK] / 1=random amino acid / 2=keep-true-residue,
+        drawn ~Categorical(0.8, 0.1, 0.1). Only meaningful when
+        `mask_replace_strategy == "bert_80_10_10"`; a fixed 0-fill (always
+        [MASK]) is returned otherwise (cheap, keeps __getitem__ branch-free
+        for the common case).
+        """
+        if self.mask_replace_strategy != "bert_80_10_10" or n == 0:
+            return np.zeros(n, dtype=np.int8), np.zeros(n, dtype=np.int64)
+        # Offset the seed so this draw doesn't reuse the exact same stream as
+        # position selection (which also seeds from epoch_seed).
+        rng = np.random.default_rng(int(seed) + 999_999_937)
+        modes = rng.choice(3, size=n, p=_REPLACE_PROBS).astype(np.int8)
+        random_aa = self._aa_token_ids[rng.integers(0, len(self._aa_token_ids), size=n)]
+        return modes, random_aa
 
     def set_epoch(self, epoch_seed: int) -> None:
         """(Re)build the flattened (seq_idx, residue_pos) index.
@@ -220,6 +269,7 @@ class SingleMaskDataset(Dataset):
             for p in picks:
                 index.append((si, int(p)))
         self.index = index
+        self.replace_modes, self.replace_aa_ids = self._assign_replace_modes(len(index), epoch_seed)
 
     def _build_cdr(self, epoch_seed: Optional[int] = None) -> None:
         """Enumerate CDR-window (and, for "cdr_mix", framework) positions.
@@ -258,6 +308,10 @@ class SingleMaskDataset(Dataset):
             for p in chosen:
                 index.append((si, int(p)))
         self.index = index
+        # val/test build with epoch_seed=None (deterministic full enumeration);
+        # use a fixed seed for the replace-mode draw so it's reproducible too.
+        replace_seed = epoch_seed if epoch_seed is not None else 0
+        self.replace_modes, self.replace_aa_ids = self._assign_replace_modes(len(index), replace_seed)
         if n_skipped:
             logger.warning(
                 "cdr masking: %d/%d sequences had no CDR window and were skipped",
@@ -281,7 +335,12 @@ class SingleMaskDataset(Dataset):
         token_pos = pos + 1  # BOS offset
         labels = [-100] * len(input_ids)
         labels[token_pos] = input_ids[token_pos]
-        input_ids[token_pos] = self.mask_token_id
+        mode = int(self.replace_modes[i]) if self.mask_replace_strategy == "bert_80_10_10" else _REPLACE_MASK
+        if mode == _REPLACE_MASK:
+            input_ids[token_pos] = self.mask_token_id
+        elif mode == _REPLACE_RANDOM:
+            input_ids[token_pos] = int(self.replace_aa_ids[i])
+        # mode == _REPLACE_KEEP: leave input_ids[token_pos] as the true residue.
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
@@ -317,6 +376,130 @@ class SingleMaskCollator:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
+        }
+
+
+class HybridMaskDataset(Dataset):
+    """Hybrid masking: each example independently gets *either* pure
+    CDR-window masking *or* pure whole-chain masking, never both.
+
+    Matches Talaei et al.'s Hybrid policy verbatim: "The 80% and 20% ratios
+    in the hybrid masking indicate the proportion of training samples
+    receiving CDR or WC masking ... within each batch" — i.e. a per-example
+    choice (independently for each training sample), not a per-batch-uniform
+    choice and not a per-position blend. Contrast with `cdr_mix`
+    (SingleMaskDataset), which blends CDR-window and framework masking
+    *within* every single example.
+
+    One example per sequence (unlike SingleMaskDataset's flattened
+    (seq, pos) index, which is one example per *masked position*): each
+    __getitem__ call masks a whole set of positions in a single forward
+    pass, literal BERT-style 80/10/10 in both branches (labels are the true
+    residue at every masked position, -100 elsewhere).
+
+    The CDR-vs-WC choice per sequence is redrawn each epoch from a seeded
+    RNG (`set_epoch`), so it's reproducible. The specific positions masked
+    within whichever branch is chosen, and the 80/10/10 replacement draw,
+    are resampled fresh (unseeded) on every access — same as the legacy
+    whole-chain path (`DataCollatorForLanguageModeling`), which is also not
+    epoch-seeded.
+    """
+
+    def __init__(
+        self,
+        sequences: np.ndarray,
+        seq_ids: np.ndarray,
+        tokenizer: AutoTokenizer,
+        max_seq_len: int,
+        cdr_windows: dict[str, tuple[int, int]],
+        hybrid_cdr_sample_prob: float = 0.8,
+        cdr_mask_prob: float = 0.5,
+        mlm_probability: float = 0.15,
+        epoch_seed: int = 0,
+    ) -> None:
+        self.sequences = sequences
+        self.seq_ids = seq_ids
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+        self.cdr_windows = cdr_windows or {}
+        self.hybrid_cdr_sample_prob = float(hybrid_cdr_sample_prob)
+        self.cdr_mask_prob = float(cdr_mask_prob)
+        self.mlm_probability = float(mlm_probability)
+        self.mask_token_id = int(tokenizer.mask_token_id)
+        self._aa_token_ids = np.asarray(
+            [tokenizer.convert_tokens_to_ids(aa) for aa in STANDARD_AA_LETTERS], dtype=np.int64,
+        )
+        # Max residues that fit alongside BOS/EOS.
+        self._max_residues = max_seq_len - 2
+        self.use_cdr = np.zeros(len(sequences), dtype=bool)
+        self.set_epoch(epoch_seed)
+
+    def set_epoch(self, epoch_seed: int) -> None:
+        """Redraw the per-example CDR-vs-WC choice ~Bernoulli(hybrid_cdr_sample_prob)."""
+        rng = np.random.default_rng(int(epoch_seed))
+        self.use_cdr = rng.random(len(self.sequences)) < self.hybrid_cdr_sample_prob
+        n_cdr_selected = int(self.use_cdr.sum())
+        if n_cdr_selected:
+            missing = sum(
+                1 for i in np.nonzero(self.use_cdr)[0]
+                if self.seq_ids[i].decode("ascii") not in self.cdr_windows
+            )
+            if missing:
+                logger.warning(
+                    "hybrid masking: %d/%d CDR-selected sequences had no CDR "
+                    "window and fell back to whole-chain masking this epoch",
+                    missing, n_cdr_selected,
+                )
+
+    def __len__(self) -> int:
+        return len(self.sequences)
+
+    def _mask_positions(self, input_ids: list[int], positions: list[int]) -> list[int]:
+        """Apply literal BERT 80/10/10 replacement at `positions` (token
+        indices, BOS-offset already applied); return the labels array."""
+        labels = [-100] * len(input_ids)
+        if not positions:
+            return labels
+        rng = np.random.default_rng()
+        modes = rng.choice(3, size=len(positions), p=_REPLACE_PROBS)
+        random_aa = self._aa_token_ids[rng.integers(0, len(self._aa_token_ids), size=len(positions))]
+        for p, mode, aa in zip(positions, modes, random_aa):
+            labels[p] = input_ids[p]
+            if mode == _REPLACE_MASK:
+                input_ids[p] = self.mask_token_id
+            elif mode == _REPLACE_RANDOM:
+                input_ids[p] = int(aa)
+            # _REPLACE_KEEP: leave input_ids[p] as the true residue.
+        return labels
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        seq = self.sequences[idx].decode("ascii")
+        encoding = self.tokenizer(
+            seq, truncation=True, max_length=self.max_seq_len, padding=False, return_tensors=None,
+        )
+        input_ids = encoding["input_ids"]
+        attention_mask = encoding["attention_mask"]
+        L = min(len(seq), self._max_residues)
+
+        sid = self.seq_ids[idx].decode("ascii")
+        win = self.cdr_windows.get(sid) if self.use_cdr[idx] else None
+        if win is not None:
+            win_start, win_end = win[0], min(win[1], L)
+            candidates = list(range(win_start, win_end))
+            keep_prob = self.cdr_mask_prob
+        else:
+            candidates = list(range(L))
+            keep_prob = self.mlm_probability
+
+        rng = np.random.default_rng()
+        keep = rng.random(len(candidates)) < keep_prob if candidates else np.zeros(0, dtype=bool)
+        positions = [c + 1 for c, k in zip(candidates, keep) if k]  # +1 for BOS offset
+
+        labels = self._mask_positions(input_ids, positions)
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
         }
 
 
@@ -368,14 +551,18 @@ def make_dataloaders(
     cdr_windows_cache: Optional[str] = None,
     cdr_mask_prob: float = 0.5,
     framework_mask_prob: float = 0.05,
+    mask_replace_strategy: str = "always",
+    hybrid_cdr_sample_prob: float = 0.8,
 ) -> tuple[DataLoader, DataLoader, DataLoader, Dataset, object, int]:
     """Build train / val / test DataLoaders from a single FASTA using
     hash-based split assignment. Splits are stable across runs given the
     same salt and sequence IDs.
 
-    When `masking` is one of `SINGLE_MASK_MODES` ("random15" / "cdr"), the
-    single-position [MASK] mechanism (PLL-aligned) is used; otherwise the
-    legacy 80/10/10 `DataCollatorForLanguageModeling` path is used.
+    When `masking` is one of `SINGLE_MASK_MODES` ("random15" / "cdr" /
+    "cdr_mix"), the single-position [MASK] mechanism (PLL-aligned) is used.
+    When `masking == "hybrid"`, each example gets pure CDR-window or pure
+    whole-chain masking (see `HybridMaskDataset`). Otherwise the legacy
+    80/10/10 `DataCollatorForLanguageModeling` path is used.
 
     Returns:
         (train_loader, val_loader, test_loader, train_dataset, collator, full_train_len).
@@ -400,6 +587,7 @@ def make_dataloaders(
         common = dict(
             mlm_probability=mlm_probability, cdr_windows=cdr_windows,
             cdr_mask_prob=cdr_mask_prob, framework_mask_prob=framework_mask_prob,
+            mask_replace_strategy=mask_replace_strategy,
         )
         # Train resamples per epoch; val/test use a fixed seed for comparability.
         datasets = {
@@ -414,6 +602,30 @@ def make_dataloaders(
             "test": SingleMaskDataset(
                 seqs["test"], ids["test"], tokenizer, max_seq_len, masking,
                 epoch_seed=0, **common,
+            ),
+        }
+        collator = SingleMaskCollator(tokenizer=tokenizer, pad_to_multiple_of=8)
+    elif masking == HYBRID_MODE:
+        if not cdr_windows_cache:
+            raise ValueError("masking='hybrid' requires cdr_windows_cache (parquet path).")
+        seqs, ids = _load_fasta_seqs_ids_by_split(fasta_path, split_cfg)
+        cdr_windows = load_cdr_windows(cdr_windows_cache)
+        common = dict(
+            cdr_windows=cdr_windows, hybrid_cdr_sample_prob=hybrid_cdr_sample_prob,
+            cdr_mask_prob=cdr_mask_prob, mlm_probability=mlm_probability,
+        )
+        # Train resamples the CDR-vs-WC choice per epoch; val/test use a fixed
+        # seed so which examples get which policy stays comparable across evals.
+        datasets = {
+            "train": HybridMaskDataset(
+                seqs["train"], ids["train"], tokenizer, max_seq_len,
+                epoch_seed=epoch_seed, **common,
+            ),
+            "val": HybridMaskDataset(
+                seqs["val"], ids["val"], tokenizer, max_seq_len, epoch_seed=0, **common,
+            ),
+            "test": HybridMaskDataset(
+                seqs["test"], ids["test"], tokenizer, max_seq_len, epoch_seed=0, **common,
             ),
         }
         collator = SingleMaskCollator(tokenizer=tokenizer, pad_to_multiple_of=8)

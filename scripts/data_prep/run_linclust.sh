@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Run MMseqs2 easy-linclust to deduplicate filtered OAS sequences at 99% identity.
-# Usage: ./run_mmseqs2.sh
+# Run MMseqs2 easy-linclust to deduplicate filtered OAS sequences at 95% identity
+# (single-stage, following Talaei, Walker et al. 2025 Methods §4.1.1 — see
+# report/evotuning.md "OAS filtering, download, deduplication, and splits").
+# Usage: ./run_linclust.sh
 set -euo pipefail
 
-: "${PROJECT_DIR:?Set PROJECT_DIR in .env (see .env.template)}"
-INPUT="${PROJECT_DIR}/datasets/oas_filtered.fasta"
+: "${SCRATCH_DIR:?Set SCRATCH_DIR in .env (see .env.template)}"
+INPUT="${SCRATCH_DIR}/oas_filtered.fasta"
 OUT_PREFIX="${SCRATCH_DIR}/oas_dedup"
 TMP_DIR="${SCRATCH_DIR}/mmseqs_tmp"
 
@@ -22,7 +24,7 @@ mmseqs easy-linclust \
     "$INPUT" \
     "$OUT_PREFIX" \
     "$TMP_DIR" \
-    --min-seq-id 0.99 \
+    --min-seq-id 0.95 \
     --cov-mode 0 \
     -c 0.9 \
     --threads 32

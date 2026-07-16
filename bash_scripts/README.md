@@ -166,8 +166,10 @@ uv run python scripts/analysis/plot_dms_correlations.py \
 ## TODO: other pipelines to document
 
 - Training (`train.sbatch`, `eval.sbatch`, `ttt.sbatch`)
-- OAS data prep (`utils/download_oas.sbatch`, `utils/prepare_oas.sbatch`,
-  `utils/filter_oas.sbatch`)
+- OAS data prep (`utils/download_oas.sbatch`, `utils/filter_oas.sbatch`,
+  `utils/linclust.sbatch`) — see `report/dataset.ipynb` for the walkthrough
+- CDR-window cache for the `cdr`/`cdr_mix`/`hybrid` masking modes
+  (`utils/build_cdr_windows.sbatch`) — needed before any of those masking
+  modes can train on a new corpus
 - Beam search / Gibbs sampling (`utils/run_beam_*`, `utils/run_gibbs_*`)
-- Embedding / similarity analyses (`utils/plot_*similarity*.sbatch`,
-  `utils/mmseqs2.sbatch`)
+- Embedding / similarity analyses (`utils/plot_*similarity*.sbatch`)

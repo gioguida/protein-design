@@ -1,0 +1,46 @@
+# Variant of default.yaml used ONLY to retry the 14-07-26 generalization
+# notebook (ed1_m22 / cetuximab_h) with a 40/10/50 train/val/test split
+# instead of the project-wide 80/10/10 default.
+#
+# This is a SEPARATE file (not an edit to default.yaml) on purpose: `split:`
+# fractions are global to whichever dms_config is loaded, and default.yaml is
+# shared by ed2_m22/ed5_m22/ed811_m22 (the main evotuning/DPO experiments).
+# Editing default.yaml in place would silently rebuild and change those
+# datasets' splits too. `split.output_dir` also points at an isolated
+# directory so this never overwrites the existing 80/10/10 ed1_m22/
+# cetuximab_h splits already used by report/meetings/14-07-26.ipynb.
+#
+# Dataset keys are suffixed `_5050` (not reused as `ed1_m22`/`cetuximab_h`)
+# because report/meetings/14-07-26.ipynb's plotting/scan helpers dedupe
+# finished runs by (model, n_train, seed, dataset_key) and keep only the
+# most-recently-modified match -- reusing the same key here would silently
+# clobber/mix the existing 80/10/10 runs in those plots. Same precedent as
+# the `_splitseed<N>` external-split-seed keys already used elsewhere.
+#
+# Usage: pass `data.dms_config=conf/data/dms/ed1_cetux_40_10_50.yaml` as a
+# Hydra override on top of the usual dpo/lora_dpo run (same pattern as the
+# `data.delta_based.strong_pos_threshold=...` overrides already used for
+# cetuximab_h in the notebook), together with
+# `data.dpo_dataset_key=<key>_5050 data.test.dataset_key=<key>_5050`.
+
+split:
+  enabled: true
+  train_frac: 0.4
+  val_frac: 0.1
+  test_frac: 0.5
+  seed: 42
+  output_dir: /cluster/project/infk/krause/${USER}/protein-design/data/dms_splits_40_10_50
+  hamming_distance: 0
+  stratify_bins: 10
+
+datasets:
+  cetuximab_h_5050:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/AbAgym_cetuximab_h_mutants.csv
+    sequence_col: aa
+    key_metric_col: neg_DMS_score
+    wt_sequence: "QVQLKQSGPGLVQPSQSLSITCTVSGFSLTNYGVHWVRQSPGKGLEWLGVIWSGGNTDYNTPFTSRLSINKDNSKSQVFFKMNSLQSNDTAIYYCARALTYYDYEFAYWGQGTLVTVSAASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPK"
+    wt_metric_value: 0.0
+  ed1_m22_5050:
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/ED1_M22_binding_enrichment_combined.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj

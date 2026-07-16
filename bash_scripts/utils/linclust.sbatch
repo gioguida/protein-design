@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=mmseqs2
+#SBATCH --job-name=linclust
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem-per-cpu=8G
-#SBATCH --time=04:00:00
-#SBATCH --output=bash_scripts/logs/mmseqs2_%j.log
+#SBATCH --time=24:00:00
+#SBATCH --output=bash_scripts/logs/linclust_%j.log
 
 set -euo pipefail
 source bash_scripts/common_setup.sh
 
 module load stack/2024-06 gcc/12.2.0 mmseqs2/14-7e284
-bash scripts/data_prep/run_mmseqs2.sh
+bash scripts/data_prep/run_linclust.sh

@@ -1,0 +1,22 @@
+# @package _global_
+# CDR-focused (CDR-50%): masking applied only within the CDR-H3 ± flank
+# window, at 50%, with literal BERT-style 80/10/10 replacement (matches
+# Talaei et al.'s CDR-focused fine-tuning policy — report/evotuning.md,
+# "Masking"). train: window positions kept ~Bernoulli(cdr_mask_prob),
+# resampled each epoch. val/test: full window enumerated deterministically.
+# Requires the OAS-scale windows parquet built by
+# scripts/data_prep/build_cdr_windows.py (see bash_scripts/utils/build_cdr_windows.sbatch).
+data:
+  fasta_path: ${paths.project_dir}/data/oas/oas_dedup_rep_seq.fasta
+  max_seq_len: 256
+  mlm_probability: 0.15
+  masking: cdr
+  cdr_flank: 3
+  cdr_windows_cache: ${paths.scratch_dir}/cdr_windows/oas_dedup_rep_seq_flank3.parquet
+  cdr_mask_prob: 0.5
+  mask_replace_strategy: bert_80_10_10
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

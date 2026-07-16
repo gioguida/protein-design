@@ -13,9 +13,11 @@ training:
   batch_size: 10
   gradient_accumulation_steps: 4
   # High ceiling; patience below is what actually decides how long training
-  # runs. Checkpoint selection prefers val_spearman_avg (higher is better,
-  # see lora_dpo/train.py), falling back to val_loss when unavailable.
+  # runs. checkpoint_selection_metric: auto | val_spearman_avg | val_loss.
+  # auto (default) prefers val_spearman_avg (higher is better, see
+  # lora_dpo/train.py), falling back to val_loss when unavailable.
   num_epochs: 50
+  checkpoint_selection_metric: auto
   lr: 5e-4
   weight_decay: 0.0
   mixed_precision: bf16   # off | fp16 | bf16

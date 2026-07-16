@@ -1,0 +1,30 @@
+# @package _global_
+# TEMPORARY: resume-from-checkpoint verification (see report/evotuning.md,
+# "Stopping rule for evotuning" work — this task config is not part of the
+# masking ablation itself). Small and fast on purpose: C05-scale corpus with
+# an existing CDR-window cache, hybrid masking (the newest/least-covered
+# data path) + both checkpoint trackers on, so a save/kill/resume cycle
+# exercises everything piece 7 needs to verify in one run.
+defaults:
+  - override /model: esm2_35m
+  - override /data: evo/c05_cdrh3_blosum25_hybrid
+  - override /scoring: c05
+  - _self_
+
+task:
+  name: evotuning_resume_test
+  runner: evotuning
+  stage_type: evotuning
+
+training:
+  learning_rate: 5.0e-5
+  warmup_steps: 5
+  max_epochs: 1
+  max_steps: 40
+  batch_size: 32
+  gradient_accumulation_steps: 1
+  save_every_n_steps: 10
+  eval_per_epoch: true
+  checkpoint_trackers: [perplexity, pareto]
+  pareto_fr_tolerance_pp: 0.1
+  fp16: true

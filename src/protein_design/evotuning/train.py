@@ -13,7 +13,7 @@ import json
 import logging
 import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,12 +37,18 @@ from protein_design.eval import (
     evaluate_spearman,
     load_scoring_datasets,
     load_test_pll_eval_sets,
+    region_stratified_masked_recovery_accuracy,
     run_multi_scoring_evaluation,
     score_sequences_masked_positions,
 )
 from protein_design.config import ModelConfig, RunConfig, ScoringConfig
 from protein_design.evotuning.config import DataConfig, TrainingConfig
-from protein_design.evotuning.data import build_train_loader, make_dataloaders
+from protein_design.evotuning.data import (
+    _load_fasta_seqs_ids_by_split,
+    build_train_loader,
+    load_cdr_windows,
+    make_dataloaders,
+)
 from protein_design.model import ESM2Model
 from protein_design.utils import ensure_dir, init_wandb, setup_train_logger
 from protein_design.wandb_plots import (
@@ -209,6 +215,22 @@ def _eval_masked_spearman(
     return results
 
 
+@dataclass
+class ParetoEvalConfig:
+    """Fixed inputs for the region-stratified Pareto-knee checkpoint tracker
+    (see report/evotuning.md, "Stopping rule for evotuning"). Built once at
+    the start of a run; `reference_framework_accuracy` never changes."""
+
+    val_sequences: np.ndarray
+    val_seq_ids: np.ndarray
+    cdr_windows: dict
+    reference_framework_accuracy: float
+    fr_tolerance_pp: float
+    max_seq_len: int
+    n_samples: int = 2000
+    seed: int = 42
+
+
 def _run_periodic_eval(
     *,
     model: ESM2Model,
@@ -236,14 +258,22 @@ def _run_periodic_eval(
     train_start: float,
     ckpt_label: Optional[str] = None,
     save_labeled_ckpt: bool = True,
-) -> tuple[float, Optional[Path], float, Optional[Path]]:
+    pareto_cfg: Optional[ParetoEvalConfig] = None,
+    best_pareto: float = float("-inf"),
+    best_pareto_ckpt_path: Optional[Path] = None,
+) -> tuple[float, Optional[Path], float, Optional[Path], float, Optional[Path]]:
     """End-of-epoch (or sub-epoch) eval + checkpoint for the single-mask variants.
 
     Logs val perplexity, C05 CDR-H3 PLL perplexity, and masked-position
     Spearman; saves an epoch/step checkpoint; tracks best.pt by val perplexity
     and best_spearman.pt by masked-position Spearman mean (the DPO starting
-    point). Returns the (possibly updated)
-    (best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path).
+    point). When `pareto_cfg` is given, also tracks best_pareto.pt: the
+    checkpoint with the highest CDR-window masked-recovery accuracy among
+    those whose framework accuracy is within `fr_tolerance_pp` of the
+    (fixed, vanilla-model) reference — not a stopping rule, every run still
+    trains the full capped epoch regardless. Returns the (possibly updated)
+    (best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path,
+    best_pareto, best_pareto_ckpt_path).
     """
     model.eval()
     ppl, val_loss = compute_perplexity(
@@ -271,6 +301,27 @@ def _run_periodic_eval(
         spearman_mean = float(spear["spearman_mean"])
         log.info("Epoch %d — Spearman mean: %.4f", epoch, spearman_mean)
 
+    cdr_accuracy = float("nan")
+    framework_accuracy = float("nan")
+    if pareto_cfg is not None:
+        acc = region_stratified_masked_recovery_accuracy(
+            model, pareto_cfg.val_sequences, pareto_cfg.val_seq_ids, pareto_cfg.cdr_windows,
+            device, max_seq_len=pareto_cfg.max_seq_len,
+            n_samples=pareto_cfg.n_samples, seed=pareto_cfg.seed,
+        )
+        cdr_accuracy = acc["cdr_accuracy"]
+        framework_accuracy = acc["framework_accuracy"]
+        artifacts.log(
+            {"eval/cdr_accuracy": cdr_accuracy, "eval/framework_accuracy": framework_accuracy},
+            step=global_step,
+        )
+        log.info(
+            "Epoch %d — CDR accuracy: %.4f — framework accuracy: %.4f "
+            "(reference: %.4f, tol: %.2fpp)",
+            epoch, cdr_accuracy, framework_accuracy,
+            pareto_cfg.reference_framework_accuracy, pareto_cfg.fr_tolerance_pp,
+        )
+
     ckpt_state = {
         "epoch": epoch,
         "global_step": global_step,
@@ -282,6 +333,11 @@ def _run_periodic_eval(
         "scaler_state_dict": scaler.state_dict(),
         "val_perplexity": ppl,
         "best_val_ppl": best_val_ppl,
+        "best_spearman": best_spearman,
+        "best_pareto": best_pareto,
+        "pareto_reference_framework_accuracy": (
+            pareto_cfg.reference_framework_accuracy if pareto_cfg is not None else None
+        ),
     }
     if save_labeled_ckpt:
         label = ckpt_label if ckpt_label is not None else f"epoch_{epoch}"
@@ -290,6 +346,10 @@ def _run_periodic_eval(
     if ppl < best_val_ppl:
         best_val_ppl = ppl
         best_ckpt_path = run_dir / "best.pt"
+        # ckpt_state["best_val_ppl"] was built with the pre-update value above
+        # (this eval's own improvement hadn't been folded in yet) — refresh it
+        # before saving so best.pt actually carries its own best_val_ppl.
+        ckpt_state["best_val_ppl"] = best_val_ppl
         torch.save(ckpt_state, best_ckpt_path)
         log.info("New best checkpoint (ppl=%.2f) saved to %s", ppl, best_ckpt_path)
     # Track the masked-position Spearman best separately: this is the checkpoint
@@ -297,11 +357,33 @@ def _run_periodic_eval(
     if spearman_mean == spearman_mean and spearman_mean > best_spearman:  # not NaN
         best_spearman = spearman_mean
         best_spearman_ckpt_path = run_dir / "best_spearman.pt"
+        ckpt_state["best_spearman"] = best_spearman
         torch.save(ckpt_state, best_spearman_ckpt_path)
         log.info(
             "New best-Spearman checkpoint (spearman_mean=%.4f) saved to %s",
             best_spearman, best_spearman_ckpt_path,
         )
+    # Pareto-knee tracker (not a stopping condition — see docstring): among
+    # checkpoints whose framework accuracy hasn't degraded more than
+    # fr_tolerance_pp vs. the fixed vanilla-model reference, keep the one
+    # with the highest CDR accuracy.
+    if pareto_cfg is not None and cdr_accuracy == cdr_accuracy:  # not NaN
+        eligible_floor = pareto_cfg.reference_framework_accuracy - pareto_cfg.fr_tolerance_pp / 100.0
+        eligible = framework_accuracy >= eligible_floor
+        if eligible and cdr_accuracy > best_pareto:
+            best_pareto = cdr_accuracy
+            best_pareto_ckpt_path = run_dir / "best_pareto.pt"
+            ckpt_state["best_pareto"] = best_pareto
+            torch.save(ckpt_state, best_pareto_ckpt_path)
+            log.info(
+                "New best-Pareto checkpoint (cdr_accuracy=%.4f, framework_accuracy=%.4f) saved to %s",
+                cdr_accuracy, framework_accuracy, best_pareto_ckpt_path,
+            )
+        elif not eligible:
+            log.info(
+                "Pareto: checkpoint not eligible (framework_accuracy=%.4f < floor=%.4f)",
+                framework_accuracy, eligible_floor,
+            )
 
     fig_curves = plot_training_curves(training_history, best_step=None)
     artifacts.log_figure(fig_curves, "figures/training_curves", step=global_step)
@@ -312,7 +394,10 @@ def _run_periodic_eval(
 
     model.train()
     artifacts.flush()
-    return best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path
+    return (
+        best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path,
+        best_pareto, best_pareto_ckpt_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +445,17 @@ def _load_resume_checkpoint(
     scheduler: Any,
     scaler: torch.amp.GradScaler,
     log: logging.Logger,
-) -> tuple[int, int, int, float]:
+) -> tuple[int, int, int, float, float, float, Optional[float]]:
     """Restore full training state from an evotuning checkpoint.
 
-    Returns (epoch, global_step, samples_seen_this_epoch, best_val_ppl).
-    The caller is responsible for the epoch-rollover decision when
-    samples_seen_this_epoch >= full_train_len.
+    Returns (epoch, global_step, samples_seen_this_epoch, best_val_ppl,
+    best_spearman, best_pareto, pareto_reference_framework_accuracy). The
+    latter three default to -inf/-inf/None for checkpoints saved before
+    those trackers existed (older checkpoints, or trackers that weren't
+    enabled for the original run) — the caller decides what to do with a
+    missing reference (see _train_evotuning). The caller is also responsible
+    for the epoch-rollover decision when samples_seen_this_epoch >=
+    full_train_len.
     """
     ckpt = torch.load(path, map_location="cpu")
     model.load_state_dict(ckpt["model_state_dict"])
@@ -379,11 +469,60 @@ def _load_resume_checkpoint(
     global_step = int(ckpt.get("global_step", 0))
     samples_seen = int(ckpt.get("samples_seen", 0))
     best_val_ppl = float(ckpt.get("best_val_ppl", ckpt.get("val_perplexity", float("inf"))))
+    best_spearman = float(ckpt.get("best_spearman", float("-inf")))
+    best_pareto = float(ckpt.get("best_pareto", float("-inf")))
+    pareto_reference = ckpt.get("pareto_reference_framework_accuracy", None)
+    pareto_reference = float(pareto_reference) if pareto_reference is not None else None
     log.info(
-        "Loaded resume checkpoint %s: epoch=%d global_step=%d samples_seen=%d best_val_ppl=%.4f",
-        path, epoch, global_step, samples_seen, best_val_ppl,
+        "Loaded resume checkpoint %s: epoch=%d global_step=%d samples_seen=%d "
+        "best_val_ppl=%.4f best_spearman=%.4f best_pareto=%.4f pareto_reference=%s",
+        path, epoch, global_step, samples_seen, best_val_ppl, best_spearman, best_pareto,
+        f"{pareto_reference:.4f}" if pareto_reference is not None else "None",
     )
-    return epoch, global_step, samples_seen, best_val_ppl
+    return (
+        epoch, global_step, samples_seen, best_val_ppl,
+        best_spearman, best_pareto, pareto_reference,
+    )
+
+
+def _compute_reference_framework_accuracy(
+    model_cfg: ModelConfig,
+    val_sequences: np.ndarray,
+    val_seq_ids: np.ndarray,
+    cdr_windows: dict,
+    device: torch.device,
+    max_seq_len: int,
+    n_samples: int,
+    seed: int,
+    log: logging.Logger,
+) -> float:
+    """One-time Pareto-tracker reference: framework masked-recovery accuracy
+    of the *vanilla* pretrained model (no evotuning, no finetune/resume),
+    on the same val subsample every checkpoint is scored against this run.
+
+    Built as a throwaway model instance from `model_cfg.esm_model_path` so
+    this is independent of whatever checkpoint this particular run actually
+    starts from (finetune or resume) — always the true base model.
+    """
+    vanilla_cfg = replace(model_cfg, lora=None, freeze_lm_head=False)
+    vanilla_model = ESM2Model(vanilla_cfg)
+    vanilla_model.to(device)
+    result = region_stratified_masked_recovery_accuracy(
+        vanilla_model, val_sequences, val_seq_ids, cdr_windows, device,
+        max_seq_len=max_seq_len, n_samples=n_samples, seed=seed,
+    )
+    log.info(
+        "Pareto reference (vanilla model): framework_accuracy=%.4f "
+        "(cdr_accuracy=%.4f, n_fr_positions=%d, n_cdr_positions=%d, "
+        "n_seqs_used=%d, n_seqs_skipped=%d)",
+        result["framework_accuracy"], result["cdr_accuracy"],
+        result["n_framework_positions"], result["n_cdr_positions"],
+        result["n_sequences_used"], result["n_sequences_skipped"],
+    )
+    del vanilla_model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return float(result["framework_accuracy"])
 
 
 def _train_evotuning(
@@ -404,13 +543,6 @@ def _train_evotuning(
     """Run corpus-MLM training. Returns (training_history, scoring_history,
     global_step, best_ckpt_path_or_None, final_metrics)."""
     accum_steps = training_cfg.gradient_accumulation_steps
-    if training_cfg.save_every_n_steps:
-        # Resume relies on optim_step = global_step // accum_steps being exact.
-        assert training_cfg.save_every_n_steps % accum_steps == 0, (
-            "save_every_n_steps must be divisible by gradient_accumulation_steps "
-            f"(got {training_cfg.save_every_n_steps} % {accum_steps} != 0) "
-            "to keep optimizer-step accounting exact across resume."
-        )
 
     # Build val/test loaders + cache the train_dataset+collator so that we can
     # rebuild train_loader cheaply per epoch without rescanning the FASTA.
@@ -429,8 +561,41 @@ def _train_evotuning(
         cdr_windows_cache=data_cfg.cdr_windows_cache,
         cdr_mask_prob=data_cfg.cdr_mask_prob,
         framework_mask_prob=data_cfg.framework_mask_prob,
+        mask_replace_strategy=data_cfg.mask_replace_strategy,
+        hybrid_cdr_sample_prob=data_cfg.hybrid_cdr_sample_prob,
     )
     del _initial_train_loader
+
+    # Eval cadence: eval_every_epoch_frac (if set) overrides any explicit
+    # save_every_n_steps, since a fixed step count means a different eval
+    # fraction under every masking mode (position-enumerated modes flatten to
+    # several examples per sequence; "epoch length" in forward passes varies
+    # hugely by mode on the same corpus). Unset -> existing raw-step behavior.
+    if training_cfg.eval_every_epoch_frac is not None:
+        if training_cfg.save_every_n_steps is not None:
+            log.warning(
+                "training.save_every_n_steps=%s is set but eval_every_epoch_frac=%.4f "
+                "takes priority and overrides it.",
+                training_cfg.save_every_n_steps, training_cfg.eval_every_epoch_frac,
+            )
+        steps_per_epoch = full_train_len // training_cfg.batch_size
+        raw = round(steps_per_epoch * training_cfg.eval_every_epoch_frac / accum_steps) * accum_steps
+        save_every_n_steps = max(raw, accum_steps)
+        log.info(
+            "eval_every_epoch_frac=%.4f -> save_every_n_steps=%d "
+            "(full_train_len=%d, steps_per_epoch=%d, accum_steps=%d)",
+            training_cfg.eval_every_epoch_frac, save_every_n_steps,
+            full_train_len, steps_per_epoch, accum_steps,
+        )
+    else:
+        save_every_n_steps = training_cfg.save_every_n_steps
+    if save_every_n_steps:
+        # Resume relies on optim_step = global_step // accum_steps being exact.
+        assert save_every_n_steps % accum_steps == 0, (
+            "save_every_n_steps must be divisible by gradient_accumulation_steps "
+            f"(got {save_every_n_steps} % {accum_steps} != 0) "
+            "to keep optimizer-step accounting exact across resume."
+        )
 
     optimizer = AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -458,8 +623,14 @@ def _train_evotuning(
     start_samples_seen = 0
     start_global_step = 0
     best_val_ppl = float("inf")
+    resumed_best_spearman = float("-inf")
+    resumed_best_pareto = float("-inf")
+    resumed_pareto_reference: Optional[float] = None
     if training_cfg.resume_checkpoint:
-        start_epoch, start_global_step, start_samples_seen, best_val_ppl = _load_resume_checkpoint(
+        (
+            start_epoch, start_global_step, start_samples_seen, best_val_ppl,
+            resumed_best_spearman, resumed_best_pareto, resumed_pareto_reference,
+        ) = _load_resume_checkpoint(
             training_cfg.resume_checkpoint, model, optimizer, scheduler, scaler, log,
         )
         if start_samples_seen >= full_train_len:
@@ -472,6 +643,61 @@ def _train_evotuning(
         )
 
     tokenizer = model.tokenizer
+
+    # Pareto-knee tracker setup (see report/evotuning.md, "Stopping rule for
+    # evotuning"): needs val sequences + seq_ids (to look up CDR windows)
+    # regardless of which masking mode is training. Reuse what make_dataloaders
+    # already loaded when the val Dataset carries seq_ids (SingleMaskDataset /
+    # HybridMaskDataset) — only the legacy whole-chain path (OASFastaDataset,
+    # no seq_ids) needs a second FASTA scan.
+    pareto_cfg: Optional[ParetoEvalConfig] = None
+    if "pareto" in training_cfg.checkpoint_trackers:
+        if not data_cfg.cdr_windows_cache:
+            raise ValueError(
+                "checkpoint_trackers includes 'pareto' but data.cdr_windows_cache "
+                "could not be resolved (no fasta_path?)."
+            )
+        pareto_cdr_windows = load_cdr_windows(data_cfg.cdr_windows_cache)
+        if hasattr(val_loader.dataset, "seq_ids"):
+            pareto_val_sequences = val_loader.dataset.sequences
+            pareto_val_seq_ids = val_loader.dataset.seq_ids
+        else:
+            log.info(
+                "Pareto tracker: masking=%r doesn't load seq_ids — scanning "
+                "%s separately for the val split.", data_cfg.masking, data_cfg.fasta_path,
+            )
+            _, pareto_ids_by_split = _load_fasta_seqs_ids_by_split(data_cfg.fasta_path, data_cfg.split)
+            pareto_val_sequences = val_loader.dataset.sequences
+            pareto_val_seq_ids = pareto_ids_by_split["val"]
+        if resumed_pareto_reference is not None:
+            # Reuse the exact reference from the checkpoint rather than
+            # recomputing: the eligibility floor must stay bit-identical
+            # across a resume, and recomputing is ~2000 wasted forward passes.
+            reference_fr_accuracy = resumed_pareto_reference
+            log.info(
+                "Pareto reference restored from resume checkpoint: framework_accuracy=%.4f",
+                reference_fr_accuracy,
+            )
+        else:
+            if training_cfg.resume_checkpoint:
+                log.warning(
+                    "Resuming but the checkpoint has no pareto_reference_framework_accuracy "
+                    "(pareto tracker wasn't enabled for the original run, or it predates this "
+                    "feature) — recomputing fresh. Eligibility comparisons before/after this "
+                    "resume point may not be perfectly consistent."
+                )
+            reference_fr_accuracy = _compute_reference_framework_accuracy(
+                model_cfg, pareto_val_sequences, pareto_val_seq_ids, pareto_cdr_windows,
+                device, max_seq_len=data_cfg.max_seq_len, n_samples=2000, seed=42, log=log,
+            )
+        pareto_cfg = ParetoEvalConfig(
+            val_sequences=pareto_val_sequences,
+            val_seq_ids=pareto_val_seq_ids,
+            cdr_windows=pareto_cdr_windows,
+            reference_framework_accuracy=reference_fr_accuracy,
+            fr_tolerance_pp=training_cfg.pareto_fr_tolerance_pp,
+            max_seq_len=data_cfg.max_seq_len,
+        )
 
     eval_per_epoch = training_cfg.eval_per_epoch
     # Single-mask variants: per-epoch masked-position Spearman on the full
@@ -502,11 +728,20 @@ def _train_evotuning(
     log_steps = 0
     global_step = start_global_step
     optim_step = global_step // accum_steps
-    best_ckpt_path: Optional[Path] = None
-    best_spearman = float("-inf")
-    best_spearman_ckpt_path: Optional[Path] = None
+    # best_val_ppl/best_spearman/best_pareto themselves were already restored
+    # from the resume checkpoint above (or default to -inf/inf if not
+    # resuming); the *_ckpt_path variables are deterministic fixed paths
+    # (run_dir/"best*.pt"), not stored state, so just check what's on disk.
+    best_ckpt_path: Optional[Path] = (run_dir / "best.pt") if (run_dir / "best.pt").exists() else None
+    best_spearman = resumed_best_spearman
+    best_spearman_ckpt_path: Optional[Path] = (
+        (run_dir / "best_spearman.pt") if (run_dir / "best_spearman.pt").exists() else None
+    )
+    best_pareto = resumed_best_pareto
+    best_pareto_ckpt_path: Optional[Path] = (
+        (run_dir / "best_pareto.pt") if (run_dir / "best_pareto.pt").exists() else None
+    )
 
-    save_every_n_steps = training_cfg.save_every_n_steps
     max_epochs = training_cfg.max_epochs
     hit_max_steps = False
     # Early stopping (per-epoch eval only).
@@ -587,7 +822,10 @@ def _train_evotuning(
             if eval_per_epoch and save_every_n_steps and global_step % save_every_n_steps == 0:
                 # Sub-epoch masked-position eval for the single-mask variants:
                 # resolves the Spearman peak that falls between epoch boundaries.
-                best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path = (
+                (
+                    best_val_ppl, best_ckpt_path, best_spearman, best_spearman_ckpt_path,
+                    best_pareto, best_pareto_ckpt_path,
+                ) = (
                     _run_periodic_eval(
                         model=model,
                         val_loader=val_loader,
@@ -602,6 +840,9 @@ def _train_evotuning(
                         best_ckpt_path=best_ckpt_path,
                         best_spearman=best_spearman,
                         best_spearman_ckpt_path=best_spearman_ckpt_path,
+                        pareto_cfg=pareto_cfg,
+                        best_pareto=best_pareto,
+                        best_pareto_ckpt_path=best_pareto_ckpt_path,
                         run_dir=run_dir,
                         checkpoint_dir=checkpoint_dir,
                         optimizer=optimizer,
@@ -717,6 +958,8 @@ def _train_evotuning(
                 best_ckpt_path,
                 best_spearman,
                 best_spearman_ckpt_path,
+                best_pareto,
+                best_pareto_ckpt_path,
             ) = _run_periodic_eval(
                 model=model,
                 val_loader=val_loader,
@@ -731,6 +974,9 @@ def _train_evotuning(
                 best_ckpt_path=best_ckpt_path,
                 best_spearman=best_spearman,
                 best_spearman_ckpt_path=best_spearman_ckpt_path,
+                pareto_cfg=pareto_cfg,
+                best_pareto=best_pareto,
+                best_pareto_ckpt_path=best_pareto_ckpt_path,
                 run_dir=run_dir,
                 checkpoint_dir=checkpoint_dir,
                 optimizer=optimizer,
@@ -803,6 +1049,11 @@ def _train_evotuning(
         "scaler_state_dict": scaler.state_dict(),
         "val_perplexity": final_ppl,
         "best_val_ppl": best_val_ppl,
+        "best_spearman": best_spearman,
+        "best_pareto": best_pareto,
+        "pareto_reference_framework_accuracy": (
+            pareto_cfg.reference_framework_accuracy if pareto_cfg is not None else None
+        ),
     }
     torch.save(final_state, final_path)
     log.info("Training complete. Final checkpoint: %s", final_path)
@@ -818,6 +1069,18 @@ def _train_evotuning(
         log.info(
             "Best masked-position Spearman: %.4f — DPO starting checkpoint: %s",
             best_spearman, best_spearman_ckpt_path,
+        )
+
+    if best_pareto_ckpt_path is not None:
+        final_metrics["best_pareto_cdr_accuracy"] = float(best_pareto)
+        final_metrics["best_pareto_ckpt"] = str(best_pareto_ckpt_path)
+        if pareto_cfg is not None:
+            final_metrics["pareto_reference_framework_accuracy"] = float(
+                pareto_cfg.reference_framework_accuracy
+            )
+        log.info(
+            "Best Pareto-eligible CDR accuracy: %.4f — checkpoint: %s",
+            best_pareto, best_pareto_ckpt_path,
         )
 
     # ------------------------------------------------------------------

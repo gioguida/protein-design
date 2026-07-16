@@ -11,10 +11,6 @@ from omegaconf import DictConfig
 
 from protein_design.evotuning.splits import SplitConfig, cdr_windows_cache_path
 
-# Masking modes that consume the CDR-window parquet cache (mirrors
-# data.CDR_MASK_MODES; duplicated here to avoid importing the heavy data module).
-_CDR_MASK_MODES = ("cdr", "cdr_mix")
-
 
 @dataclass
 class DataConfig:
@@ -33,6 +29,12 @@ class DataConfig:
     # "cdr_mix") for framework positions. See SingleMaskDataset.
     cdr_mask_prob: float = 0.5
     framework_mask_prob: float = 0.05
+    # "always" (default, [MASK] every time) | "bert_80_10_10" (80% [MASK],
+    # 10% random amino acid, 10% keep true residue). See SingleMaskDataset.
+    mask_replace_strategy: str = "always"
+    # "hybrid" mode only: per-example probability of CDR-window masking
+    # (vs. whole-chain masking) for that example. See HybridMaskDataset.
+    hybrid_cdr_sample_prob: float = 0.8
 
 
 @dataclass
@@ -46,6 +48,11 @@ class TrainingConfig:
     batch_size: int = 128
     gradient_accumulation_steps: int = 1
     save_every_n_steps: Optional[int] = None
+    # When set, overrides save_every_n_steps: derived at runtime from
+    # full_train_len (see _train_evotuning) so the eval fraction of an epoch
+    # is the same regardless of masking mode. None -> use save_every_n_steps
+    # as-is (existing behavior).
+    eval_every_epoch_frac: Optional[float] = None
     fp16: bool = False
     resume_checkpoint: Optional[str] = None
     # When True, run eval + checkpoint at the end of every epoch (instead of
@@ -57,6 +64,17 @@ class TrainingConfig:
     # `early_stopping_min_delta`. None disables early stopping.
     early_stopping_patience: Optional[int] = None
     early_stopping_min_delta: float = 0.0
+    # Which best-checkpoint tracker(s) to run at each eval point. Not a
+    # stopping condition — every run always trains the full capped epoch
+    # regardless of what's listed here. "perplexity" -> best.pt (existing,
+    # always effectively on). "pareto" -> best_pareto.pt, the region-
+    # stratified CDR/framework masked-recovery Pareto-knee rule (see
+    # report/evotuning.md, "Stopping rule for evotuning").
+    checkpoint_trackers: list[str] = field(default_factory=lambda: ["perplexity"])
+    # Pareto tracker only: a checkpoint is eligible to become the new best
+    # only if its framework accuracy is within this many percentage points
+    # of the reference (vanilla model) framework accuracy.
+    pareto_fr_tolerance_pp: float = 0.1
     # TTT-only: optimizer-step indices at which to snapshot the model
     # (LoRA adapter weights if LoRA is active, else full state_dict).
     # Empty list = no snapshots beyond final.pt.
@@ -83,8 +101,11 @@ def build_data_config(cfg: DictConfig) -> DataConfig:
     # (fasta_path, cdr_flank) using the same naming convention as the cache
     # builder. This makes sweeping cdr_flank / swapping fasta_path "just work"
     # (as long as the matching cache has been built once) without per-flank
-    # cdr_windows_cache= overrides.
-    if cdr_cache is None and masking in _CDR_MASK_MODES:
+    # cdr_windows_cache= overrides. Unconditional (not gated on masking mode):
+    # the Pareto checkpoint tracker needs a CDR-window cache regardless of
+    # which masking mode is actually training, e.g. for the plain
+    # whole-chain (masking=null) condition.
+    if cdr_cache is None:
         cdr_cache = cdr_windows_cache_path(
             str(cfg.paths.scratch_dir), str(cfg.data.fasta_path), cdr_flank
         )
@@ -98,6 +119,8 @@ def build_data_config(cfg: DictConfig) -> DataConfig:
         cdr_windows_cache=cdr_cache,
         cdr_mask_prob=float(cfg.data.get("cdr_mask_prob", 0.5)),
         framework_mask_prob=float(cfg.data.get("framework_mask_prob", 0.05)),
+        mask_replace_strategy=str(cfg.data.get("mask_replace_strategy", "always")),
+        hybrid_cdr_sample_prob=float(cfg.data.get("hybrid_cdr_sample_prob", 0.8)),
     )
 
 
@@ -111,6 +134,11 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
         batch_size=int(t.batch_size),
         gradient_accumulation_steps=int(t.gradient_accumulation_steps),
         save_every_n_steps=t.save_every_n_steps if t.save_every_n_steps is not None else None,
+        eval_every_epoch_frac=(
+            float(t.get("eval_every_epoch_frac"))
+            if t.get("eval_every_epoch_frac", None) is not None
+            else None
+        ),
         fp16=bool(t.fp16),
         resume_checkpoint=t.get("resume_checkpoint", None),
         snapshot_steps=[int(s) for s in t.get("snapshot_steps", []) or []],
@@ -121,4 +149,6 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
             else None
         ),
         early_stopping_min_delta=float(t.get("early_stopping_min_delta", 0.0)),
+        checkpoint_trackers=[str(x) for x in (t.get("checkpoint_trackers", ["perplexity"]) or ["perplexity"])],
+        pareto_fr_tolerance_pp=float(t.get("pareto_fr_tolerance_pp", 0.1)),
     )

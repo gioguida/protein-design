@@ -1271,16 +1271,33 @@ def run_dpo(cfg: Any) -> Path:
             wandb_mod.log(step0_record, step=global_step)
 
         best_val_loss = float(step0_record["val_loss"])
-        # Prefer selecting the "best" checkpoint by held-out ranking quality
-        # (val_spearman_avg, higher is better) since that's what we actually
-        # report on test. Falls back to val_loss (lower is better) whenever a
-        # dataset doesn't support the cdr_pll Spearman eval (val_spearman_df
-        # is None / evaluation failed), preserving the old behavior there.
-        selection_metric_name = (
-            "val_spearman_avg"
-            if math.isfinite(step0_record.get("val_spearman_avg", float("nan")))
-            else "val_loss"
-        )
+        # training.checkpoint_selection_metric controls which metric drives
+        # both "best" checkpoint selection and patience-based early stopping:
+        #   auto            (default) prefer held-out ranking quality
+        #                   (val_spearman_avg, higher is better) since that's
+        #                   what we report on test; falls back to val_loss
+        #                   (lower is better) when a dataset doesn't support
+        #                   the cdr_pll Spearman eval.
+        #   val_spearman_avg  same fallback behavior as auto, forced.
+        #   val_loss        always use val_loss (lower is better) -- useful
+        #                   when val_spearman_avg is too noisy to trust, e.g.
+        #                   a small val split.
+        selection_metric_setting = str(
+            getattr(cfg.training, "checkpoint_selection_metric", "auto")
+        ).strip().lower()
+        if selection_metric_setting == "val_loss":
+            selection_metric_name = "val_loss"
+        elif selection_metric_setting in ("auto", "val_spearman_avg"):
+            selection_metric_name = (
+                "val_spearman_avg"
+                if math.isfinite(step0_record.get("val_spearman_avg", float("nan")))
+                else "val_loss"
+            )
+        else:
+            raise ValueError(
+                f"Unknown training.checkpoint_selection_metric={selection_metric_setting!r}; "
+                "expected 'auto', 'val_spearman_avg', or 'val_loss'."
+            )
         selection_higher_is_better = selection_metric_name == "val_spearman_avg"
         best_selection_value = float(step0_record[selection_metric_name])
         logger.info(

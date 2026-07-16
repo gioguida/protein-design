@@ -155,6 +155,124 @@ def corpus_perplexity(
 
 
 # ---------------------------------------------------------------------------
+# Region-stratified masked-recovery accuracy (Pareto-knee checkpoint selection)
+# ---------------------------------------------------------------------------
+
+
+def region_stratified_masked_recovery_accuracy(
+    model: ESM2Model,
+    sequences: np.ndarray,
+    seq_ids: np.ndarray,
+    cdr_windows: Dict[str, tuple],
+    device: torch.device,
+    max_seq_len: int = 256,
+    batch_size: int = 256,
+    n_samples: Optional[int] = 2000,
+    seed: int = 42,
+) -> dict:
+    """Top-1 masked-recovery accuracy, split by CDR-window vs. framework region.
+
+    Single-position masking (one residue masked per forward pass, full
+    surrounding context preserved — same scoring convention used everywhere
+    else in this codebase, e.g. `score_sequences_masked_positions`), with
+    every residue position of every sampled sequence enumerated (not a
+    Bernoulli subset — this needs to be a stable, reproducible reference
+    metric, comparable across checkpoints and across the CDR-mix-style
+    resampled framework subset used at *training* time doesn't qualify).
+
+    Cost is bounded by fixing a small random subsample of `sequences`
+    (`n_samples`, fixed `seed`) rather than enumerating the full split:
+    O(n_samples * avg_length) forward passes, the same order as the
+    per-epoch DMS Spearman scoring already run at each eval point, not
+    O(full_val_size * avg_length).
+
+    Sequences with no resolved CDR window (not in `cdr_windows`) are
+    skipped entirely (can't classify their positions).
+
+    Returns a dict with `cdr_accuracy`, `framework_accuracy` (top-1 argmax
+    match rate; NaN if a bucket has zero positions), `n_cdr_positions`,
+    `n_framework_positions`, `n_sequences_used`, `n_sequences_skipped`.
+    """
+    tokenizer = model.tokenizer
+    n_total = len(sequences)
+    order = np.arange(n_total)
+    if n_samples is not None and n_total > n_samples:
+        rng = np.random.default_rng(seed)
+        order = np.sort(rng.choice(n_total, size=n_samples, replace=False))
+
+    max_residues = max_seq_len - 2
+    mask_token_id = int(tokenizer.mask_token_id)
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        raise ValueError("Tokenizer does not define a pad token id.")
+
+    # Pre-tokenize each sampled sequence once; flatten (slot, token_pos,
+    # is_cdr, true_id) across every residue position of every sampled
+    # sequence with a resolved window.
+    tok_cache: Dict[int, list] = {}
+    items: list = []  # (slot, token_pos, is_cdr, true_id)
+    n_skipped = 0
+    for slot, i in enumerate(order):
+        seq = sequences[i].decode("ascii") if isinstance(sequences[i], bytes) else str(sequences[i])
+        sid = seq_ids[i].decode("ascii") if isinstance(seq_ids[i], bytes) else str(seq_ids[i])
+        win = cdr_windows.get(sid)
+        if win is None:
+            n_skipped += 1
+            continue
+        encoding = tokenizer(
+            seq, truncation=True, max_length=max_seq_len, padding=False, return_tensors=None,
+        )
+        ids = encoding["input_ids"]
+        tok_cache[slot] = ids
+        L = min(len(seq), max_residues)
+        win_start, win_end = win[0], min(win[1], L)
+        for p in range(L):
+            token_pos = p + 1  # BOS offset
+            is_cdr = win_start <= p < win_end
+            items.append((slot, token_pos, is_cdr, ids[token_pos]))
+
+    cdr_correct = cdr_total = fr_correct = fr_total = 0
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(items), batch_size):
+            chunk = items[start : start + batch_size]
+            n = len(chunk)
+            max_len = max(len(tok_cache[slot]) for slot, _, _, _ in chunk)
+            input_ids = torch.full((n, max_len), pad_id, dtype=torch.long)
+            attention_mask = torch.zeros((n, max_len), dtype=torch.long)
+            for row, (slot, token_pos, _is_cdr, _true_id) in enumerate(chunk):
+                ids = tok_cache[slot]
+                input_ids[row, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+                attention_mask[row, : len(ids)] = 1
+                input_ids[row, token_pos] = mask_token_id
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+
+            with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+                logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+            preds = logits.argmax(dim=-1)
+
+            for row, (_slot, token_pos, is_cdr, true_id) in enumerate(chunk):
+                correct = int(preds[row, token_pos].item()) == true_id
+                if is_cdr:
+                    cdr_total += 1
+                    cdr_correct += int(correct)
+                else:
+                    fr_total += 1
+                    fr_correct += int(correct)
+    model.train()
+
+    return {
+        "cdr_accuracy": (cdr_correct / cdr_total) if cdr_total else float("nan"),
+        "framework_accuracy": (fr_correct / fr_total) if fr_total else float("nan"),
+        "n_cdr_positions": cdr_total,
+        "n_framework_positions": fr_total,
+        "n_sequences_used": len(tok_cache),
+        "n_sequences_skipped": n_skipped,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Mutation parsing + masked log-prob scoring
 # ---------------------------------------------------------------------------
 

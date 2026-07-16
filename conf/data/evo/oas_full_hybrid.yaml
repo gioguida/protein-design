@@ -1,0 +1,21 @@
+# @package _global_
+# Hybrid: per training example, independently, 80% CDR-window masking (50%
+# within-window, BERT 80/10/10) / 20% whole-chain masking (15%, BERT
+# 80/10/10) — a per-example choice, never both in the same example (see
+# HybridMaskDataset). report/evotuning.md, "Masking".
+# Requires the OAS-scale windows parquet built by
+# scripts/data_prep/build_cdr_windows.py (see bash_scripts/utils/build_cdr_windows.sbatch).
+data:
+  fasta_path: ${paths.project_dir}/data/oas/oas_dedup_rep_seq.fasta
+  max_seq_len: 256
+  mlm_probability: 0.15
+  masking: hybrid
+  cdr_flank: 3
+  cdr_windows_cache: ${paths.scratch_dir}/cdr_windows/oas_dedup_rep_seq_flank3.parquet
+  cdr_mask_prob: 0.5
+  hybrid_cdr_sample_prob: 0.8
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5
