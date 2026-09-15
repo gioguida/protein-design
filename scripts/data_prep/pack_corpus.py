@@ -117,19 +117,54 @@ def load_fasta_ids_and_seqs(fasta_path: str) -> dict[str, str]:
     return seqs
 
 
+class _Column:
+    """A fixed-size numpy buffer that spills to a binary file when full.
+
+    Accumulating a column for a corpus this size in a Python list costs tens of
+    GB on its own, which is the cost the pack exists to remove. Everything here
+    is written out as it is produced, so the packer's memory is the buffer.
+    """
+
+    def __init__(self, path: Path, dtype, width: int = 1, capacity: int = 1 << 20) -> None:
+        self.fh = open(path, "wb")
+        self.width = width
+        self.buf = np.empty((capacity, width) if width > 1 else capacity, dtype=dtype)
+        self.n = 0
+
+    def append(self, value) -> None:
+        self.buf[self.n] = value
+        self.n += 1
+        if self.n == len(self.buf):
+            self.flush()
+
+    def flush(self) -> None:
+        if self.n:
+            self.buf[: self.n].tofile(self.fh)
+            self.n = 0
+
+    def close(self) -> None:
+        self.flush()
+        self.fh.close()
+
+
 class PackWriter:
-    """Append-only writer for the packed corpus files."""
+    """Append-only, streaming writer for the packed corpus files."""
 
     def __init__(self, out: Path) -> None:
         out.mkdir(parents=True, exist_ok=True)
         self.out = out
         self.f_seqs = open(out / "seqs.u8", "wb")
         self.f_ids = open(out / "ids.u8", "wb")
-        self.seq_offsets = [0]
-        self.id_offsets = [0]
-        self.cdr3: list[tuple[int, int]] = []
-        self.win: list[tuple[int, int]] = []
-        self.split: list[int] = []
+        self.c_off = _Column(out / "offsets.i64", np.int64)
+        self.c_idoff = _Column(out / "id_offsets.i64", np.int64)
+        self.c_cdr3 = _Column(out / "cdr3.i32", np.int32, width=2)
+        self.c_win = _Column(out / "win.i32", np.int32, width=2)
+        self.c_split = _Column(out / "split.i8", np.int8)
+        # Offsets are n+1 long, starting at zero.
+        self.c_off.append(0)
+        self.c_idoff.append(0)
+        self.seq_pos = 0
+        self.id_pos = 0
 
     def add(
         self, seq_id: str, seq: str, cdr3_start: int, cdr3_end: int,
@@ -139,20 +174,19 @@ class PackWriter:
         ib = seq_id.encode("ascii")
         self.f_seqs.write(sb)
         self.f_ids.write(ib)
-        self.seq_offsets.append(self.seq_offsets[-1] + len(sb))
-        self.id_offsets.append(self.id_offsets[-1] + len(ib))
-        self.cdr3.append((cdr3_start, cdr3_end))
-        self.win.append((win_start, win_end))
-        self.split.append(split_code)
+        self.seq_pos += len(sb)
+        self.id_pos += len(ib)
+        self.c_off.append(self.seq_pos)
+        self.c_idoff.append(self.id_pos)
+        self.c_cdr3.append((cdr3_start, cdr3_end))
+        self.c_win.append((win_start, win_end))
+        self.c_split.append(split_code)
 
     def close(self, meta: dict) -> None:
         self.f_seqs.close()
         self.f_ids.close()
-        np.asarray(self.seq_offsets, dtype=np.int64).tofile(self.out / "offsets.i64")
-        np.asarray(self.id_offsets, dtype=np.int64).tofile(self.out / "id_offsets.i64")
-        np.asarray(self.cdr3, dtype=np.int32).reshape(-1, 2).tofile(self.out / "cdr3.i32")
-        np.asarray(self.win, dtype=np.int32).reshape(-1, 2).tofile(self.out / "win.i32")
-        np.asarray(self.split, dtype=np.int8).tofile(self.out / "split.i8")
+        for col in (self.c_off, self.c_idoff, self.c_cdr3, self.c_win, self.c_split):
+            col.close()
         (self.out / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
