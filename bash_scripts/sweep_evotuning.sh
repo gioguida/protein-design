@@ -21,6 +21,10 @@ MODEL_GRID="esm2_8m,esm2_35m,esm2_150m"
 POLICY_GRID="cdr50,hybrid"
 DATA_GRID="oas,c05_wt_similar"
 NAME_PREFIX="evo"
+# Per model size, from measured peak reserved memory (3.1 / 7.7 / 21.5 GB at
+# batch 64). Requesting one large number for every job would leave the small
+# models queueing behind nodes they do not need. --gpu-mem overrides all of it.
+declare -A GPU_MEM_BY_MODEL=( [esm2_8m]=12g [esm2_35m]=24g [esm2_150m]=40g )
 GPU_MEM=""
 DRY_RUN=0
 EXTRA_OVERRIDES=()
@@ -38,9 +42,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-SBATCH_OPTS=()
-[[ -n "${GPU_MEM}" ]] && SBATCH_OPTS=("--gres=gpumem:${GPU_MEM}")
-
 IFS=',' read -r -a LR_ARR     <<< "${LR_GRID}"
 IFS=',' read -r -a MODEL_ARR  <<< "${MODEL_GRID}"
 IFS=',' read -r -a POLICY_ARR <<< "${POLICY_GRID}"
@@ -55,6 +56,8 @@ for data in "${DATA_ARR[@]}"; do
   for policy in "${POLICY_ARR[@]}"; do
     for model in "${MODEL_ARR[@]}"; do
       for lr in "${LR_ARR[@]}"; do
+        mem="${GPU_MEM:-${GPU_MEM_BY_MODEL[$model]:-24g}}"
+        SBATCH_OPTS=("--gres=gpumem:${mem}")
         run_name="${NAME_PREFIX}_${data}_${policy}_${model}_lr${lr}"
         overrides=(
           "data=evo/${data}_${policy}"

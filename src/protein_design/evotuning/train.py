@@ -226,6 +226,7 @@ class RecoveryEvalConfig:
     max_seq_len: int
     n_samples: int = 2000
     seed: int = 42
+    batch_size: int = 256
 
 
 def _eval_step_grid(
@@ -296,7 +297,7 @@ def _run_periodic_eval(
     )
     acc = region_stratified_masked_recovery_accuracy(
         model, recovery_cfg.corpus, recovery_cfg.val_indices, device,
-        max_seq_len=recovery_cfg.max_seq_len,
+        max_seq_len=recovery_cfg.max_seq_len, batch_size=recovery_cfg.batch_size,
         n_samples=recovery_cfg.n_samples, seed=recovery_cfg.seed,
     )
     cdr_accuracy = acc["cdr_accuracy"]
@@ -465,6 +466,7 @@ def _base_model_framework_accuracy(
     max_seq_len: int,
     n_samples: int,
     seed: int,
+    batch_size: int,
     log: logging.Logger,
 ) -> float:
     """Framework accuracy of the base pretrained model, on the same validation
@@ -478,7 +480,7 @@ def _base_model_framework_accuracy(
     vanilla_model.to(device)
     result = region_stratified_masked_recovery_accuracy(
         vanilla_model, corpus, val_indices, device,
-        max_seq_len=max_seq_len, n_samples=n_samples, seed=seed,
+        max_seq_len=max_seq_len, batch_size=batch_size, n_samples=n_samples, seed=seed,
     )
     log.info(
         "Base model reference: framework accuracy %.4f (CDR accuracy %.4f, "
@@ -631,7 +633,8 @@ def _train_evotuning(
             model_cfg, corpus, val_indices, device,
             max_seq_len=data_cfg.max_seq_len,
             n_samples=training_cfg.recovery_n_samples,
-            seed=training_cfg.recovery_seed, log=log,
+            seed=training_cfg.recovery_seed,
+            batch_size=training_cfg.recovery_batch_size, log=log,
         )
     recovery_cfg = RecoveryEvalConfig(
         corpus=corpus,
@@ -641,6 +644,7 @@ def _train_evotuning(
         max_seq_len=data_cfg.max_seq_len,
         n_samples=training_cfg.recovery_n_samples,
         seed=training_cfg.recovery_seed,
+        batch_size=training_cfg.recovery_batch_size,
     )
 
     scoring_datasets = None

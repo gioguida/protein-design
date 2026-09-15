@@ -73,6 +73,10 @@ class TrainingConfig:
     # evaluation point, and the seed fixing which ones.
     recovery_n_samples: int = 2000
     recovery_seed: int = 42
+    # The recovery metric enumerates one masked position per forward pass, so
+    # it runs at its own batch size. It is the peak-memory driver for a run,
+    # well above training at the same model size.
+    recovery_batch_size: int = 256
     # Framework accuracy of the checkpoint this run branched from. Set on the
     # single-position phase, whose reference is its own branch point rather
     # than the base pretrained model.
@@ -128,6 +132,7 @@ def build_training_config(cfg: DictConfig) -> TrainingConfig:
         pareto_fr_tolerance_pp=float(t.get("pareto_fr_tolerance_pp", 0.1)),
         recovery_n_samples=int(t.get("recovery_n_samples", 2000)),
         recovery_seed=int(t.get("recovery_seed", 42)),
+        recovery_batch_size=int(t.get("recovery_batch_size", 256)),
         pareto_reference_framework_accuracy=(
             float(pareto_ref) if pareto_ref is not None else None
         ),

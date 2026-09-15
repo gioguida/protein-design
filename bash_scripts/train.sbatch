@@ -4,7 +4,11 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=10G
 #SBATCH --gpus=1
-#SBATCH --gres=gpumem:80g
+# Measured peak reserved memory at batch 64: 3.1 GB (8M), 7.7 GB (35M),
+# 21.5 GB (150M). The peak comes from the recovery metric, which runs at a
+# larger batch than training. Larger models need a bigger request on the
+# command line; sweep_evotuning.sh sets it per model size.
+#SBATCH --gres=gpumem:24g
 #SBATCH --time=12:00:00
 #SBATCH --output=bash_scripts/logs/train_%j.log
 
