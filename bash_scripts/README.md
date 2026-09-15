@@ -168,8 +168,9 @@ uv run python scripts/analysis/plot_dms_correlations.py \
 - Training (`train.sbatch`, `eval.sbatch`, `ttt.sbatch`)
 - OAS data prep (`utils/download_oas.sbatch`, `utils/filter_oas.sbatch`,
   `utils/linclust.sbatch`) — see `report/dataset.ipynb` for the walkthrough
-- CDR-window cache for the `cdr`/`cdr_mix`/`hybrid` masking modes
-  (`utils/build_cdr_windows.sbatch`) — needed before any of those masking
-  modes can train on a new corpus
+- Packed corpus (`utils/pack_corpus.sbatch`) — build once per corpus before
+  training on it; every masking policy reads the same pack
+- Masking sweep (`sweep_evotuning.sh`) and its single-position continuations
+  (`scripts/analysis/branch_from_switch_point.py`)
 - Beam search / Gibbs sampling (`utils/run_beam_*`, `utils/run_gibbs_*`)
 - Embedding / similarity analyses (`utils/plot_*similarity*.sbatch`)

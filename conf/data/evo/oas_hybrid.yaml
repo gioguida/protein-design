@@ -1,0 +1,12 @@
+# @package _global_
+# Hybrid: within every batch, 80% of the samples take CDR-50% masking and 20%
+# take whole-chain masking. The split is over samples inside each batch and is
+# exact, not an independent draw per sequence.
+defaults:
+  - evo/oas_wc15
+  - _self_
+
+data:
+  policy: hybrid
+  cdr_mask_prob: 0.5
+  hybrid_cdr_frac: 0.8

@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - evo/c05_wt_similar_wc15
+  - _self_
+
+data:
+  policy: hybrid
+  cdr_mask_prob: 0.5
+  hybrid_cdr_frac: 0.8

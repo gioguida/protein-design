@@ -1,6 +1,6 @@
 defaults:
   - model: esm2_35m
-  - data: evo/oas_full
+  - data: evo/oas_cdr50
   - scoring: d2
   - task: evotuning
   - _self_

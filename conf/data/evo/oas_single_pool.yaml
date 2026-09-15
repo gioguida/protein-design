@@ -1,0 +1,11 @@
+# @package _global_
+# Single-position phase. One residue per sequence, drawn uniformly from the
+# CDR-H3, its fixed flanks, and a share of the framework resampled for each
+# occurrence. Continues from a batch-masking run rather than starting fresh:
+# pass training.resume_checkpoint and the branch point's framework accuracy.
+defaults:
+  - evo/oas_wc15
+  - _self_
+
+data:
+  policy: single_pool

@@ -71,7 +71,13 @@ def _resolve_pt_path(checkpoint: str) -> Optional[Path]:
     if p.is_file() and p.suffix == ".pt":
         return p
     if p.is_dir():
-        return next((p / name for name in ("best.pt", "final.pt") if (p / name).exists()), None)
+        # "selected.pt" is what the evotuning selection rule writes; "best.pt"
+        # is the older perplexity-selected name, kept so earlier runs still
+        # resolve. "final.pt" is the end of training, used only as a fallback.
+        return next(
+            (p / name for name in ("selected.pt", "best.pt", "final.pt") if (p / name).exists()),
+            None,
+        )
     return None
 
 
@@ -217,7 +223,9 @@ def load_mlm_from_checkpoint(checkpoint: Optional[str]) -> tuple[EsmForMaskedLM,
         return _load_full_mlm(raw, state)
 
     if _is_local_path_like(normalized):
-        raise FileNotFoundError(f"No HF weights, best.pt, or final.pt found at {normalized}")
+        raise FileNotFoundError(
+            f"No HF weights, selected.pt, best.pt, or final.pt found at {normalized}"
+        )
     return EsmForMaskedLM.from_pretrained(normalized), normalized
 
 
