@@ -416,6 +416,14 @@ def ensure_dataset_splits(
     *,
     force: bool = False,
 ) -> Dict[str, Path]:
+    # K-fold CV fold keys (<base>_cv<K>s<SEED>_f<I>) are materialized by the
+    # dedicated cv_splitting module (fold I -> test, remaining folds -> pool
+    # split into train/val). Lazy import to avoid a circular dependency.
+    from .cv_splitting import ensure_cv_fold_splits, is_cv_fold_key
+
+    if is_cv_fold_key(dataset_key):
+        return ensure_cv_fold_splits(dataset_key, config_path, force=force)
+
     config = load_dms_config(config_path)
     dataset_key, config = _resolve_dataset_key(dataset_key, config)
     spec = config.datasets[dataset_key]
@@ -481,6 +489,10 @@ def resolve_dataset_split(
 
 
 def dataset_spec(dataset_key: str, config_path: str | Path | None = None) -> DatasetSpec:
+    from .cv_splitting import cv_fold_dataset_spec, is_cv_fold_key
+
+    if is_cv_fold_key(dataset_key):
+        return cv_fold_dataset_spec(dataset_key, config_path)
     config = load_dms_config(config_path)
     dataset_key, config = _resolve_dataset_key(dataset_key, config)
     return config.datasets[dataset_key]

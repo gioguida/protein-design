@@ -1,0 +1,59 @@
+# DMS config for k-fold cross-validation of the small-dataset low-data DPO
+# learning curves (report/meetings/test_variance_reduction.ipynb, Section B/C).
+#
+# This is a SEPARATE file (not an edit to default.yaml) on purpose: the CV
+# machinery reads an extra `cv:` block and writes fold splits to an ISOLATED
+# `cv.output_dir`, so it never touches the canonical 80/10/10 ed1_m22 /
+# cetuximab_h splits used by the non-CV baseline (report/meetings/14-07-26.ipynb).
+#
+# Fold keys have the self-describing form `<base>_cv<K>s<SEED>_f<I>`
+# (K=n_folds, SEED=fold_seed, I=0-based fold index), materialized by
+# protein_design.cv_splitting.ensure_cv_fold_splits. n_folds/fold_seed live in
+# the KEY (recorded verbatim in each run's resolved_config.yaml); only
+# `val_frac` and `output_dir` are read from the `cv:` block below.
+#
+# Usage: pass on the usual lora_dpo run as Hydra overrides, e.g.
+#   data.dms_config=conf/data/dms/cv.yaml
+#   data.dpo_dataset_key=ed1_m22_cv5s0_f2 data.test.dataset_key=ed1_m22_cv5s0_f2
+# The bash_scripts/dpo_cv_sweep.sh launcher generates these keys per fold.
+
+# `split:` still governs stratify_bins (used for the metric-stratified fold
+# assignment) and hamming_distance. train/val/test fractions here are unused by
+# the CV path -- the fold defines the test set and cv.val_frac the val fraction
+# of the remaining pool -- but are kept valid so load_dms_config() succeeds.
+split:
+  enabled: true
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  seed: 42
+  output_dir: /cluster/project/infk/krause/${USER}/protein-design/data/dms_splits_cv_base
+  hamming_distance: 0
+  stratify_bins: 10
+
+# K-fold CV knobs. n_folds / fold_seed are carried by the dataset key; these
+# defaults are what bash_scripts/dpo_cv_sweep.sh uses when constructing keys.
+cv:
+  n_folds: 5
+  fold_seed: 0
+  # Fraction of the non-test pool (all folds except the held-out one) reserved
+  # for validation / checkpoint selection. The held-out fold is NEVER used for
+  # tuning -- val is drawn only from the remaining folds.
+  val_frac: 0.15
+  output_dir: /cluster/project/infk/krause/${USER}/protein-design/data/dms_splits_cv
+
+datasets:
+  cetuximab_h:
+    # AbAgym EGFR_2013_Cetuximab, heavy-chain-only single mutants (559 rows).
+    # Same spec as conf/data/dms/default.yaml (kept in sync deliberately).
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/AbAgym_cetuximab_h_mutants.csv
+    sequence_col: aa
+    key_metric_col: neg_DMS_score
+    wt_sequence: "QVQLKQSGPGLVQPSQSLSITCTVSGFSLTNYGVHWVRQSPGKGLEWLGVIWSGGNTDYNTPFTSRLSINKDNSKSQVFFKMNSLQSNDTAIYYCARALTYYDYEFAYWGQGTLVTVSAASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPK"
+    wt_metric_value: 0.0
+  ed1_m22:
+    # Combined single-mutant (num_mut==1) pool -- ED2_M22 saturation scan
+    # (456 rows). Same spec as conf/data/dms/default.yaml.
+    path: /cluster/project/infk/krause/mdenegri/protein-design/data/raw/ED1_M22_binding_enrichment_combined.csv
+    sequence_col: aa
+    key_metric_col: M22_binding_enrichment_adj

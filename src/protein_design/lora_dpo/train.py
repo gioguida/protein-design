@@ -1799,6 +1799,28 @@ def run_lora_dpo(cfg: Any) -> Path:
                 float(test_spearman["auroc"]),
                 float(test_spearman["spearman_random"]),
             )
+            # Export raw per-row held-out predictions (aligned to test_spearman_df
+            # row order, same order run_scoring_evaluation scored them). These are
+            # the concatenation units for pooled out-of-fold CV Spearman
+            # (protein_design.cv_splitting.pooled_oof_spearman) and are harmless
+            # extra output for any run -- id columns + ground truth + prediction.
+            try:
+                scores_avg = list(test_spearman["scores_avg"])
+                if len(scores_avg) == len(test_spearman_df):
+                    id_cols = [c for c in ("aa", "mut") if c in test_spearman_df.columns]
+                    pred_df = test_spearman_df[id_cols + ["M22_binding_enrichment_adj"]].copy()
+                    pred_df["score"] = pd.to_numeric(pd.Series(scores_avg, index=pred_df.index), errors="coerce")
+                    pred_df["dataset_key"] = str(getattr(getattr(cfg.data, "test", None), "dataset_key", ""))
+                    pred_path = output_dir / "test_predictions.csv"
+                    pred_df.to_csv(pred_path, index=False)
+                    logger.info("Saved held-out test predictions to %s (%d rows)", pred_path, len(pred_df))
+                else:
+                    logger.warning(
+                        "Held-out prediction export skipped: %d scores vs %d test rows.",
+                        len(scores_avg), len(test_spearman_df),
+                    )
+            except Exception as exc:  # pragma: no cover - best-effort export
+                logger.warning("Held-out prediction export failed (%s).", exc)
         except Exception as exc:
             logger.warning("Test Spearman evaluation failed (%s). Skipping this metric.", exc)
 
