@@ -175,7 +175,19 @@ def _(mo):
     X positions (non-standard residues rewritten during filtering) are never eligible to be masked, in any variant, and are excluded from the recovery accuracies in step 3. Masking them would train and score the model on predicting X.
     </claude>
 
-    **Step 1: two base runs**, single-chain (unpaired) OAS, Talaei et al.'s definitions:
+    <claude>
+    **Step 1: whole-chain warm-up.** One WC-15% run per (dataset, model size, lr), from the base pretrained model, covering the first part of the epoch. Both base runs branch from its final checkpoint, which is also the reference the switch-point rule measures them against.
+
+    Why it's here. The rule holds framework recovery inside a 0.1 percentage point band around a reference. That band only means something if the reference sits where framework accuracy has stopped moving on its own. Measured against the base pretrained model it does not: base ESM2 has never seen an antibody, so the opening steps of any antibody training move framework recovery by whole percentage points through plain domain adaptation, and a 0.1pp band excludes everything past the first few steps by construction. On 200k OAS sequences at the sweep's batch size, CDR-50% moves framework recovery 1.65pp by a tenth of an epoch and 5.4pp by a fifth; Hybrid moves it the other way, gaining 22pp on the WT-similar set. Both directions blow the band, and the rule ends up selecting a model that has learned nothing.
+
+    This is what Talaei et al. do. Their Stage II always branches from a Stage I whole-chain checkpoint and is measured against it, never against the base model. Warming up first restores that.
+
+    It also makes the comparison cleaner. CDR-50% and Hybrid branch from the same checkpoint, so they differ only in masking policy rather than in each policy's own adaptation transient.
+
+    Length: {STILL OPEN} — set it where framework recovery under WC-15% flattens, measured on a whole-chain run over the sweep corpus. Everything stays inside one epoch: the warm-up takes the first part of it, the base runs resume mid-epoch on the same shuffled order through the skip_samples cursor and finish it. Talaei et al.'s own unpaired stage is a single epoch, and they seed downstream training from its 0.3-epoch checkpoint, so a fraction of an epoch is the expected order of magnitude rather than a whole one.
+
+    **Step 2: two base runs**, resumed from the Step 1 warm-up, single-chain (unpaired) OAS, Talaei et al.'s definitions:
+    </claude>
 
     | base run | definition |
     | - | - |
@@ -192,11 +204,11 @@ def _(mo):
     We keep the literal 50% anyway, so the arm means what its name says and stays directly comparable to the paper. The cost is that CDR-50% masks roughly half the residues per sequence that WC-15% does, so the two arms are not signal-matched. Log masked residues per sequence for every run so this is visible in the results rather than implied.
     </claude>
 
-    **Step 2: branch each base run into 2 variants**. When the base run hit the switch-point rule (defined in step 3), we switch from batch masking to sinlge masking. The switch applies in the same way for CDR-50% and Hybrid → **4 trained models total.**
+    **Step 3: branch each base run into 2 variants**. When the base run hit the switch-point rule (defined in step 4), we switch from batch masking to sinlge masking. The switch applies in the same way for CDR-50% and Hybrid → **4 trained models total.**
 
-    **Step 3: stopping / switch-point rule**, self-supervised (no DMS labels), applied twice (once per base run, and again inside each batch→single branch):
+    **Step 4: stopping / switch-point rule**, self-supervised (no DMS labels), applied twice (once per base run, and again inside each batch→single branch):
     1. Track CDR(avg) and FR(avg): mean token-level masked-recovery accuracy within CDR vs. framework regions (IMGT-annotated, single chain), on held-out OAS validation, evaluated at [0.01%, 0.1%, 1%, 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80%, 90%, 100%] of epoch. <claude>Where a fraction lands below one optimizer step it is clamped to one step and duplicates are dropped, so a small corpus simply gets a shorter grid.</claude>
-    2. **Batch-phase switch/stop point:** earliest checkpoint maximizing CDR(avg), subject to <claude>|FR(avg)_reference − FR(avg)_checkpoint| ≤ 0.1 percentage points, with the base pretrained model as the reference. The constraint is two-sided, matching the paper: a checkpoint is ineligible if framework accuracy has moved too far in either direction, not only if it has dropped.</claude> Doubles as the final stop for batch-only variants and the branch point for batch→single variants.
+    2. **Batch-phase switch/stop point:** earliest checkpoint maximizing CDR(avg), subject to <claude>|FR(avg)_reference − FR(avg)_checkpoint| ≤ 0.1 percentage points, with **the Step 1 warm-up checkpoint** as the reference. The constraint is two-sided, matching the paper: a checkpoint is ineligible if framework accuracy has moved too far in either direction, not only if it has dropped.</claude> Doubles as the final stop for batch-only variants and the branch point for batch→single variants.
     3. **Final stop point (batch→single variants):** same rule, re-applied under single-position masking, relative to the branch-point checkpoint's FR(avg).
     4. Aggregate MLM loss/perplexity: tracked as a diagnostic only, never used to pick a checkpoint.
     5. Post-hoc, non-decision check: compare selected checkpoints against whichever checkpoint would have maximized zero-shot Spearman correlation on held-out DMS labels — reported only, never fed back into checkpoint selection.
@@ -204,20 +216,20 @@ def _(mo):
     <claude>
     Neither phase terminates early. A run trains its full epoch and the switch point is read off the eval curve afterwards, because "earliest maximizing" can't be decided until the later points exist. A checkpoint is kept at every eval point, which also means the 0.1pp tolerance can be re-checked at other values later without retraining anything.
 
-    Talaei et al. only apply this rule to their second stage. Their first-stage anchor (epoch 5) is designated rather than derived, and the paper gives no rule for it. Applying the rule to both phases is our own extension, not a reproduction.
+    Talaei et al. only apply this rule to their second stage. Their first-stage anchor (epoch 5) is designated rather than derived, and the paper gives no rule for it. Applying the rule to the single-position phase as well is our own extension, not a reproduction. The warm-up itself is not selected by the rule, for the same reason: there is nothing before it to measure against.
     </claude>
 
-    **Step 4: single-position phase** (batch→single branches only, after the Step 3 switch point):
-    - Batching: unchanged from Step 1, same batch_size (sequences), same shuffled epoch order, resumed from Step 1's exact stopping point via the existing skip_samples cursor<claude>. One example per sequence, exactly as in step 1, so epoch length and shuffle order are identical across the two phases and the cursor stays meaningful</claude>
+    **Step 5: single-position phase** (batch→single branches only, after the Step 4 switch point):
+    - Batching: unchanged from Step 2, same batch_size (sequences), same shuffled epoch order, resumed from Step 2's exact stopping point via the existing skip_samples cursor<claude>. One example per sequence, exactly as in the earlier phases, so epoch length and shuffle order are identical throughout and the cursor stays meaningful</claude>
     - Per sequenc: pool = all CDR positions (fixed) + flank positions, 5 each side (fixed) + round(0.3 × N_fw) framework positions, sampled without replacement from all N_fw, freshly redrawn each occurrence. <claude>X positions are never in the pool.</claude>
     - Per forward pass: one position drawn uniformly from that occurrence's pool (same seed), masked; everything else visible.
-    - Branch parity: CDR→single and Hybrid→single mask the same positions in Step 4.
+    - Branch parity: CDR→single and Hybrid→single mask the same positions in Step 5.
 
     <claude>
-    Step 1 masks CDR-H3 with no flank, step 4 adds a fixed 5-residue flank on each side. The two phases deliberately disagree on the region boundary: step 1 reproduces the paper's policy, step 4 matches how we actually score a point mutation.
+    Step 2 masks CDR-H3 with no flank, step 5 adds a fixed 5-residue flank on each side. The two phases deliberately disagree on the region boundary: step 2 reproduces the paper's policy, step 5 matches how we actually score a point mutation.
     </claude>
 
-    **total number of train jobs:** $60 = 4 \space \text{masking variants} \cdot 3 \space \text{model sizes} \cdot 5 \space \text{lrs}$ (2 base batch runs + 2 single-position branch continuations, full cross product with the model size × lr sweep)
+    **total number of train jobs:** <claude>$75 = 5 \space \text{phases} \cdot 3 \space \text{model sizes} \cdot 5 \space \text{lrs}$ (1 shared whole-chain warm-up + 2 base batch runs + 2 single-position branch continuations, full cross product with the model size × lr sweep). The warm-up is shared by both base runs of its cell, so it adds one job per cell rather than two.</claude>
     """)
     return
 
@@ -228,14 +240,16 @@ def _(mo):
     ## WT similarity
     In addition to evotuning training another thing that could be helpful for the downstream task is only letting the model see antibody sequences similar to the WT at hand. We can then use the WT-similar-set that is already a selection of these kind of sequences. the same exact masking strategy should be applied also for this selected dataset. by doing this we end up with:
 
-    **total number of train jobs:** $120 = 2 \space \text{dataset} \cdot 4 \space \text{masking variants} \cdot 3 \space \text{model sizes} \cdot 5 \space \text{lrs}$ (full cross product: masking strategy × dataset × model size × lr)
+    **total number of train jobs:** <claude>$150 = 2 \space \text{dataset} \cdot 5 \space \text{phases} \cdot 3 \space \text{model sizes} \cdot 5 \space \text{lrs}$ (full cross product: phase × dataset × model size × lr)</claude>
 
     <claude>
-    These 120 don't run in parallel. A branch can't start until its base run has finished its epoch and the switch point has been read off the curve, so the grid runs as two sequential waves of 60: the base runs first, then the branch continuations.
+    These 150 don't run in parallel. Each phase needs the one before it: the base runs resume from the warm-up's checkpoint, and a single-position branch can't start until its base run has finished the epoch and the switch point has been read off the curve. So the grid runs as three sequential waves — 30 warm-ups, then 60 base runs, then 60 continuations.
 
-    All 120 are the lr sweep, so the OAS arm uses the subsample. After the lr is chosen, the final runs go on the full OAS train split: 4 masking variants × 3 model sizes = 12 runs, again as two waves of 6.
+    All 150 are the lr sweep, so the OAS arm uses the subsample. After the lr is chosen, the final runs go on the full OAS train split: 5 phases × 3 model sizes = 15 runs, again in three waves.
 
     Nothing selects a single winner across the grid. DPO on the C05 DMS runs on top of all of them, and the comparison between training strategies is the result.
+
+    One caveat on the WT-similar arm. At 4549 training sequences and a 512-sequence batch it is about 9 optimizer steps per epoch, so most of the evaluation grid collapses onto the same few steps and its selection curve is far coarser than the OAS arm's. The two datasets are therefore not equally well resolved, which matters when reading the comparison between them.
     </claude>
     """)
     return

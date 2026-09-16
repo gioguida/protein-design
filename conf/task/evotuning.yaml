@@ -29,8 +29,16 @@ training:
   # A checkpoint stays eligible while its framework accuracy is within this
   # many percentage points of the reference, in either direction.
   pareto_fr_tolerance_pp: 0.1
+  # Evaluation points, as fractions of an epoch. Declared here so the grid can
+  # be changed from the command line: it is what the selection rule reads, and
+  # a corpus that cannot resolve the early points has them clamped to one
+  # optimizer step and de-duplicated.
+  eval_at_epoch_fracs:
+    [0.0001, 0.001, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
   recovery_n_samples: 2000
   recovery_seed: 42
+  # Sets a run's peak GPU memory; see the note in bash_scripts/train.sbatch.
+  recovery_batch_size: 256
   # Set only on a single-position continuation, to its branch point's
   # framework accuracy. Left null, a batch-masking run measures itself against
   # the base pretrained model.
