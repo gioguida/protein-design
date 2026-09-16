@@ -14,6 +14,9 @@ __pycache__/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# marimo
+__marimo__/
+
 # VS Code
 .vscode/
 

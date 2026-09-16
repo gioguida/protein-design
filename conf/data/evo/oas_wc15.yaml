@@ -1,0 +1,17 @@
+# @package _global_
+# Whole-chain masking: 15% of residues across the full sequence, 80/10/10.
+# The baseline the CDR policies are compared against, and the policy the 20%
+# share of every hybrid batch uses.
+data:
+  pack_path: ${paths.scratch_dir}/packed/oas_dedup_meta_flank5
+  max_seq_len: 256
+  mlm_probability: 0.15
+  policy: wc15
+  subsample_n: 10000000
+  subsample_seed: 0
+  val_max_sequences: 5000
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5

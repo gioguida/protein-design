@@ -2,7 +2,7 @@
 """Build a C05 CDR-H3 similarity corpus using BLOSUM62 + global pairwise alignment.
 
 Pipeline:
-  1. Stream oas_filtered.csv.gz, collect unique cdr3_aa strings and their seq_ids.
+  1. Stream oas_filtered.parquet, collect unique cdr3_aa strings and their seq_ids.
      Persist a pickled mapping unique_h3 -> [seq_id, ...] under $SCRATCH_DIR.
   2. For each unique H3, globally align to the C05 CDR-H3 using Biopython's
      PairwiseAligner with BLOSUM62 + BLAST-style affine gap penalties.
@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from search_c05 import C05_CDRH3_OAS, ascii_bar  # noqa: E402
 from _fasta_utils import stream_fasta_subset  # noqa: E402
+from meta_io import iter_meta_chunks  # noqa: E402
 
 load_dotenv()
 
@@ -46,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     project = os.environ.get("PROJECT_DIR", ".")
     scratch = os.environ.get("SCRATCH_DIR", ".")
 
-    p.add_argument("--csv", default=os.path.join(project, "data", "oas", "oas_filtered.csv.gz"))
+    p.add_argument("--meta", default=os.path.join(project, "data", "oas", "oas_filtered.parquet"))
     p.add_argument("--fasta", default=os.path.join(project, "data", "oas", "oas_filtered.fasta"))
     p.add_argument("--scratch-dir", default=scratch)
     p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"))
@@ -66,11 +67,11 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_h3_mapping(csv_path: Path, mapping_pkl: Path, chunksize: int) -> None:
-    print(f"[index] Building unique-H3 -> seq_ids mapping from {csv_path}", flush=True)
+def build_h3_mapping(meta_path: Path, mapping_pkl: Path, chunksize: int) -> None:
+    print(f"[index] Building unique-H3 -> seq_ids mapping from {meta_path}", flush=True)
     mapping: dict[str, list[str]] = {}
     rows = 0
-    reader = pd.read_csv(csv_path, usecols=["seq_id", "cdr3_aa"], chunksize=chunksize)
+    reader = iter_meta_chunks(str(meta_path), columns=["seq_id", "cdr3_aa"], chunksize=chunksize)
     for chunk in reader:
         rows += len(chunk)
         sub = chunk.dropna(subset=["cdr3_aa"])
@@ -140,7 +141,7 @@ def main() -> None:
 
     # Step 1: build or reuse the H3 mapping
     if args.rebuild_index or not mapping_pkl.exists():
-        build_h3_mapping(Path(args.csv), mapping_pkl, args.chunksize)
+        build_h3_mapping(Path(args.meta), mapping_pkl, args.chunksize)
     else:
         print(f"[index] Reusing cached {mapping_pkl}", flush=True)
     mapping = load_h3_mapping(mapping_pkl)

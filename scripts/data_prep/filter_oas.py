@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Filter OAS CSV files and write passing sequences to a FASTA file and metadata CSV.
+"""Filter OAS CSV files and write passing sequences to a FASTA file and metadata Parquet table.
 
 Two modes:
   - Whole-corpus (default): reads every .csv.gz file in $SCRATCH_DIR/oas_raw/.
@@ -13,11 +13,24 @@ Two modes:
     scripts/data_prep/merge_oas_shards.py to combine shard outputs.
 
 Writes:
-  - <output-fasta>  : one entry per passing sequence, header = {file_stem}_{row_index}
-  - <output-csv>    : flat table with file-level + per-sequence metadata
-  - <summary-json>  : optional; machine-readable summary counts + length
-                       histogram, so merge_oas_shards.py can aggregate them
-                       without re-scanning the (potentially huge) outputs
+  - <output-fasta>   : one entry per passing sequence, header = {file_stem}_{row_index}
+  - <output-parquet> : flat table with file-level + per-sequence metadata,
+                        written incrementally chunk-by-chunk via a
+                        ParquetWriter against a fixed schema (META_SCHEMA) --
+                        the fixed schema matters because some source files
+                        lack an optional AIRR column entirely, which would
+                        otherwise make that chunk's column infer as an
+                        all-null type and break the writer's schema check on
+                        the next chunk that does have real values.
+  - <summary-json>   : optional; machine-readable summary counts + length
+                        histogram, so merge_oas_shards.py can aggregate them
+                        without re-scanning the (potentially huge) outputs
+
+In shard mode, each shard's Parquet output is a self-contained file (its own
+schema/footer) written under $SCRATCH_DIR/oas_shards/meta/. Unlike the old
+CSV.gz shards, these are never physically merged into one file -- pyarrow (and
+merge_oas_shards.py's consumers, via scripts/data_prep/meta_io.py) reads a
+directory of Parquet files as a single logical table directly.
 
 Filters applied in order:
   1. Quality: productive==T, ANARCI_status not flagged, seq length ≥ 50, CDR3 present
@@ -40,6 +53,8 @@ import re
 import sys
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from dotenv import load_dotenv
 from tqdm import tqdm
 
@@ -114,12 +129,37 @@ def dedup_exact(cleaned_seqs: list[str], seen: set[bytes]) -> list[bool]:
 
 
 # Keys of the dict returned by _parse_file_meta, in order -- exported so
-# merge_oas_shards.py can reconstruct the CSV header without duplicating
-# this list by hand.
+# other scripts (merge_oas_shards.py, extract_dedup_metadata.py) can build
+# the same Parquet schema without duplicating this list by hand.
 FILE_META_COLS = [
     "run", "species", "age", "b_source", "b_type", "vaccine", "disease",
     "subject", "longitudinal", "isotype", "chain", "source_url",
 ]
+
+# Fixed Parquet schema for the metadata table, shared by every writer
+# (whole-corpus and shard mode alike) and by extract_dedup_metadata.py's
+# output. Fixing dtypes up front -- rather than letting pyarrow infer them
+# per chunk from the pandas DataFrame -- matters because some source OAS
+# files lack an optional AIRR column entirely (filter_oas.py fills it with
+# None for that whole chunk); an inferred schema would type that chunk's
+# column as `null`, and ParquetWriter raises the moment a later chunk with
+# real values for that column doesn't match.
+META_SCHEMA = pa.schema(
+    [("seq_id", pa.string())]
+    + [(c, pa.string()) for c in FILE_META_COLS]
+    + [
+        ("sequence_alignment_aa", pa.string()),
+        ("v_call", pa.string()), ("d_call", pa.string()), ("j_call", pa.string()),
+        ("v_identity", pa.float64()), ("d_identity", pa.float64()), ("j_identity", pa.float64()),
+        ("cdr1_aa", pa.string()), ("cdr2_aa", pa.string()), ("cdr3_aa", pa.string()),
+        ("junction_aa", pa.string()),
+        ("fwr1_aa", pa.string()), ("fwr2_aa", pa.string()),
+        ("fwr3_aa", pa.string()), ("fwr4_aa", pa.string()),
+        ("productive", pa.string()),
+        ("ANARCI_status", pa.string()),
+        ("Redundancy", pa.float64()),
+    ]
+)
 
 
 def _parse_file_meta(csv_path: str) -> dict:
@@ -204,19 +244,18 @@ CHUNK_SIZE = 100_000
 
 
 def _process_chunk(
-    chunk: pd.DataFrame, file_stem: str, row_offset: int, fasta, csv_fh,
+    chunk: pd.DataFrame, file_stem: str, row_offset: int, fasta, parquet_writer: pq.ParquetWriter,
     file_meta: dict, seen_hashes: set[bytes], length_hist: dict[int, int],
-    csv_header_written: bool,
-) -> tuple[int, int, int, int, int, int, int, bool]:
+) -> tuple[int, int, int, int, int, int, int]:
     """Filter, dedup, and write one chunk. Returns
-    (n_total, n_pass, n_nterm, n_cterm, n_dup, n_final, new_row_offset, csv_header_written).
+    (n_total, n_pass, n_nterm, n_cterm, n_dup, n_final, new_row_offset).
     """
     n_total = len(chunk)
     filtered, n_nterm, n_cterm = passes_filters(chunk)
     n_pass = len(filtered)
 
     if n_pass == 0:
-        return n_total, n_pass, n_nterm, n_cterm, 0, 0, row_offset, csv_header_written
+        return n_total, n_pass, n_nterm, n_cterm, 0, 0, row_offset
 
     filtered = filtered.reset_index(drop=True)
     cleaned_seqs = clean_seq_series(filtered["sequence_alignment_aa"]).tolist()
@@ -230,7 +269,7 @@ def _process_chunk(
 
     n_final = len(filtered)
     if n_final == 0:
-        return n_total, n_pass, n_nterm, n_cterm, n_dup, 0, row_offset, csv_header_written
+        return n_total, n_pass, n_nterm, n_cterm, n_dup, 0, row_offset
 
     seq_ids = [f"{file_stem}_{row_offset + i}" for i in range(n_final)]
 
@@ -239,7 +278,7 @@ def _process_chunk(
         fasta.write(f">{seq_id}\n{seq}\n")
         length_hist[len(seq)] = length_hist.get(len(seq), 0) + 1
 
-    # ── CSV batch ────────────────────────────────────────────────────────
+    # ── Parquet batch ────────────────────────────────────────────────────
     batch = {"seq_id": seq_ids}
     for k, v in file_meta.items():
         batch[k] = [v] * n_final
@@ -247,12 +286,17 @@ def _process_chunk(
         batch[col] = filtered[col].tolist() if col in filtered.columns else [None] * n_final
 
     batch_df = pd.DataFrame(batch)
-    batch_df.to_csv(csv_fh, header=not csv_header_written, index=False)
+    # Cast against META_SCHEMA explicitly (not inferred) -- a column that's
+    # entirely None in this chunk (source file lacks it) would otherwise
+    # infer as pyarrow's `null` type and break the writer on the next chunk
+    # that has real values for that column.
+    table = pa.Table.from_pandas(batch_df, schema=META_SCHEMA, preserve_index=False)
+    parquet_writer.write_table(table)
 
-    return n_total, n_pass, n_nterm, n_cterm, n_dup, n_final, row_offset + n_final, True
+    return n_total, n_pass, n_nterm, n_cterm, n_dup, n_final, row_offset + n_final
 
 
-def process_files(csv_files: list[str], output_fasta: str, output_csv: str, write_csv_header: bool) -> dict:
+def process_files(csv_files: list[str], output_fasta: str, output_parquet: str) -> dict:
     """Core filtering loop. Returns a JSON-serializable summary dict."""
     total_passing       = 0
     total_rejected      = 0
@@ -260,13 +304,13 @@ def process_files(csv_files: list[str], output_fasta: str, output_csv: str, writ
     total_cterm_removed = 0
     total_exact_dup     = 0
 
-    csv_header_written = not write_csv_header
     seen_hashes: set[bytes] = set()
     # Length -> count, over final (post-dedup) sequences. Lengths are bounded
     # (roughly 50-300 aa), so this histogram stays tiny regardless of corpus size.
     length_hist: dict[int, int] = {}
 
-    with open(output_fasta, "w") as fasta, gzip.open(output_csv, "wt") as csv_fh:
+    with open(output_fasta, "w") as fasta, \
+         pq.ParquetWriter(output_parquet, META_SCHEMA, compression="snappy") as parquet_writer:
         for csv_path in tqdm(csv_files, desc="Processing files"):
             fname = os.path.basename(csv_path)
 
@@ -300,9 +344,9 @@ def process_files(csv_files: list[str], output_fasta: str, output_csv: str, writ
             try:
                 for chunk in chunk_iter:
                     (n_total_c, n_pass_c, n_nterm_c, n_cterm_c, n_dup_c, n_final_c,
-                     row_offset, csv_header_written) = _process_chunk(
-                        chunk, file_stem, row_offset, fasta, csv_fh, file_meta,
-                        seen_hashes, length_hist, csv_header_written,
+                     row_offset) = _process_chunk(
+                        chunk, file_stem, row_offset, fasta, parquet_writer, file_meta,
+                        seen_hashes, length_hist,
                     )
                     n_total_f  += n_total_c
                     n_pass_f   += n_pass_c
@@ -335,7 +379,7 @@ def process_files(csv_files: list[str], output_fasta: str, output_csv: str, writ
     }
 
 
-def print_summary(summary: dict, output_fasta: str, output_csv: str) -> None:
+def print_summary(summary: dict, output_fasta: str, output_parquet: str) -> None:
     total_passing = summary["total_passing"]
     total_exact_dup = summary["total_exact_dup"]
 
@@ -364,8 +408,8 @@ def print_summary(summary: dict, output_fasta: str, output_csv: str) -> None:
         print(f"    min={lengths[0]} max={lengths[-1]} mean={mean_len:.1f}")
         print(f"    percentiles: {pct}")
 
-    print(f"  FASTA: {output_fasta}")
-    print(f"  CSV:   {output_csv}")
+    print(f"  FASTA:   {output_fasta}")
+    print(f"  Parquet: {output_parquet}")
 
 
 def main() -> None:
@@ -376,15 +420,11 @@ def main() -> None:
              "to process. Default: process every .csv.gz file in $SCRATCH_DIR/oas_raw.",
     )
     parser.add_argument("--output-fasta", default=None, help="Default: $SCRATCH_DIR/oas_filtered.fasta")
-    parser.add_argument("--output-csv", default=None, help="Default: $SCRATCH_DIR/oas_filtered.csv.gz")
+    parser.add_argument("--output-parquet", default=None, help="Default: $SCRATCH_DIR/oas_filtered.parquet")
     parser.add_argument(
         "--summary-json", default=None,
         help="Optional path to dump the summary counts + length histogram as JSON "
              "(used by merge_oas_shards.py to aggregate shard results).",
-    )
-    parser.add_argument(
-        "--no-csv-header", action="store_true",
-        help="Omit the CSV header row (shard mode; merge_oas_shards.py writes it once).",
     )
     args = parser.parse_args()
 
@@ -414,15 +454,19 @@ def main() -> None:
         print(f"Found {len(csv_files)} CSV files in {input_dir}")
 
     output_fasta = args.output_fasta or os.path.join(scratch_dir, "oas_filtered.fasta")
-    output_csv = args.output_csv or os.path.join(scratch_dir, "oas_filtered.csv.gz")
+    output_parquet = args.output_parquet or os.path.join(scratch_dir, "oas_filtered.parquet")
+    for p in (output_fasta, output_parquet):
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
 
-    summary = process_files(csv_files, output_fasta, output_csv, write_csv_header=not args.no_csv_header)
+    summary = process_files(csv_files, output_fasta, output_parquet)
 
     if args.summary_json:
         with open(args.summary_json, "w") as f:
             json.dump(summary, f)
 
-    print_summary(summary, output_fasta, output_csv)
+    print_summary(summary, output_fasta, output_parquet)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,9 @@ import pandas as pd
 from Bio import SeqIO
 from dotenv import load_dotenv
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from meta_io import iter_meta_chunks  # noqa: E402
+
 load_dotenv()
 
 C05_HEAVY = (
@@ -63,9 +66,9 @@ def parse_args() -> argparse.Namespace:
         help="Scratch directory; work dir is <scratch>/c05_search/. Defaults to $SCRATCH_DIR.",
     )
     p.add_argument(
-        "--csv",
-        default=os.path.join(_project_dir, "data", "oas", "oas_filtered.csv.gz"),
-        help="OAS filtered metadata CSV (gzipped) with cdr3_aa column.",
+        "--meta",
+        default=os.path.join(_project_dir, "data", "oas", "oas_filtered.parquet"),
+        help="OAS filtered metadata table with cdr3_aa column.",
     )
     p.add_argument("--threads", type=int, default=16)
     p.add_argument("--min-seq-id", type=float, default=0.3)
@@ -122,13 +125,13 @@ def load_results(results: Path) -> pd.DataFrame:
     return df.sort_values("pident", ascending=False).reset_index(drop=True)
 
 
-def load_cdrh3_from_csv(csv_path: Path, hit_ids: set[str]) -> pd.DataFrame:
-    """Read seq_id and cdr3_aa from the OAS CSV, filtered to hit_ids."""
-    print(f"[cdrh3] Loading CDR-H3 annotations from {csv_path} for {len(hit_ids)} hits...", flush=True)
-    chunks = pd.read_csv(csv_path, usecols=["seq_id", "cdr3_aa"], chunksize=100_000)
+def load_cdrh3_from_csv(meta_path: Path, hit_ids: set[str]) -> pd.DataFrame:
+    """Read seq_id and cdr3_aa from the OAS metadata table, filtered to hit_ids."""
+    print(f"[cdrh3] Loading CDR-H3 annotations from {meta_path} for {len(hit_ids)} hits...", flush=True)
+    chunks = iter_meta_chunks(str(meta_path), columns=["seq_id", "cdr3_aa"], chunksize=100_000)
     parts = [chunk[chunk["seq_id"].isin(hit_ids)] for chunk in chunks]
     df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["seq_id", "cdr3_aa"])
-    print(f"[cdrh3] Matched {len(df)} / {len(hit_ids)} hits in CSV.", flush=True)
+    print(f"[cdrh3] Matched {len(df)} / {len(hit_ids)} hits in metadata.", flush=True)
     return df
 
 
@@ -342,13 +345,13 @@ def main() -> None:
     df = load_results(results_tsv)
     print(f"[parse] Loaded {len(df)} hits from {results_tsv}", flush=True)
 
-    # Step 5: CDR-H3 annotations from CSV
-    csv_path = Path(args.csv)
-    if csv_path.exists():
+    # Step 5: CDR-H3 annotations from metadata
+    meta_path = Path(args.meta)
+    if meta_path.exists():
         hit_ids = set(df["target"].tolist())
-        cdrh3_df = load_cdrh3_from_csv(csv_path, hit_ids)
+        cdrh3_df = load_cdrh3_from_csv(meta_path, hit_ids)
     else:
-        print(f"[cdrh3] CSV not found at {csv_path}, skipping CDR-H3 analysis.", flush=True)
+        print(f"[cdrh3] metadata not found at {meta_path}, skipping CDR-H3 analysis.", flush=True)
         cdrh3_df = pd.DataFrame(columns=["seq_id", "cdr3_aa"])
 
     # Step 6: report

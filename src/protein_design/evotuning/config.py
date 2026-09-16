@@ -1,7 +1,7 @@
 """Evotuning-specific config dataclasses and builders.
 
 These mirror the MLM training loop's shape (`cfg.data`, `cfg.training`).
-DPO will add its own `DpoConfig` alongside.
+DPO adds its own `DpoConfig` alongside.
 """
 
 from dataclasses import dataclass, field
@@ -9,75 +9,79 @@ from typing import Optional
 
 from omegaconf import DictConfig
 
-from protein_design.evotuning.splits import SplitConfig, cdr_windows_cache_path
+from protein_design.evotuning.splits import SplitConfig
+
+# Evaluation points as fractions of an epoch. Dense at the start because the
+# checkpoint worth keeping can appear well before the first tenth of an epoch
+# on a corpus this size, then regular for the rest of the run.
+DEFAULT_EVAL_FRACS = [
+    0.0001, 0.001, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0
+]
 
 
 @dataclass
 class DataConfig:
     """Dataset / tokenizer-side configuration consumed by MLM training."""
 
+    # Packed corpus directory (see scripts/data_prep/pack_corpus.py). Required
+    # for evotuning.
+    pack_path: str = ""
+    # Single-sequence FASTA, used by the TTT stage only.
     fasta_path: str = ""
     max_seq_len: int = 256
     mlm_probability: float = 0.15
     split: SplitConfig = field(default_factory=SplitConfig)
-    # Single-position masking mode:
-    #   None (legacy 80/10/10 MLM) | "random15" | "cdr" | "cdr_mix".
-    masking: Optional[str] = None
-    cdr_flank: int = 3
-    cdr_windows_cache: Optional[str] = None
-    # CDR modes only: per-epoch keep-prob for CDR-window positions, and (for
-    # "cdr_mix") for framework positions. See SingleMaskDataset.
+    # "wc15" | "cdr50" | "hybrid" | "single_pool". See evotuning/data.py.
+    policy: str = "wc15"
+    # Share of CDR-H3 residues masked by the CDR policies.
     cdr_mask_prob: float = 0.5
-    framework_mask_prob: float = 0.05
-    # "always" (default, [MASK] every time) | "bert_80_10_10" (80% [MASK],
-    # 10% random amino acid, 10% keep true residue). See SingleMaskDataset.
-    mask_replace_strategy: str = "always"
-    # "hybrid" mode only: per-example probability of CDR-window masking
-    # (vs. whole-chain masking) for that example. See HybridMaskDataset.
-    hybrid_cdr_sample_prob: float = 0.8
+    # Hybrid only: share of the samples in every batch that take CDR masking.
+    hybrid_cdr_frac: float = 0.8
+    # Shrinks the training split only, for the learning-rate sweep. None uses
+    # the whole split.
+    subsample_n: Optional[int] = None
+    subsample_seed: int = 0
+    # Caps the validation split so in-loop metrics cost the same on any corpus.
+    val_max_sequences: Optional[int] = 5000
 
 
 @dataclass
 class TrainingConfig:
     """Training-loop hyperparameters (mirrors `cfg.training.*`)."""
 
-    learning_rate: float = 2.0e-5
-    warmup_steps: int = 0
+    learning_rate: float = 1.0e-5
+    # Warmup as a share of total steps. Tracks corpus size and stays comparable
+    # across the learning-rate grid, unlike a fixed step count.
+    warmup_ratio: float = 0.05
     max_epochs: int = 1
     max_steps: Optional[int] = None
-    batch_size: int = 128
-    gradient_accumulation_steps: int = 1
-    save_every_n_steps: Optional[int] = None
-    # When set, overrides save_every_n_steps: derived at runtime from
-    # full_train_len (see _train_evotuning) so the eval fraction of an epoch
-    # is the same regardless of masking mode. None -> use save_every_n_steps
-    # as-is (existing behavior).
-    eval_every_epoch_frac: Optional[float] = None
-    fp16: bool = False
+    batch_size: int = 64
+    gradient_accumulation_steps: int = 8
+    bf16: bool = True
     resume_checkpoint: Optional[str] = None
-    # When True, run eval + checkpoint at the end of every epoch (instead of
-    # the step-based save_every_n_steps cadence). Used by the single-mask
-    # C05 variants for clean per-epoch comparison.
-    eval_per_epoch: bool = False
-    # Early stopping (requires eval_per_epoch): stop after this many consecutive
-    # per-epoch evals without a val-perplexity improvement of at least
-    # `early_stopping_min_delta`. None disables early stopping.
-    early_stopping_patience: Optional[int] = None
-    early_stopping_min_delta: float = 0.0
-    # Which best-checkpoint tracker(s) to run at each eval point. Not a
-    # stopping condition — every run always trains the full capped epoch
-    # regardless of what's listed here. "perplexity" -> best.pt (existing,
-    # always effectively on). "pareto" -> best_pareto.pt, the region-
-    # stratified CDR/framework masked-recovery Pareto-knee rule (see
-    # report/evotuning.md, "Stopping rule for evotuning").
-    checkpoint_trackers: list[str] = field(default_factory=lambda: ["perplexity"])
-    # Pareto tracker only: a checkpoint is eligible to become the new best
-    # only if its framework accuracy is within this many percentage points
-    # of the reference (vanilla model) framework accuracy.
+    # Evaluation points, as fractions of an epoch. Each is converted to an
+    # optimizer step, clamped to at least one step, and de-duplicated, so a
+    # small corpus simply gets a shorter grid.
+    eval_at_epoch_fracs: list[float] = field(
+        default_factory=lambda: list(DEFAULT_EVAL_FRACS)
+    )
+    # A checkpoint is eligible for selection only while its framework accuracy
+    # stays within this many percentage points of the reference, in either
+    # direction.
     pareto_fr_tolerance_pp: float = 0.1
-    # TTT-only: optimizer-step indices at which to snapshot the model
-    # (LoRA adapter weights if LoRA is active, else full state_dict).
-    # Empty list = no snapshots beyond final.pt.
+    # Sequences sampled for the region-stratified recovery metric at each
+    # evaluation point, and the seed fixing which ones.
+    recovery_n_samples: int = 2000
+    recovery_seed: int = 42
+    # The recovery metric enumerates one masked position per forward pass, so
+    # it runs at its own batch size. It is the peak-memory driver for a run,
+    # well above training at the same model size.
+    recovery_batch_size: int = 256
+    # Framework accuracy of the checkpoint this run branched from. Set on the
+    # single-position phase, whose reference is its own branch point rather
+    # than the base pretrained model.
+    pareto_reference_framework_accuracy: Optional[float] = None
+    # TTT-only: optimizer-step indices at which to snapshot the model.
     snapshot_steps: list[int] = field(default_factory=list)
 
 
@@ -92,63 +96,45 @@ def build_data_config(cfg: DictConfig) -> DataConfig:
             val_pct=int(split_node.get("val_pct", 5)),
             test_pct=int(split_node.get("test_pct", 5)),
         )
-    masking = cfg.data.get("masking", None)
-    masking = str(masking) if masking is not None else None
-    cdr_flank = int(cfg.data.get("cdr_flank", 3))
-    cdr_cache = cfg.data.get("cdr_windows_cache", None)
-    cdr_cache = str(cdr_cache) if cdr_cache is not None else None
-    # When the cache path is not explicitly pinned in YAML, auto-derive it from
-    # (fasta_path, cdr_flank) using the same naming convention as the cache
-    # builder. This makes sweeping cdr_flank / swapping fasta_path "just work"
-    # (as long as the matching cache has been built once) without per-flank
-    # cdr_windows_cache= overrides. Unconditional (not gated on masking mode):
-    # the Pareto checkpoint tracker needs a CDR-window cache regardless of
-    # which masking mode is actually training, e.g. for the plain
-    # whole-chain (masking=null) condition.
-    if cdr_cache is None:
-        cdr_cache = cdr_windows_cache_path(
-            str(cfg.paths.scratch_dir), str(cfg.data.fasta_path), cdr_flank
-        )
+    subsample_n = cfg.data.get("subsample_n", None)
+    val_max = cfg.data.get("val_max_sequences", 5000)
     return DataConfig(
-        fasta_path=cfg.data.fasta_path,
+        pack_path=str(cfg.data.get("pack_path", "") or ""),
+        fasta_path=str(cfg.data.get("fasta_path", "") or ""),
         max_seq_len=int(cfg.data.max_seq_len),
-        mlm_probability=float(cfg.data.mlm_probability),
+        mlm_probability=float(cfg.data.get("mlm_probability", 0.15)),
         split=split_cfg,
-        masking=masking,
-        cdr_flank=cdr_flank,
-        cdr_windows_cache=cdr_cache,
+        policy=str(cfg.data.get("policy", "wc15")),
         cdr_mask_prob=float(cfg.data.get("cdr_mask_prob", 0.5)),
-        framework_mask_prob=float(cfg.data.get("framework_mask_prob", 0.05)),
-        mask_replace_strategy=str(cfg.data.get("mask_replace_strategy", "always")),
-        hybrid_cdr_sample_prob=float(cfg.data.get("hybrid_cdr_sample_prob", 0.8)),
+        hybrid_cdr_frac=float(cfg.data.get("hybrid_cdr_frac", 0.8)),
+        subsample_n=int(subsample_n) if subsample_n is not None else None,
+        subsample_seed=int(cfg.data.get("subsample_seed", 0)),
+        val_max_sequences=int(val_max) if val_max is not None else None,
     )
 
 
 def build_training_config(cfg: DictConfig) -> TrainingConfig:
     t = cfg.training
+    fracs = t.get("eval_at_epoch_fracs", None)
+    pareto_ref = t.get("pareto_reference_framework_accuracy", None)
     return TrainingConfig(
         learning_rate=float(t.learning_rate),
-        warmup_steps=int(t.warmup_steps),
-        max_epochs=int(t.max_epochs),
-        max_steps=t.max_steps if t.max_steps is not None else None,
+        warmup_ratio=float(t.get("warmup_ratio", 0.05)),
+        max_epochs=int(t.get("max_epochs", 1)),
+        max_steps=t.max_steps if t.get("max_steps", None) is not None else None,
         batch_size=int(t.batch_size),
         gradient_accumulation_steps=int(t.gradient_accumulation_steps),
-        save_every_n_steps=t.save_every_n_steps if t.save_every_n_steps is not None else None,
-        eval_every_epoch_frac=(
-            float(t.get("eval_every_epoch_frac"))
-            if t.get("eval_every_epoch_frac", None) is not None
-            else None
-        ),
-        fp16=bool(t.fp16),
+        bf16=bool(t.get("bf16", True)),
         resume_checkpoint=t.get("resume_checkpoint", None),
-        snapshot_steps=[int(s) for s in t.get("snapshot_steps", []) or []],
-        eval_per_epoch=bool(t.get("eval_per_epoch", False)),
-        early_stopping_patience=(
-            int(t.get("early_stopping_patience"))
-            if t.get("early_stopping_patience", None) is not None
-            else None
+        eval_at_epoch_fracs=(
+            [float(x) for x in fracs] if fracs is not None else list(DEFAULT_EVAL_FRACS)
         ),
-        early_stopping_min_delta=float(t.get("early_stopping_min_delta", 0.0)),
-        checkpoint_trackers=[str(x) for x in (t.get("checkpoint_trackers", ["perplexity"]) or ["perplexity"])],
         pareto_fr_tolerance_pp=float(t.get("pareto_fr_tolerance_pp", 0.1)),
+        recovery_n_samples=int(t.get("recovery_n_samples", 2000)),
+        recovery_seed=int(t.get("recovery_seed", 42)),
+        recovery_batch_size=int(t.get("recovery_batch_size", 256)),
+        pareto_reference_framework_accuracy=(
+            float(pareto_ref) if pareto_ref is not None else None
+        ),
+        snapshot_steps=[int(s) for s in t.get("snapshot_steps", []) or []],
     )

@@ -16,6 +16,5 @@ SHARD_DIR="${SCRATCH_DIR}/oas_shards"
 python scripts/data_prep/filter_oas.py \
     --input-list "${SHARD_DIR}/manifest_${SLURM_ARRAY_TASK_ID}.txt" \
     --output-fasta "${SHARD_DIR}/oas_filtered_shard${SLURM_ARRAY_TASK_ID}.fasta" \
-    --output-csv "${SHARD_DIR}/oas_filtered_shard${SLURM_ARRAY_TASK_ID}.csv.gz" \
-    --summary-json "${SHARD_DIR}/summary_${SLURM_ARRAY_TASK_ID}.json" \
-    --no-csv-header
+    --output-parquet "${SHARD_DIR}/meta/shard_${SLURM_ARRAY_TASK_ID}.parquet" \
+    --summary-json "${SHARD_DIR}/summary_${SLURM_ARRAY_TASK_ID}.json"

@@ -9,7 +9,7 @@ across DMS dataset runs.
 Reads
 -----
 - OAS FASTA (`>seq_id` headers): background antibody sequences.
-- OAS metadata CSV.gz: V-/J-call, V-identity, CDR3 segment etc.
+- OAS metadata Parquet: V-/J-call, V-identity, CDR3 segment etc.
 - ESM2 model weights (vanilla from HF hub or a checkpoint dir).
 
 Writes one .npz file with the following schema:
@@ -57,11 +57,14 @@ from extract_embeddings import (  # noqa: E402
     extract_batch,
     load_esm_encoder,
 )
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "data_prep"))
+from meta_io import iter_meta_chunks  # noqa: E402
 
 SCHEMA_VERSION = "v2"
 
 DEFAULT_OAS_FASTA = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_dedup_rep_seq.fasta"
-DEFAULT_OAS_META = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_filtered.csv.gz"
+# Metadata subset for exactly the dedup-survivor sequences this script samples from.
+DEFAULT_OAS_META = "/cluster/project/infk/krause/mdenegri/protein-design/data/oas/oas_dedup_meta.parquet"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("extract_oas_embeddings")
@@ -141,7 +144,7 @@ def build_oas_metadata_lookup(meta_path: Path, wanted_ids: Iterable[str]) -> dic
     cols = ["seq_id", "cdr3_aa",
             "fwr1_aa", "cdr1_aa", "fwr2_aa", "cdr2_aa", "fwr3_aa",
             "v_call", "j_call", "v_identity"]
-    for chunk in pd.read_csv(meta_path, usecols=cols, chunksize=500_000):
+    for chunk in iter_meta_chunks(str(meta_path), columns=cols, chunksize=500_000):
         hit = chunk[chunk["seq_id"].isin(wanted)]
         for row in hit.itertuples(index=False):
             cdr = row.cdr3_aa if isinstance(row.cdr3_aa, str) else ""

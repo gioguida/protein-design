@@ -2,7 +2,7 @@
 """Build a C05 CDR-H3 similarity corpus using MMseqs2 (short-sequence search).
 
 Pipeline:
-  1. Stream oas_filtered.csv.gz and build a deduped CDR-H3 FASTA under $SCRATCH_DIR
+  1. Stream oas_filtered.parquet and build a deduped CDR-H3 FASTA under $SCRATCH_DIR
      (one record per unique cdr3_aa string; many OAS seq_ids share the same H3).
      Also persist a pickled mapping unique_h3 -> [seq_id, ...] for the final lookup.
   2. Run MMseqs2 easy-search with the C05 CDR-H3 as query, using short-sequence
@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from search_c05 import C05_CDRH3_OAS, ascii_bar  # noqa: E402
 from _fasta_utils import stream_fasta_subset  # noqa: E402
+from meta_io import iter_meta_chunks  # noqa: E402
 
 load_dotenv()
 
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     project = os.environ.get("PROJECT_DIR", ".")
     scratch = os.environ.get("SCRATCH_DIR", ".")
 
-    p.add_argument("--csv", default=os.path.join(project, "data", "oas", "oas_filtered.csv.gz"))
+    p.add_argument("--meta", default=os.path.join(project, "data", "oas", "oas_filtered.parquet"))
     p.add_argument("--fasta", default=os.path.join(project, "data", "oas", "oas_filtered.fasta"))
     p.add_argument("--scratch-dir", default=scratch)
     p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"))
@@ -72,12 +73,12 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_h3_index(csv_path: Path, target_fasta: Path, mapping_pkl: Path, chunksize: int) -> None:
-    """Stream OAS CSV, build deduped H3 FASTA + {h3: [seq_ids]} mapping."""
-    print(f"[index] Building deduped H3 FASTA from {csv_path}", flush=True)
+def build_h3_index(meta_path: Path, target_fasta: Path, mapping_pkl: Path, chunksize: int) -> None:
+    """Stream OAS metadata, build deduped H3 FASTA + {h3: [seq_ids]} mapping."""
+    print(f"[index] Building deduped H3 FASTA from {meta_path}", flush=True)
     mapping: dict[str, list[str]] = {}
     rows = 0
-    reader = pd.read_csv(csv_path, usecols=["seq_id", "cdr3_aa"], chunksize=chunksize)
+    reader = iter_meta_chunks(str(meta_path), columns=["seq_id", "cdr3_aa"], chunksize=chunksize)
     for chunk in reader:
         rows += len(chunk)
         sub = chunk.dropna(subset=["cdr3_aa"])
@@ -166,7 +167,7 @@ def main() -> None:
 
     # Step 1: build or reuse the H3 index
     if args.rebuild_index or not target_fa.exists() or not mapping_pkl.exists():
-        build_h3_index(Path(args.csv), target_fa, mapping_pkl, args.chunksize)
+        build_h3_index(Path(args.meta), target_fa, mapping_pkl, args.chunksize)
     else:
         print(f"[index] Reusing cached {target_fa} and {mapping_pkl}", flush=True)
 

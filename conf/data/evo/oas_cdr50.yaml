@@ -1,0 +1,12 @@
+# @package _global_
+# CDR-50%: 50% of CDR-H3 residues, no flank, all masked in the same forward
+# pass, 80/10/10. Masks fewer residues per sequence than whole-chain does,
+# which is unavoidable on a single CDR and is recorded per run as
+# train/masked_per_seq.
+defaults:
+  - evo/oas_wc15
+  - _self_
+
+data:
+  policy: cdr50
+  cdr_mask_prob: 0.5

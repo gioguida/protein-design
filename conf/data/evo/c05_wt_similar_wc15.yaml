@@ -1,0 +1,16 @@
+# @package _global_
+# WT-similar set for C05: the 5000 OAS sequences closest to the C05 CDR-H3.
+# Never subsampled, and the split settings must match the main corpus so each
+# sequence keeps the train/val/test role it has everywhere else.
+data:
+  pack_path: ${paths.scratch_dir}/packed/c05_wt_similar_top5000_flank5
+  max_seq_len: 256
+  mlm_probability: 0.15
+  policy: wc15
+  subsample_n: null
+  val_max_sequences: null
+  split:
+    salt: oas-v1
+    train_pct: 90
+    val_pct: 5
+    test_pct: 5
