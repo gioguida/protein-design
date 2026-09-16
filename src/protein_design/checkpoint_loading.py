@@ -162,10 +162,22 @@ def _infer_lora_config(raw: Any, adapter_state: dict[str, torch.Tensor]) -> Lora
     return config
 
 
-def _load_lora_mlm(raw: Any, adapter_state: dict[str, torch.Tensor]) -> tuple[EsmForMaskedLM, str]:
+def _load_lora_mlm(
+    raw: Any,
+    adapter_state: dict[str, torch.Tensor],
+    *,
+    adapter_base_checkpoint: Optional[str] = None,
+) -> tuple[EsmForMaskedLM, str]:
     lora_config = _infer_lora_config(raw, adapter_state)
     base_model_name = str(getattr(lora_config, "base_model_name"))
-    base_model = EsmForMaskedLM.from_pretrained(base_model_name)
+    if adapter_base_checkpoint:
+        # Adapter checkpoints contain only the LoRA weights.  When an adapter
+        # was trained on an evo-tuned checkpoint, reconstruct that exact base
+        # before attaching it rather than silently falling back to vanilla ESM2.
+        base_model, tokenizer_ref = load_mlm_from_checkpoint(adapter_base_checkpoint)
+        base_model_name = tokenizer_ref
+    else:
+        base_model = EsmForMaskedLM.from_pretrained(base_model_name)
     peft_model = get_peft_model(base_model, lora_config)
 
     merged_state = peft_model.state_dict()
@@ -205,7 +217,11 @@ def _load_full_mlm(raw: Any, state: dict[str, torch.Tensor]) -> tuple[EsmForMask
     return model, base_model_name
 
 
-def load_mlm_from_checkpoint(checkpoint: Optional[str]) -> tuple[EsmForMaskedLM, str]:
+def load_mlm_from_checkpoint(
+    checkpoint: Optional[str],
+    *,
+    adapter_base_checkpoint: Optional[str] = None,
+) -> tuple[EsmForMaskedLM, str]:
     normalized = _normalize_checkpoint_ref(checkpoint)
     if not normalized:
         return EsmForMaskedLM.from_pretrained(DEFAULT_ESM2_MODEL_ID), DEFAULT_ESM2_MODEL_ID
@@ -219,7 +235,7 @@ def load_mlm_from_checkpoint(checkpoint: Optional[str]) -> tuple[EsmForMaskedLM,
         raw = torch.load(pt_path, map_location="cpu", weights_only=False)
         state = _extract_state_dict(raw)
         if _is_lora_checkpoint(raw, state):
-            return _load_lora_mlm(raw, state)
+            return _load_lora_mlm(raw, state, adapter_base_checkpoint=adapter_base_checkpoint)
         return _load_full_mlm(raw, state)
 
     if _is_local_path_like(normalized):

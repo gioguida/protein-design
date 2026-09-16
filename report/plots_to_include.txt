@@ -1,0 +1,34 @@
+referenced checkpoints:
+
+vanilla / evotuned / just_dpo / evo_dpo / just_lora_dpo / evo_lora_dpo
+Model checkpoints:
+vanilla: facebook/esm2_t33_650M_UR50D
+evotuned: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt 
+just_dpo: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt
+evo_dpo: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt"
+just_lora_dpo: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_lora_dpo_650M/step_2200.pt
+evo_lora_dpo: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_lora_dpo_650M/step_3300.pt
+
+Plots to include:
+
+on esm2 35/650M: does evo-tuning on antibody improve the starting model?
+comparison: vanilla / evotuned held-out DMS Spearman(PLL, enrichment) on ED2, ED5, ED8–11;
+CDR-H3 pseudo-perplexity or masked-token recovery;
+
+on esm2 35/650M: does DPO add useful signal?
+Preference learning: test reward accuracy; reward margin; DPO test loss; must be run on models: just_dpo / evo_dpo / just_lora_dpo / evo_lora_dpo
+Functional association: Spearman between PLL and actual enrichment on held-out ED2; ED5 and ED8–11 as out-of-distribution/generalization panels, not as ordinary iid test sets; must be run on models: vanilla / just_dpo  / just_lora_dpo and  evotuned / evo_dpo /  evo_lora_dpo (same scale for the two plots, also make one with all models)
+Then a compact table (all models):| model | reward accuracy | reward margin | CDR PPL | ED2 ρ | ED5 ρ | ED8–11 ρ |
+
+Generation: can the tuned model actually produce useful candidate libraries?
+matched comparison: random library baseline / PSSM / Gibbs / stochastic beam search
+same final checkpoint, same number of generated sequences, and comparable mutation-distance constraints.
+run the same tests for each of these models: vanilla / evotuned / just_dpo / evo_dpo
+Quality–diversity tradeoff: x = mean pairwise Hamming distance or entropy; y = mean/top-K PLL; one point/curve per sampler and temperature.
+Mutation distance from WT: histogram/violin of Hamming distance.Sequence logo / position-wise amino-acid frequencies: WT + DMS positives + best generated set, or alternatively Jensen–Shannon divergence by position.
+small table containing: fraction above WT in PLL; novelty; mean pairwise Hamming distance; median mutation count; top-K nearest-DMS-neighbor enrichment estimate.
+
+One integrated end-to-end result: 
+comparison: ESM2 / evotuned / DPO
+same generator: stochastic beam search.
+compare the generated libraries on: PLL; diversity; mutation distance; nearest-DMS enrichment proxy.

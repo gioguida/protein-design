@@ -127,3 +127,33 @@ models:
     label: "DPO 650M (step 8250)"
     color: "#393b79"
     family: dpo
+
+  # 650M report checkpoints.  These keys deliberately follow the report naming
+  # convention; the older step-qualified key above remains for compatibility
+  # with existing analysis notebooks.
+  just_dpo_650m:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "DPO"
+    color: "#1F9D8A"
+    family: dpo
+  evo_dpo_650m:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_dpo_650M/step_8250.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    label: "Evo+DPO"
+    color: "#0F766E"
+    family: evo_dpo
+  just_lora_dpo_650m:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_lora_dpo_650M/step_2200.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    adapter_base_checkpoint: facebook/esm2_t33_650M_UR50D
+    label: "LoRA-DPO"
+    color: "#D95F8D"
+    family: lora_dpo
+  evo_lora_dpo_650m:
+    checkpoint: /cluster/project/infk/krause/gguidarini/protein-design/checkpoints/evo_lora_dpo_650M/step_3300.pt
+    base_model: facebook/esm2_t33_650M_UR50D
+    adapter_base_checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt
+    label: "Evo+LoRA-DPO"
+    color: "#A13D68"
+    family: evo_lora_dpo

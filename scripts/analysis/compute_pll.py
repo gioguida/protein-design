@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from protein_design.constants import C05_CDRH3_START, C05_CDRH3_END, add_context  # noqa: E402
 from protein_design.analysis import registry  # noqa: E402
+from protein_design.checkpoint_loading import load_mlm_from_checkpoint  # noqa: E402
 
 ESM2_35M_ID = "facebook/esm2_t12_35M_UR50D"
 ESM2_650M_ID = "facebook/esm2_t33_650M_UR50D"
@@ -72,11 +73,25 @@ def _load_pt_into_mlm(pt_path: Path, base_model: str) -> EsmForMaskedLM:
     return model
 
 
-def load_esm_for_mlm(checkpoint: str, base_model: str) -> EsmForMaskedLM:
+def load_esm_for_mlm(
+    checkpoint: str,
+    base_model: str,
+    *,
+    adapter_base_checkpoint: str | None = None,
+) -> EsmForMaskedLM:
     if not checkpoint:
         log.info("No checkpoint given — loading vanilla %s", base_model)
         return EsmForMaskedLM.from_pretrained(base_model)
     p = Path(checkpoint)
+    # Adapter-only checkpoints need their base weights plus merged LoRA state.
+    # The shared loader is the single implementation of that reconstruction.
+    if p.is_file() and p.suffix == ".pt":
+        raw = torch.load(p, map_location="cpu", weights_only=False)
+        if isinstance(raw, dict) and isinstance(raw.get("adapter_state_dict"), dict):
+            model, _ = load_mlm_from_checkpoint(
+                checkpoint, adapter_base_checkpoint=adapter_base_checkpoint
+            )
+            return model
     if p.is_file() and p.suffix == ".pt":
         return _load_pt_into_mlm(p, base_model)
     if p.is_dir():
@@ -189,7 +204,11 @@ def main() -> None:
     device = torch.device(args.device)
     log.info("Loading ESM2 model %r for PLL: %s (base=%s)",
              args.model, checkpoint or "vanilla", base_model)
-    model = load_esm_for_mlm(checkpoint, base_model).eval().to(device)
+    model = load_esm_for_mlm(
+        checkpoint,
+        base_model,
+        adapter_base_checkpoint=spec.get("adapter_base_checkpoint"),
+    ).eval().to(device)
     if device.type == "cuda":
         model = model.half()
     tokenizer = AutoTokenizer.from_pretrained(base_model)

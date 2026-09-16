@@ -319,7 +319,19 @@ def _load_checkpoint(
     scheduler: Optional[SchedulerType],
 ) -> Tuple[int, float]:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
-    policy.load_state_dict(ckpt["model_state_dict"])
+    state_dict = ckpt.get("model_state_dict") or ckpt.get("policy_state_dict")
+    if state_dict is None:
+        raise KeyError(
+            f"Checkpoint {checkpoint_path} has neither 'model_state_dict' nor "
+            "'policy_state_dict'."
+        )
+    # Older exported DPO checkpoints store the underlying HF model keys
+    # (``esm.*`` / ``lm_head.*``), while the training wrapper expects
+    # ``model.*``.  Accept both layouts so standalone evaluation can faithfully
+    # re-score those checkpoints.
+    if state_dict and not any(str(key).startswith("model.") for key in state_dict):
+        state_dict = {f"model.{key}": value for key, value in state_dict.items()}
+    policy.load_state_dict(state_dict)
 
     cross_task = False
     if optimizer is not None and "optimizer_state_dict" in ckpt:

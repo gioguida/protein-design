@@ -1,0 +1,70 @@
+# Reproducible input contract for report/report_plots.ipynb.
+# The notebook only reads the JSON files written by report_plot_data.sbatch.
+
+output:
+  data_dir: report/figures/plot_data
+  figures_dir: report/figures
+
+models:
+  order:
+    - vanilla_650m
+    - evo_650m
+    - just_dpo_650m
+    - evo_dpo_650m
+    - just_lora_dpo_650m
+    - evo_lora_dpo_650m
+  preference_models:
+    - just_dpo_650m
+    - evo_dpo_650m
+    - just_lora_dpo_650m
+    - evo_lora_dpo_650m
+  generation_models:
+    - vanilla_650m
+    - evo_650m
+    - just_dpo_650m
+    - evo_dpo_650m
+
+datasets:
+  functional: [ed2_m22, ed5_m22, ed811_m22]
+  generation_reference: ed2_m22
+
+preference_evaluation:
+  # A complete checkpoint-parent summary.json is used directly.  These values
+  # are the explicit fallback needed to rebuild an evaluation if a run did not
+  # preserve resolved_config.yaml.
+  data_config: conf/data/dpo/default.yaml
+  task_configs:
+    full: conf/task/dpo.yaml
+    lora: conf/task/lora_dpo.yaml
+  device: cuda
+  batch_size: 8
+  num_workers: 0
+  per_model:
+    just_dpo_650m:
+      task: full
+      reference_checkpoint: facebook/esm2_t33_650M_UR50D
+    evo_dpo_650m:
+      task: full
+      reference_checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt
+    just_lora_dpo_650m:
+      task: lora
+      reference_checkpoint: facebook/esm2_t33_650M_UR50D
+    evo_lora_dpo_650m:
+      task: lora
+      reference_checkpoint: /cluster/project/infk/krause/mdenegri/protein-design/checkpoints/oas_full_evo_650m/oas_full_evo_650m.pt
+
+generation:
+  seed: 42
+  n_sequences: 5000
+  max_mutations: 11
+  temperature: 0.9
+  top_k: 50
+  # 500 sequences retained at steps 2..11 gives the established 5,000-member
+  # comparable Gibbs/SBS library.
+  chains_or_beams: 500
+  retained_steps: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  samplers: [random, pssm, gibbs, stochastic_beam]
+  common_evaluator: vanilla_650m
+  novelty_reference_splits: [train]
+  dms_positive_rule: above_wild_type
+  nearest_neighbor_ties: mean_enrichment
