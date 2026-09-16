@@ -574,6 +574,22 @@ def _train_evotuning(
     )
 
     use_bf16 = training_cfg.bf16 and device.type == "cuda"
+    if use_bf16:
+        # bf16 tensor cores start at compute capability 8.0. On older cards
+        # autocast still runs, but on fp32 units and several times slower, and
+        # nothing in the logs says so. A sweep that lands on the wrong card by
+        # accident should stop here rather than quietly take a week.
+        major = torch.cuda.get_device_capability(device)[0]
+        name = torch.cuda.get_device_name(device)
+        if major < 8:
+            raise RuntimeError(
+                f"training.bf16 is set but {name} (compute capability "
+                f"{major}.x) has no bf16 tensor cores, so training would fall "
+                f"back to fp32 and run several times slower. Request a GPU that "
+                f"supports it (--gpus=rtx_4090:1 or --gpus=a100_80gb:1), or set "
+                f"training.bf16=false to accept the slowdown deliberately."
+            )
+        log.info("Training in bf16 on %s (compute capability %d.x)", name, major)
     autocast_dtype = torch.bfloat16 if use_bf16 else torch.float32
 
     start_epoch = 1

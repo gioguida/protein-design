@@ -12,8 +12,9 @@
 # 21.5 GB (150M); the peak comes from the recovery metric, which runs at a
 # larger batch than training. 150M needs a larger card or a smaller
 # recovery_batch_size, which sweep_evotuning.sh handles per model size.
-#SBATCH --gpus=nvidia_geforce_rtx_4090:1
-#SBATCH --gres=gpumem:20g
+# Use the short alias: a full gres name like nvidia_geforce_rtx_4090 is
+# accepted and then silently dropped, leaving the job on any GPU at all.
+#SBATCH --gpus=rtx_4090:1
 #SBATCH --time=12:00:00
 #SBATCH --output=bash_scripts/logs/train_%j.log
 
