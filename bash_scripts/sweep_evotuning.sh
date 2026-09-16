@@ -12,6 +12,7 @@
 #   bash_scripts/sweep_evotuning.sh                # full grid
 #   bash_scripts/sweep_evotuning.sh --dry-run      # print and write the manifest only
 #   bash_scripts/sweep_evotuning.sh --lr-grid 1.0e-5 --model-grid esm2_35m
+#   bash_scripts/sweep_evotuning.sh --gpu nvidia_a100_80gb_pcie --gpu-mem 40g
 
 set -euo pipefail
 cd "/cluster/home/${USER}/protein-design"
@@ -21,10 +22,18 @@ MODEL_GRID="esm2_8m,esm2_35m,esm2_150m"
 POLICY_GRID="cdr50,hybrid"
 DATA_GRID="oas,c05_wt_similar"
 NAME_PREFIX="evo"
-# Per model size, from measured peak reserved memory (3.1 / 7.7 / 21.5 GB at
-# batch 64). Requesting one large number for every job would leave the small
-# models queueing behind nodes they do not need. --gpu-mem overrides all of it.
-declare -A GPU_MEM_BY_MODEL=( [esm2_8m]=12g [esm2_35m]=24g [esm2_150m]=40g )
+# bf16 needs Ampere-or-newer tensor cores, so the GPU model is pinned rather
+# than inferred from a memory request: asking for less memory lands jobs on the
+# cluster's Turing cards, which measured 4-7x slower. RTX 4090 (Ada, 24 GB) is
+# the default and the most plentiful card here. 150M peaks at 21.5 GB, too
+# close to 24 GB to be safe, so it goes to an A100 instead.
+declare -A GPU_BY_MODEL=(
+  [esm2_8m]=nvidia_geforce_rtx_4090
+  [esm2_35m]=nvidia_geforce_rtx_4090
+  [esm2_150m]=nvidia_a100_80gb_pcie
+)
+declare -A GPU_MEM_BY_MODEL=( [esm2_8m]=20g [esm2_35m]=20g [esm2_150m]=40g )
+GPU=""
 GPU_MEM=""
 DRY_RUN=0
 EXTRA_OVERRIDES=()
@@ -36,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --policy-grid) POLICY_GRID="$2"; shift 2 ;;
     --data-grid)   DATA_GRID="$2"; shift 2 ;;
     --name-prefix) NAME_PREFIX="$2"; shift 2 ;;
+    --gpu)         GPU="$2"; shift 2 ;;
     --gpu-mem)     GPU_MEM="$2"; shift 2 ;;
     --dry-run)     DRY_RUN=1; shift ;;
     *)             EXTRA_OVERRIDES+=("$1"); shift ;;
@@ -56,8 +66,9 @@ for data in "${DATA_ARR[@]}"; do
   for policy in "${POLICY_ARR[@]}"; do
     for model in "${MODEL_ARR[@]}"; do
       for lr in "${LR_ARR[@]}"; do
-        mem="${GPU_MEM:-${GPU_MEM_BY_MODEL[$model]:-24g}}"
-        SBATCH_OPTS=("--gres=gpumem:${mem}")
+        gpu="${GPU:-${GPU_BY_MODEL[$model]:-nvidia_geforce_rtx_4090}}"
+        mem="${GPU_MEM:-${GPU_MEM_BY_MODEL[$model]:-20g}}"
+        SBATCH_OPTS=("--gpus=${gpu}:1" "--gres=gpumem:${mem}")
         run_name="${NAME_PREFIX}_${data}_${policy}_${model}_lr${lr}"
         overrides=(
           "data=evo/${data}_${policy}"
