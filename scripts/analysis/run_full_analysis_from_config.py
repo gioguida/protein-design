@@ -628,7 +628,7 @@ def main() -> int:
         _mkdir(oas_dir, dry_run, "oas")
         oas = (cfg.get("datasets", {}) or {}).get("oas", {}) or {}
         oas_fasta = _expand(str(oas.get("fasta_path", "")), repo_root)
-        oas_meta = _expand(str(oas.get("meta_csv_gz_path", "")), repo_root)
+        oas_meta = _expand(str(oas.get("meta_parquet_path", "")), repo_root)
         for model in models:
             oas_npz = oas_dir / f"{model.model_id}.npz"
             oas_npz_paths.append(oas_npz)

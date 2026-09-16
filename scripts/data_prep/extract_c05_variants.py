@@ -3,7 +3,7 @@
 
 Modes:
   --preview-cdrh3
-      Scan oas_filtered.csv.gz (OAS with cdr3_aa), print a CDR-H3 identity
+      Scan oas_filtered.parquet (OAS with cdr3_aa), print a CDR-H3 identity
       histogram vs. the C05 reference CDR-H3. No files written.
 
   --variant vh_pid60 [--pident-threshold 0.60]
@@ -12,7 +12,7 @@ Modes:
       column. No FASTA re-lookup needed.
 
   --variant cdrh3_posid --cdrh3-threshold X
-      Scan oas_filtered.csv.gz for rows with CDR-H3 positional identity
+      Scan oas_filtered.parquet for rows with CDR-H3 positional identity
       >= X vs. the C05 reference, then stream oas_filtered.fasta to extract
       their full sequences into c05_cdrh3_posid<PCT>.fasta.
 """
@@ -37,6 +37,7 @@ from search_c05 import (  # noqa: E402
     histogram,
 )
 from _fasta_utils import stream_fasta_subset  # noqa: E402
+from meta_io import iter_meta_chunks  # noqa: E402
 
 load_dotenv()
 
@@ -53,8 +54,8 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--results-tsv", default=os.path.join(scratch, "c05_search", "results.tsv"),
                    help="MMseqs2 results TSV (for vh_pid60).")
-    p.add_argument("--csv", default=os.path.join(project, "data", "oas", "oas_filtered.csv.gz"),
-                   help="OAS filtered metadata CSV with seq_id + cdr3_aa (gzipped).")
+    p.add_argument("--meta", default=os.path.join(project, "data", "oas", "oas_filtered.parquet"),
+                   help="OAS filtered metadata table with seq_id + cdr3_aa.")
     p.add_argument("--fasta", default=os.path.join(project, "data", "oas", "oas_filtered.fasta"),
                    help="OAS filtered FASTA (for cdrh3_posid lookup).")
     p.add_argument("--output-dir", default=os.path.join(project, "data", "c05"),
@@ -68,12 +69,12 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_cdrh3_ids(csv_path: Path, threshold: float, chunksize: int) -> tuple[set[str], int]:
-    """Stream the OAS CSV, compute CDR-H3 identity, return seq_ids >= threshold plus row count."""
+def load_cdrh3_ids(meta_path: Path, threshold: float, chunksize: int) -> tuple[set[str], int]:
+    """Stream the OAS metadata, compute CDR-H3 identity, return seq_ids >= threshold plus row count."""
     keep: set[str] = set()
     total = 0
-    print(f"[cdrh3] Scanning {csv_path} for cdrh3_id >= {threshold:.3f}...", flush=True)
-    reader = pd.read_csv(csv_path, usecols=["seq_id", "cdr3_aa"], chunksize=chunksize)
+    print(f"[cdrh3] Scanning {meta_path} for cdrh3_id >= {threshold:.3f}...", flush=True)
+    reader = iter_meta_chunks(str(meta_path), columns=["seq_id", "cdr3_aa"], chunksize=chunksize)
     for chunk in reader:
         total += len(chunk)
         sub = chunk.dropna(subset=["cdr3_aa"])
@@ -86,12 +87,12 @@ def load_cdrh3_ids(csv_path: Path, threshold: float, chunksize: int) -> tuple[se
     return keep, total
 
 
-def preview_cdrh3_histogram(csv_path: Path, chunksize: int) -> None:
-    print(f"[preview] Computing CDR-H3 identity distribution over {csv_path}", flush=True)
+def preview_cdrh3_histogram(meta_path: Path, chunksize: int) -> None:
+    print(f"[preview] Computing CDR-H3 identity distribution over {meta_path}", flush=True)
     print(f"[preview] Reference (OAS format): {C05_CDRH3_OAS} ({len(C05_CDRH3_OAS)} aa)", flush=True)
     all_ids: list[float] = []
     total = 0
-    reader = pd.read_csv(csv_path, usecols=["cdr3_aa"], chunksize=chunksize)
+    reader = iter_meta_chunks(str(meta_path), columns=["cdr3_aa"], chunksize=chunksize)
     for chunk in reader:
         total += len(chunk)
         sub = chunk.dropna(subset=["cdr3_aa"])
@@ -139,13 +140,13 @@ def write_vh_pid_variant(
 
 
 def write_cdrh3_variant(
-    csv_path: Path,
+    meta_path: Path,
     fasta_path: Path,
     output_path: Path,
     threshold: float,
     chunksize: int,
 ) -> int:
-    wanted, _ = load_cdrh3_ids(csv_path, threshold, chunksize)
+    wanted, _ = load_cdrh3_ids(meta_path, threshold, chunksize)
     if not wanted:
         sys.exit(f"ERROR: no sequences matched cdrh3_id >= {threshold}. Lower the threshold.")
     print(f"[cdrh3] Extracting {len(wanted):,} sequences from {fasta_path}...", flush=True)
@@ -158,15 +159,15 @@ def write_cdrh3_variant(
 
 def main() -> None:
     args = parse_args()
-    csv_path = Path(args.csv)
+    meta_path = Path(args.meta)
     fasta_path = Path(args.fasta)
     results_tsv = Path(args.results_tsv)
     out_dir = Path(args.output_dir)
 
     if args.preview_cdrh3:
-        if not csv_path.exists():
-            sys.exit(f"ERROR: CSV not found: {csv_path}")
-        preview_cdrh3_histogram(csv_path, args.chunksize)
+        if not meta_path.exists():
+            sys.exit(f"ERROR: metadata not found: {meta_path}")
+        preview_cdrh3_histogram(meta_path, args.chunksize)
         return
 
     if args.variant == "vh_pid60":
@@ -178,13 +179,13 @@ def main() -> None:
     if args.variant == "cdrh3_posid":
         if args.cdrh3_threshold is None:
             sys.exit("ERROR: --cdrh3-threshold is required for --variant cdrh3_posid")
-        if not csv_path.exists():
-            sys.exit(f"ERROR: CSV not found: {csv_path}")
+        if not meta_path.exists():
+            sys.exit(f"ERROR: metadata not found: {meta_path}")
         if not fasta_path.exists():
             sys.exit(f"ERROR: FASTA not found: {fasta_path}")
         pct = int(round(args.cdrh3_threshold * 100))
         out = out_dir / f"c05_cdrh3_posid{pct}.fasta"
-        write_cdrh3_variant(csv_path, fasta_path, out, args.cdrh3_threshold, args.chunksize)
+        write_cdrh3_variant(meta_path, fasta_path, out, args.cdrh3_threshold, args.chunksize)
         return
 
     sys.exit("ERROR: pass --preview-cdrh3 or --variant {vh_pid60,cdrh3_posid}")

@@ -13,12 +13,15 @@ set -euo pipefail
 source bash_scripts/common_setup.sh
 
 uv run python - <<'EOF'
-import pandas as pd
+import sys
 from pathlib import Path
 
+sys.path.insert(0, "scripts/data_prep")
+from meta_io import iter_meta_chunks
+
 project = Path("/cluster/project/infk/krause/mdenegri/protein-design")
-fasta = project / "datasets/c05/c05_cdrh3_posid30.fasta"
-csv = project / "datasets/oas_filtered.csv.gz"
+fasta = project / "data/c05/c05_cdrh3_posid30.fasta"
+meta = project / "data/oas/oas_filtered.parquet"
 REF = "AKHMSMQQVVSAGWERADLVGDAFDV"
 
 def posid(a, b):
@@ -33,7 +36,7 @@ print(f"IDs in FASTA: {len(ids):,}", flush=True)
 
 vals = []
 rows = 0
-for chunk in pd.read_csv(csv, usecols=["seq_id", "cdr3_aa"], chunksize=500_000):
+for chunk in iter_meta_chunks(str(meta), columns=["seq_id", "cdr3_aa"], chunksize=500_000):
     rows += len(chunk)
     sub = chunk[chunk["seq_id"].isin(ids)].dropna(subset=["cdr3_aa"])
     vals.extend(posid(str(s), REF) for s in sub["cdr3_aa"])

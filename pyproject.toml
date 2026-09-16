@@ -10,6 +10,8 @@ dependencies = [
     "datasets",
     "biopython",
     "pandas",
+    "pyarrow",
+    "duckdb",
     "wandb",
     "pyyaml",
     "tqdm",
@@ -36,5 +38,7 @@ packages = ["src/protein_design"]
 [dependency-groups]
 dev = [
     "adjusttext>=1.4.0",
+    "ipython",
+    "marimo>=0.24.0",
     "nbconvert>=7.17.1",
 ]

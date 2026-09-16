@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Plot CDRH3 length distribution from oas_filtered.csv.gz.
+"""Plot CDRH3 length distribution from oas_filtered.parquet.
 
 Usage:
-    python scripts/plot_cdrh3_lengths.py [csv_path] [--output PATH] [--highlight N]
+    python scripts/plot_cdrh3_lengths.py [meta_path] [--output PATH] [--highlight N]
 
 Reads only the cdr3_aa column (memory-efficient) and produces a histogram with
 KDE overlay. A vertical line marks the highlighted length (default: 24, C05's CDRH3).
@@ -11,6 +11,7 @@ KDE overlay. A vertical line marks the highlighted length (default: 24, C05's CD
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")  # headless backend for compute nodes
@@ -20,24 +21,27 @@ import pandas as pd
 from dotenv import load_dotenv
 from scipy.stats import gaussian_kde
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "data_prep"))
+from meta_io import read_meta  # noqa: E402
+
 load_dotenv()
 
 _PROJECT_DIR = os.environ.get("PROJECT_DIR", ".")
-DEFAULT_CSV = os.path.join(_PROJECT_DIR, "data", "oas", "oas_filtered.csv.gz")
+DEFAULT_META = os.path.join(_PROJECT_DIR, "data", "oas", "oas_filtered.parquet")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot CDRH3 length distribution")
     parser.add_argument(
-        "csv_path",
+        "meta_path",
         nargs="?",
-        default=DEFAULT_CSV,
-        help=f"Path to oas_filtered.csv.gz (default: {DEFAULT_CSV})",
+        default=DEFAULT_META,
+        help=f"Path to oas_filtered.parquet (default: {DEFAULT_META})",
     )
     parser.add_argument(
         "--output", "-o",
         default=None,
-        help="Output PNG path (default: cdrh3_length_distribution.png next to the CSV)",
+        help="Output PNG path (default: cdrh3_length_distribution.png next to the metadata)",
     )
     parser.add_argument(
         "--highlight",
@@ -47,16 +51,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not os.path.exists(args.csv_path):
-        print(f"Error: {args.csv_path} not found.", file=sys.stderr)
+    if not os.path.exists(args.meta_path):
+        print(f"Error: {args.meta_path} not found.", file=sys.stderr)
         sys.exit(1)
 
     output_path = args.output or os.path.join(
-        os.path.dirname(args.csv_path), "cdrh3_length_distribution.pdf"
+        os.path.dirname(args.meta_path), "cdrh3_length_distribution.pdf"
     )
 
-    print(f"Reading {args.csv_path} ...")
-    df = pd.read_csv(args.csv_path, usecols=["cdr3_aa"], compression="gzip")
+    print(f"Reading {args.meta_path} ...")
+    df = read_meta(args.meta_path, columns=["cdr3_aa"])
     lengths = df["cdr3_aa"].dropna().str.len()
     del df  # free memory
 

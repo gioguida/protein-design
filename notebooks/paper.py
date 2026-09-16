@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.23.16"
 app = marimo.App(width="columns")
 
 
@@ -16,19 +16,19 @@ def _(mo):
     mo.md(r"""
     # DATASET
 
-    [ ] downlaod OAS with only filters: human race and chain heavy
+    [X] downlaod OAS with only filters: human race and chain heavy
 
-    [ ] once downloaded apply filtering:
+    [X] once downloaded apply filtering:
     - remove duplicate sequences (by exact match)
     - remove sequences missing the conserved cysteins that form the canonical disulfide bond in the Ig fold. For this we trust OAS's ANARCI_status flags "Missing Conserved Cysteine"
     - remove heavily fragmented sequences, specifically those missing more than 16 residues from the N-terminus or more than 7 residues from the C-terminus
     - replace any non-standard amino acid with an X token rather than dropping the sequence
 
-    [ ] deduplication: cluster by 95% sequence identity and keep one representative per cluster. Use Linclust instead of MMseqs2.
+    [X] deduplication: cluster by 95% sequence identity and keep one representative per cluster. Use Linclust instead of MMseqs2.
 
-    <claude>
+
     [ ] drop sequences whose CDR-H3 can't be located in the VH. The CDR-H3 window comes from finding OAS's annotated `cdr3_aa` as a substring of the VH, which fails in three ways: the metadata row is missing, `cdr3_aa` is null, or the VH no longer contains it verbatim. The third case is our own doing: filtering rewrites non-standard residues in the VH as X but leaves `cdr3_aa` untouched, so a CDR-H3 carrying one stops matching. Clean `cdr3_aa` exactly the way the VH is cleaned before matching, then drop whatever still doesn't resolve, and record the drop rate.
-
+    <claude>
     Drop them here, once, rather than inside each masking variant. Otherwise the whole-chain runs would train on a larger corpus than the CDR runs, the epoch lengths would differ, and the batch to single-position branch could no longer resume on the same shuffled order.
     </claude>
 
@@ -65,7 +65,7 @@ def _(mo):
 
     Only the train split is subsampled. Val and test stay whole, so every run is scored against the same held-out data.
 
-    N = 10M {STILL OPEN: confirm}.
+    N = 10M.
 
     Once the lr is picked, the final runs go on the full OAS train split at that lr.
     </claude>
@@ -159,7 +159,7 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-
+ 
     """)
     return
 
