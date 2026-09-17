@@ -116,7 +116,7 @@ def plot_evotune_functional(config: dict[str, Any]) -> plt.Figure:
         ax.set_title(dataset.replace("_m22", "").upper())
         style_axes(ax)
         add_panel_label(ax, "abc"[i])
-    axes[0].set_ylabel(r"Spearman $\rho$ (PLL vs enrichment)")
+    axes[0].set_ylabel(r"Spearman $\rho$")
     return fig
 
 
@@ -169,7 +169,7 @@ def plot_functional_groups(config: dict[str, Any], groups: list[list[str]], *, t
         ax.set_title(title if len(groups) == 1 else ("Base ESM2" if i == 0 else "Evo-tuned base"))
         style_axes(ax)
         add_panel_label(ax, "ab"[i])
-    axes[0].set_ylabel(r"Spearman $\rho$ (PLL vs enrichment)")
+    axes[0].set_ylabel(r"Spearman $\rho$")
     handles, labels = axes[-1].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.13), ncol=len(handles), frameon=False)
     return fig
@@ -362,6 +362,46 @@ def all_model_table_latex(config: dict[str, Any]) -> str:
         rows, alignment="lrrrrrr", caption="Model summary on held-out evaluation sets.",
         label="tab:all-model-summary",
     )
+
+
+def plot_all_model_table(config: dict[str, Any]) -> plt.Figure:
+    """Render the compact all-model report table as a publication-ready figure."""
+    functional = _functional(config)["models"]
+    preference = _preference(config)["models"]
+    datasets = config["datasets"]["functional"]
+    headers = ["Model", "Reward\nacc.", "Reward\nmargin", "CDR\nPPL"]
+    headers.extend(f"{dataset.replace('_m22', '').upper()}\n$\\rho$" for dataset in datasets)
+    rows = []
+    for model in config["models"]["order"]:
+        pref = preference.get(model, {})
+        row = [
+            model_label(model),
+            "—" if not pref else f"{pref['test_reward_accuracy']:.3f}",
+            "—" if not pref else f"{pref['test_reward_margin']:.3f}",
+            f"{functional[model]['datasets']['ed2_m22']['cdr_pseudo_perplexity']:.2f}",
+        ]
+        row.extend(f"{functional[model]['datasets'][dataset]['spearman_pll_enrichment']:.3f}" for dataset in datasets)
+        rows.append(row)
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_WIDTH, 0.52 * len(rows) + 1.05))
+    ax.axis("off")
+    table = ax.table(cellText=rows, colLabels=headers, cellLoc="center", colLoc="center", loc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.3)
+    table.scale(1, 1.35)
+    for (row, column), cell in table.get_celld().items():
+        cell.set_edgecolor("0.80")
+        cell.set_linewidth(0.5)
+        if row == 0:
+            cell.set_facecolor("0.90")
+            cell.set_text_props(weight="bold")
+        elif column == 0:
+            cell.set_facecolor(model_color(config["models"]["order"][row - 1]))
+            cell.set_text_props(color="white", weight="bold", ha="left")
+        elif row % 2 == 0:
+            cell.set_facecolor("0.97")
+    fig.tight_layout(pad=0.15)
+    return fig
 
 
 def write_all_model_table(config: dict[str, Any], output_dir: str | Path) -> Path:

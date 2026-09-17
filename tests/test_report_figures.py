@@ -50,6 +50,7 @@ def test_report_figures_render_from_artifact_fixtures(monkeypatch) -> None:
     figures = [
         report_figures.plot_evotune_functional(config),
         report_figures.plot_preference_metrics(config),
+        report_figures.plot_all_model_table(config),
         report_figures.plot_generation_quality_diversity(config),
         report_figures.plot_generation_mutation_distance(config),
         report_figures.plot_generation_logos(config, "native"),
