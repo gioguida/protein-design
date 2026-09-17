@@ -232,24 +232,43 @@ def _summary_table_rows(config: dict[str, Any], evaluator: str) -> list[list[str
     rows = []
     for row in _generation_summaries(config, evaluator):
         rows.append([model_label(row["model"]), SAMPLER_LABELS[row["sampler"]],
-                     f"{100 * row['fraction_above_wt']:.1f}%", f"{100 * row['novelty']:.1f}%",
+                     f"{100 * row['fraction_above_wt']:.1f}\\%", f"{100 * row['novelty']:.1f}\\%",
                      f"{row['mean_pairwise_hamming']:.2f}", f"{row['median_mutation_count']:.1f}",
                      f"{row['top_k_nearest_dms_enrichment']:.2f}"])
     return rows
 
 
-def plot_generation_summary_table(config: dict[str, Any], evaluator: str) -> plt.Figure:
-    title = "Native-model PLL" if evaluator == "native" else "Common ESM2-650M PLL"
-    fig, ax = plt.subplots(figsize=(DOUBLE_COL_WIDTH, 4.2))
-    ax.axis("off")
-    table = ax.table(cellText=_summary_table_rows(config, evaluator),
-                     colLabels=["Model", "Sampler", "Above WT", "Novel", "Pairwise HD", "Median mutations", "Nearest-DMS enrichment"],
-                     loc="center", cellLoc="center")
-    table.auto_set_font_size(False)
-    table.set_fontsize(7.5)
-    table.scale(1, 1.3)
-    ax.set_title(f"Generated-library summary ({title})", pad=10)
-    return fig
+def save_latex_table(output_dir: str | Path, stem: str, source: str) -> Path:
+    """Write a complete, report-ready LaTeX table as a text artifact."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / f"{stem}.txt"
+    path.write_text(source.rstrip() + "\n", encoding="utf-8")
+    return path
+
+
+def _latex_table(headers: list[str], rows: list[list[str]], *, alignment: str, caption: str, label: str) -> str:
+    lines = [r"\begin{table}[t]", r"\centering", r"\small", f"\\caption{{{caption}}}", f"\\label{{{label}}}",
+             f"\\begin{{tabular}}{{{alignment}}}", r"\toprule", " & ".join(headers) + r" \\", r"\midrule"]
+    lines.extend(" & ".join(row) + r" \\" for row in rows)
+    lines.extend([r"\bottomrule", r"\end{tabular}", r"\end{table}"])
+    return "\n".join(lines)
+
+
+def generation_summary_table_latex(config: dict[str, Any], evaluator: str) -> str:
+    evaluator_name = "native-model PLL" if evaluator == "native" else "common ESM2-650M PLL"
+    return _latex_table(
+        ["Model", "Sampler", "Above WT", "Novel", "Pairwise HD", "Median mutations", "Nearest-DMS enrichment"],
+        _summary_table_rows(config, evaluator), alignment="llrrrrr",
+        caption=f"Generated-library summary ranked by {evaluator_name}.",
+        label=f"tab:generation-summary-{evaluator}",
+    )
+
+
+def write_generation_summary_table(config: dict[str, Any], evaluator: str, output_dir: str | Path) -> Path:
+    suffix = "native_pll" if evaluator == "native" else "common_esm2_pll"
+    return save_latex_table(output_dir, f"generation_library_summary_{suffix}_table",
+                            generation_summary_table_latex(config, evaluator))
 
 
 def _frequencies(sequences: list[str]) -> np.ndarray:
@@ -288,6 +307,7 @@ def plot_generation_logos(config: dict[str, Any], evaluator: str) -> plt.Figure:
     positives = [row["sequence"] for row in reference["sequences"] if float(row["enrichment"]) > float(reference["wild_type_enrichment"])]
     models = config["models"]["generation_models"]
     fig = plt.figure(figsize=(DOUBLE_COL_WIDTH, 6.4), constrained_layout=True)
+    fig.suptitle("Three-way CDR-H3 composition", fontsize=12)
     outer = fig.add_gridspec(2, 2)
     for i, model in enumerate(models):
         sub = outer[i // 2, i % 2].subgridspec(3, 1, hspace=0.15)
@@ -296,9 +316,8 @@ def plot_generation_logos(config: dict[str, Any], evaluator: str) -> plt.Figure:
             ax = fig.add_subplot(sub[j])
             _draw_logo(ax, seqs, source)
             if j == 0:
-                ax.text(-0.12, 1.20, "abcd"[i], transform=ax.transAxes, fontweight="bold", fontsize=14)
-                ax.text(0.02, 1.20, model_label(model), transform=ax.transAxes, fontsize=10, fontweight="bold")
-    fig.suptitle("Three-way CDR-H3 composition", y=1.01)
+                ax.text(-0.12, 1.07, "abcd"[i], transform=ax.transAxes, fontweight="bold", fontsize=14)
+                ax.text(0.02, 1.07, model_label(model), transform=ax.transAxes, fontsize=10, fontweight="bold")
     return fig
 
 
@@ -320,29 +339,30 @@ def plot_generation_jsd(config: dict[str, Any], evaluator: str) -> plt.Figure:
         ax.bar(np.arange(len(sequences[0])), _jsd(_frequencies(sequences), ref_freq), color=model_color(model), width=0.8)
         ax.set_title(f"{model_label(model)} — {SAMPLER_LABELS[sampler]}")
         ax.set_xlabel("CDR-H3 position")
-        ax.set_ylabel("Jensen–Shannon divergence")
+        ax.set_ylabel("JSD")
         style_axes(ax)
         add_panel_label(ax, "abcd"[i])
     return fig
 
 
-def plot_all_model_table(config: dict[str, Any]) -> plt.Figure:
+def all_model_table_latex(config: dict[str, Any]) -> str:
     functional = _functional(config)["models"]
     preference = _preference(config)["models"]
     rows = []
     for model in config["models"]["order"]:
         pref = preference.get(model, {})
         values = [model_label(model),
-                  "—" if not pref else f"{pref['test_reward_accuracy']:.3f}",
-                  "—" if not pref else f"{pref['test_reward_margin']:.3f}",
+                  r"\textemdash{}" if not pref else f"{pref['test_reward_accuracy']:.3f}",
+                  r"\textemdash{}" if not pref else f"{pref['test_reward_margin']:.3f}",
                   f"{functional[model]['datasets']['ed2_m22']['cdr_pseudo_perplexity']:.2f}"]
         values += [f"{functional[model]['datasets'][dataset]['spearman_pll_enrichment']:.3f}" for dataset in config["datasets"]["functional"]]
         rows.append(values)
-    fig, ax = plt.subplots(figsize=(DOUBLE_COL_WIDTH, 2.6))
-    ax.axis("off")
-    table = ax.table(cellText=rows, colLabels=["Model", "Reward acc.", "Reward margin", "CDR PPL", "ED2 $\\rho$", "ED5 $\\rho$", "ED8–11 $\\rho$"], loc="center", cellLoc="center")
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1, 1.35)
-    ax.set_title("Model summary on held-out evaluation sets", pad=10)
-    return fig
+    return _latex_table(
+        ["Model", "Reward acc.", "Reward margin", "CDR PPL", "ED2 $\\rho$", "ED5 $\\rho$", "ED8--11 $\\rho$"],
+        rows, alignment="lrrrrrr", caption="Model summary on held-out evaluation sets.",
+        label="tab:all-model-summary",
+    )
+
+
+def write_all_model_table(config: dict[str, Any], output_dir: str | Path) -> Path:
+    return save_latex_table(output_dir, "all_models_compact_summary_table", all_model_table_latex(config))
