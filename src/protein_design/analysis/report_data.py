@@ -355,15 +355,22 @@ def _generate_baselines(config: dict[str, Any], work_dir: Path, *, force: bool) 
 def _generate_model_libraries(config: dict[str, Any], model_key: str, work_dir: Path, *, force: bool) -> dict[str, Path]:
     generation = config["generation"]
     model = registry.resolve_model(model_key)
+    # ``checkpoint: null`` denotes a vanilla model in the registry.  The
+    # samplers require a concrete model reference, so use its declared base
+    # model rather than stringifying the null value to the invalid HF ID
+    # ``"None"``.
+    checkpoint = str(model["checkpoint"] or model["base_model"])
+    adapter_args = (["--adapter-base-checkpoint", str(model["adapter_base_checkpoint"])]
+                    if model.get("adapter_base_checkpoint") else [])
     outputs: dict[str, Path] = {}
     specs = {
         "gibbs": [sys.executable, "scripts/gibbs_sampling.py", "--model-variant", model_key,
-                  "--checkpoint-path", str(model["checkpoint"]), "--n-chains", str(generation["chains_or_beams"]),
+                  "--checkpoint-path", checkpoint, *adapter_args, "--n-chains", str(generation["chains_or_beams"]),
                   "--n-steps", str(max(generation["retained_steps"])), "--snapshot-every", "1",
                   "--temperature", str(generation["temperature"]), "--seed", str(generation["seed"]),
                   "--max-mutations", str(generation["max_mutations"]), "--start-mode", "wt"],
         "stochastic_beam": [sys.executable, "scripts/stochastic_beam_search.py", "--model-variant", model_key,
-                            "--checkpoint-path", str(model["checkpoint"]), "--beam-size", str(generation["chains_or_beams"]),
+                            "--checkpoint-path", checkpoint, *adapter_args, "--beam-size", str(generation["chains_or_beams"]),
                             "--n-steps", str(max(generation["retained_steps"])), "--snapshot-every", "1",
                             "--temperature", str(generation["temperature"]), "--seed", str(generation["seed"]), "--start-mode", "wt"],
     }
@@ -415,7 +422,10 @@ def collect_generation_libraries(config: dict[str, Any], *, force: bool = False)
     novelty_index = build_reference_index(registry.REPO_ROOT, splits=set(generation["novelty_reference_splits"]))
     written: list[Path] = []
     common_model = str(generation["common_evaluator"])
-    for model_key in generation["generation_models"]:
+    # Model groups live under the shared ``models`` section; ``generation``
+    # only holds sampler settings.  This is also the contract used by the
+    # artifact manifest and report-figure readers.
+    for model_key in config["models"]["generation_models"]:
         out = artifact_path(config, f"generation_library_{model_key}.json")
         if out.exists() and not force:
             written.append(out)

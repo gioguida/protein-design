@@ -121,8 +121,12 @@ def _load_pt_into_mlm(pt_path: str, device: torch.device) -> EsmForMaskedLM:
     return model
 
 
-def load_model_and_tokenizer(checkpoint: str, device: torch.device):
-    model, tokenizer_ref = load_mlm_from_checkpoint(checkpoint)
+def load_model_and_tokenizer(
+    checkpoint: str, device: torch.device, *, adapter_base_checkpoint: str | None = None
+):
+    model, tokenizer_ref = load_mlm_from_checkpoint(
+        checkpoint, adapter_base_checkpoint=adapter_base_checkpoint
+    )
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_ref)
     return tokenizer, model
 
@@ -157,6 +161,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-path", default=None,
                    help="Explicit checkpoint path; if omitted, resolve via "
                         "DEFAULT_HF_IDS[variant] or treat variant as HF model ID.")
+    p.add_argument("--adapter-base-checkpoint", default=None,
+                   help="Base checkpoint for a LoRA adapter checkpoint.")
     p.add_argument("--wt-cdrh3", default=C05_CDRH3,
                    help="Reference WT CDR-H3 (used for the n_mutations column "
                         "and as the start when --start-mode=wt).")
@@ -415,7 +421,9 @@ def main() -> None:
     checkpoint = resolve_checkpoint(args)
     print(f"\n[model] variant={args.model_variant}  checkpoint={checkpoint}")
     t0 = time.time()
-    tokenizer, model = load_model_and_tokenizer(checkpoint, device)
+    tokenizer, model = load_model_and_tokenizer(
+        checkpoint, device, adapter_base_checkpoint=args.adapter_base_checkpoint
+    )
     model = model.to(device).eval()
     if device.type == "cuda":
         model = model.half()
