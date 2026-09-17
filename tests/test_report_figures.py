@@ -70,3 +70,33 @@ def test_save_figure_exports_matching_pdf_and_png(monkeypatch) -> None:
     assert png.name == "fixture.png"
     assert savefig.call_count == 2
     plt.close(fig)
+
+
+def test_report_tables_are_complete_latex_source(monkeypatch) -> None:
+    config = _config()
+    monkeypatch.setattr(report_figures, "_functional", lambda _: _functional())
+    monkeypatch.setattr(report_figures, "_preference", lambda _: {"models": {
+        model: {"test_loss": 0.2, "test_reward_accuracy": 0.7, "test_reward_margin": 0.1}
+        for model in config["models"]["order"][2:]
+    }})
+    monkeypatch.setattr(report_figures, "_library", lambda _, model: _library(model))
+
+    generation = report_figures.generation_summary_table_latex(config, "native")
+    models = report_figures.all_model_table_latex(config)
+
+    for source in (generation, models):
+        assert "\\begin{table}" in source
+        assert "\\begin{tabular}" in source
+        assert "\\end{table}" in source
+    assert "\\%" in generation
+    assert "\\textemdash{}" in models
+
+
+def test_generation_labels_are_compact(monkeypatch) -> None:
+    config = _config()
+    monkeypatch.setattr(report_figures, "_reference", lambda _: {"wild_type": "HMSMQQVVSAGWERADLVGDAFDV", "wild_type_enrichment": 0.0,
+                                                                    "sequences": [{"sequence": "HMSMQQVVSAGWERADLVGDAFDV", "enrichment": 1.0}, {"sequence": "HMSMQQVVSAGWERADLVGDAFDA", "enrichment": 2.0}]})
+    monkeypatch.setattr(report_figures, "_library", lambda _, model: _library(model))
+    figure = report_figures.plot_generation_jsd(config, "native")
+    assert all(axis.get_ylabel() == "JSD" for axis in figure.axes)
+    plt.close(figure)
