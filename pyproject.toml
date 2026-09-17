@@ -42,4 +42,5 @@ dev = [
     "marimo>=0.24.0",
     "ipykernel>=7.3.0",
     "nbconvert>=7.17.1",
+    "jupyterlab>=4.6.3",
 ]
