@@ -89,6 +89,10 @@ def _functional(config: dict[str, Any]) -> dict[str, Any]:
     return report_data.load_artifact(report_data.artifact_path(config, "functional_metrics.json"))
 
 
+def _dms_distribution(config: dict[str, Any]) -> dict[str, Any]:
+    return report_data.load_artifact(report_data.artifact_path(config, "dms_binding_enrichment_distributions.json"))
+
+
 def _preference(config: dict[str, Any]) -> dict[str, Any]:
     return report_data.load_artifact(report_data.artifact_path(config, "preference_test_metrics.json"))
 
@@ -132,6 +136,32 @@ def plot_cdr_pseudo_perplexity(config: dict[str, Any]) -> plt.Figure:
     ax.set_ylabel("CDR-H3 pseudo-perplexity")
     ax.set_title("Held-out ED2 naturalness")
     style_axes(ax)
+    return fig
+
+
+def plot_dms_binding_enrichment_distributions(config: dict[str, Any]) -> plt.Figure:
+    """Matched density histograms for the three held-out M22 DMS datasets."""
+    data = _dms_distribution(config)
+    datasets = config["datasets"]["functional"]
+    arrays = [np.asarray(data["datasets"][key]["values"], dtype=float) for key in datasets]
+    if any(array.size == 0 or not np.isfinite(array).all() for array in arrays):
+        raise ValueError("DMS distribution artifact contains empty or non-finite enrichment values")
+    combined = np.concatenate(arrays)
+    bins = np.histogram_bin_edges(combined, bins="fd")
+    if len(bins) < 2 or bins[0] == bins[-1]:
+        bins = np.linspace(float(combined.min()) - 0.5, float(combined.max()) + 0.5, 13)
+    colors = ["#5E81AC", "#1B9E77", "#D95F02"]
+    fig, axes = plt.subplots(1, len(datasets), figsize=(DOUBLE_COL_WIDTH, 2.75), sharex=True, sharey=True,
+                             constrained_layout=True)
+    for index, (axis, dataset, values, color) in enumerate(zip(axes, datasets, arrays, colors)):
+        axis.hist(values, bins=bins, density=True, color=color, alpha=0.72, edgecolor="white", linewidth=0.35)
+        axis.axvline(float(data["wild_type_enrichment"]), color="0.30", lw=1.0, ls="--", zorder=3)
+        axis.set_title(f"{dataset.replace('_m22', '').upper()} (n={len(values):,})")
+        axis.set_xlabel("Adjusted M22 binding enrichment")
+        style_axes(axis)
+        add_panel_label(axis, "abc"[index])
+    axes[0].set_ylabel("Density")
+    axes[-1].legend([Line2D([0], [0], color="0.30", lw=1.0, ls="--")], ["WT"], loc="upper right")
     return fig
 
 

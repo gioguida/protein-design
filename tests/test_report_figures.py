@@ -101,3 +101,20 @@ def test_generation_labels_are_compact(monkeypatch) -> None:
     figure = report_figures.plot_generation_jsd(config, "native")
     assert all(axis.get_ylabel() == "JSD" for axis in figure.axes)
     plt.close(figure)
+
+
+def test_dms_enrichment_distribution_uses_matched_density_panels(monkeypatch) -> None:
+    config = _config()
+    monkeypatch.setattr(report_figures, "_dms_distribution", lambda _: {
+        "wild_type_enrichment": 0.0,
+        "datasets": {
+            "ed2_m22": {"values": [-1.0, 0.0, 1.0]},
+            "ed5_m22": {"values": [-0.5, 0.5, 1.5]},
+            "ed811_m22": {"values": [-1.5, 0.25, 0.75]},
+        },
+    })
+    figure = report_figures.plot_dms_binding_enrichment_distributions(config)
+    assert len(figure.axes) == 3
+    assert figure.axes[0].get_ylabel() == "Density"
+    assert all(axis.get_xlabel() == "Adjusted M22 binding enrichment" for axis in figure.axes)
+    plt.close(figure)

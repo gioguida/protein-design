@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="conf/analysis/report_plots.yaml")
     parser.add_argument("--sections", default=None, help="Compatibility mode: functional,preference,generation or all.")
     parser.add_argument("--work-unit", choices=[
-        "functional-model", "functional-reduce", "preference-model", "preference-reduce",
+        "functional-model", "functional-reduce", "dms-distribution", "preference-model", "preference-reduce",
         "generation-baselines", "generation-sample", "generation-native-score",
         "generation-common-score", "generation-reduce",
     ], help="One independently schedulable collection stage.")
@@ -45,6 +45,7 @@ def main() -> int:
         dispatch = {
             "functional-model": lambda: report_data.collect_functional_model(config, args.model, profile=args.profile, force=args.force),
             "functional-reduce": lambda: report_data.reduce_functional_metrics(config),
+            "dms-distribution": lambda: report_data.collect_dms_enrichment_distributions(config, force=args.force),
             "preference-model": lambda: report_data.collect_preference_model(config, args.model, profile=args.profile, force=args.force),
             "preference-reduce": lambda: report_data.reduce_preference_metrics(config),
             "generation-baselines": lambda: report_data.collect_generation_baselines(config, force=args.force),

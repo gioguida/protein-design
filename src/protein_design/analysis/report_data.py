@@ -81,6 +81,8 @@ def artifact_names(config: dict[str, Any], sections: Iterable[str] | None = None
     names: list[str] = []
     if "functional" in sections:
         names.append("functional_metrics.json")
+    if "dms_distribution" in sections:
+        names.append("dms_binding_enrichment_distributions.json")
     if "preference" in sections:
         names.append("preference_test_metrics.json")
     if "generation" in sections:
@@ -106,6 +108,10 @@ def collection_commands(config: dict[str, Any], sections: Iterable[str] | None =
             commands.append(("Functional model jobs (independent)", workers))
         if reducer:
             commands.append(("Functional reducer", reducer))
+    if "dms_distribution" in selected and not artifact_path(config, "dms_binding_enrichment_distributions.json").exists():
+        commands.append(("DMS enrichment distributions", [
+            f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit dms-distribution",
+        ]))
     if "preference" in selected and not artifact_path(config, "preference_test_metrics.json").exists():
         workers = [f"sbatch bash_scripts/report_plot_data_4090.sbatch {config_arg} --work-unit preference-model --model {model}"
                    for model in config["models"]["preference_models"] if not part_path(config, f"preference_{model}.json").exists()]
@@ -599,6 +605,25 @@ def collect_generation_baselines(config: dict[str, Any], *, force: bool = False)
     files = _generate_baselines(config, _generation_work_dir(), force=force)
     write_artifact(out, {"reference_artifact": str(reference_path),
                          "libraries": {key: str(value) for key, value in files.items()},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def collect_dms_enrichment_distributions(config: dict[str, Any], *, force: bool = False) -> Path:
+    """Store the finite held-out enrichment values used by the DMS distribution figure."""
+    out = artifact_path(config, "dms_binding_enrichment_distributions.json")
+    if out.exists() and not force:
+        return out
+    datasets: dict[str, Any] = {}
+    for dataset_key in config["datasets"]["functional"]:
+        spec = registry.load_datasets_cfg()["datasets"][dataset_key]
+        values = pd.read_csv(spec["path"])[spec["enrichment_col"]].to_numpy(float)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            raise ValueError(f"{dataset_key} contains no finite {spec['enrichment_col']} values")
+        datasets[dataset_key] = {"source_path": str(spec["path"]), "enrichment_column": spec["enrichment_col"],
+                                 "n": int(len(values)), "values": values.tolist()}
+    write_artifact(out, {"datasets": datasets, "wild_type_enrichment": WT_M22_BINDING_ENRICHMENT,
                          "config_fingerprint": fingerprint(config)})
     return out
 
