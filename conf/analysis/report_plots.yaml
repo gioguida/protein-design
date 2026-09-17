@@ -37,6 +37,7 @@ preference_evaluation:
     full: conf/task/dpo.yaml
     lora: conf/task/lora_dpo.yaml
   device: cuda
+  # The selected execution profile supplies this at collection time.
   batch_size: 8
   num_workers: 0
   per_model:
@@ -68,3 +69,22 @@ generation:
   novelty_reference_splits: [train]
   dms_positive_rule: above_wild_type
   nearest_neighbor_ties: mean_enrichment
+
+# Hardware-specific throughput settings.  They are deliberately report-local:
+# changing a profile does not alter the statistical generation protocol.
+execution:
+  profiles:
+    rtx_4090:
+      pll_batch_size: 512
+      preference_batch_size: 12
+      gibbs_chain_batch_size: 64
+      beam_template_batch_size: 128
+    a100_80gb:
+      pll_batch_size: 1024
+      preference_batch_size: 24
+      gibbs_chain_batch_size: 192
+      beam_template_batch_size: 384
+  # PLL work can safely retry with smaller batches after a CUDA OOM.  The
+  # selected value is written to the partial-artifact provenance.
+  oom_backoff_factor: 2
+  min_pll_batch_size: 32

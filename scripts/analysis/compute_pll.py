@@ -155,6 +155,23 @@ def compute_pll(
     return out.view(n, L).sum(dim=1).numpy()
 
 
+def compute_pll_with_oom_backoff(
+    model: EsmForMaskedLM, tokenizer, cdrh3_strings: list[str], device: torch.device,
+    batch_size: int, *, min_batch_size: int = 32,
+) -> tuple[np.ndarray, int]:
+    """Run PLL with a reproducible geometric retry policy for CUDA OOMs."""
+    effective = batch_size
+    while True:
+        try:
+            return compute_pll(model, tokenizer, cdrh3_strings, device, effective), effective
+        except torch.cuda.OutOfMemoryError:
+            if device.type != "cuda" or effective <= min_batch_size:
+                raise
+            torch.cuda.empty_cache()
+            effective = max(min_batch_size, effective // 2)
+            log.warning("CUDA OOM; retrying PLL with batch_size=%d", effective)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", required=True,
@@ -173,6 +190,8 @@ def parse_args() -> argparse.Namespace:
                    help="(sequence, masked-position) pairs per forward pass. "
                         "256 fits a 650M model in fp16 on a 20G GPU with margin; "
                         "the 35M models can go much higher (e.g. 2048).")
+    p.add_argument("--min-batch-size", type=int, default=32,
+                   help="Lowest PLL batch size permitted by automatic CUDA-OOM retry.")
     p.add_argument("--force", action="store_true",
                    help="Recompute even if a fresh artifact already exists.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -223,10 +242,12 @@ def main() -> None:
                              f"got: {list(df.columns)}")
         seqs = df[seq_col].astype(str).drop_duplicates().tolist()
         log.info("[%s] computing PLL on %d unique sequences", key, len(seqs))
-        pll = compute_pll(model, tokenizer, seqs, device, args.batch_size)
+        pll, effective_batch_size = compute_pll_with_oom_backoff(
+            model, tokenizer, seqs, device, args.batch_size, min_batch_size=args.min_batch_size,
+        )
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame({seq_col: seqs, "pll": pll}).to_csv(out_csv, index=False)
-        registry.write_meta(out_csv, n=len(seqs), seq_col=seq_col, **expected)
+        registry.write_meta(out_csv, n=len(seqs), seq_col=seq_col, pll_batch_size=effective_batch_size, **expected)
         log.info("[%s] wrote %s  (n=%d)", key, out_csv, len(seqs))
 
 

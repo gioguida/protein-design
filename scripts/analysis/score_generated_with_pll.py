@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import json
 import sys
 from pathlib import Path
 
@@ -36,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Reuse the single implementation of the PLL loader + batched forward pass.
-from compute_pll import ESM2_650M_ID, compute_pll, load_esm_for_mlm  # noqa: E402
+from compute_pll import ESM2_650M_ID, compute_pll_with_oom_backoff, load_esm_for_mlm  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("score_generated_with_pll")
@@ -45,12 +46,14 @@ log = logging.getLogger("score_generated_with_pll")
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--input-csv", required=True,
+    p.add_argument("--input-csv",
                    help="CSV of generated sequences (must contain --seq-col).")
     p.add_argument("--seq-col", default="cdrh3",
                    help="Name of the sequence column in --input-csv (default: cdrh3).")
-    p.add_argument("--output-csv", required=True,
+    p.add_argument("--output-csv",
                    help="Where to write the <seq_col>,pll CSV.")
+    p.add_argument("--manifest", type=Path,
+                   help="JSON mapping labels to {input_csv, output_csv, seq_col}; loads the model once for all entries.")
     p.add_argument("--checkpoint", default=None,
                    help="Model checkpoint (HF dir, .pt state-dict, or HF id). "
                         "Empty string forces the vanilla --base-model.")
@@ -58,14 +61,55 @@ def parse_args() -> argparse.Namespace:
                    help=f"Base model for architecture + tokenizer (default {ESM2_650M_ID}).")
     p.add_argument("--batch-size", type=int, default=256,
                    help="(sequence, masked-position) pairs per forward pass.")
+    p.add_argument("--min-batch-size", type=int, default=32,
+                   help="Lowest PLL batch size permitted by automatic CUDA-OOM retry.")
     p.add_argument("--force", action="store_true",
                    help="Re-score even if --output-csv already exists.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
 
+def _score_manifest(args: argparse.Namespace) -> None:
+    """Score several CSVs with one evaluator-model load."""
+    raw_jobs = json.loads(args.manifest.read_text(encoding="utf-8"))
+    pending = []
+    for label, value in raw_jobs.items():
+        input_csv = Path(value["input_csv"])
+        output_csv = Path(value["output_csv"])
+        seq_col = value.get("seq_col", args.seq_col)
+        if output_csv.exists() and not args.force:
+            continue
+        frame = pd.read_csv(input_csv)
+        if seq_col not in frame.columns:
+            raise SystemExit(f"{input_csv} missing column {seq_col!r}. Columns: {list(frame.columns)}")
+        sequences = [item for item in frame[seq_col].astype(str).str.strip().drop_duplicates().tolist() if item]
+        pending.append((label, output_csv, seq_col, sequences))
+    if not pending:
+        return
+    checkpoint = args.checkpoint or ""
+    device = torch.device(args.device)
+    model = load_esm_for_mlm(checkpoint, args.base_model).eval().to(device)
+    if device.type == "cuda":
+        model = model.half()
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    for label, output_csv, seq_col, sequences in pending:
+        log.info("Computing PLL for %s on %d unique sequences", label, len(sequences))
+        pll, effective_batch_size = compute_pll_with_oom_backoff(
+            model, tokenizer, sequences, device, args.batch_size, min_batch_size=args.min_batch_size,
+        )
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({seq_col: sequences, "pll": pll}).to_csv(output_csv, index=False)
+        output_csv.with_suffix(output_csv.suffix + ".meta.json").write_text(json.dumps({
+            "requested_batch_size": args.batch_size, "effective_batch_size": effective_batch_size,
+            "checkpoint": checkpoint, "base_model": args.base_model,
+        }, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     args = parse_args()
+    if args.manifest is not None:
+        _score_manifest(args)
+        return
 
     out_csv = Path(args.output_csv)
     if out_csv.exists() and not args.force:
@@ -93,10 +137,16 @@ def main() -> None:
         model = model.half()
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
 
-    pll = compute_pll(model, tokenizer, seqs, device, args.batch_size)
+    pll, effective_batch_size = compute_pll_with_oom_backoff(
+        model, tokenizer, seqs, device, args.batch_size, min_batch_size=args.min_batch_size,
+    )
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({args.seq_col: seqs, "pll": pll}).to_csv(out_csv, index=False)
+    out_csv.with_suffix(out_csv.suffix + ".meta.json").write_text(json.dumps({
+        "requested_batch_size": args.batch_size, "effective_batch_size": effective_batch_size,
+        "checkpoint": checkpoint, "base_model": args.base_model,
+    }, indent=2) + "\n", encoding="utf-8")
     log.info("Wrote %s  (n=%d)", out_csv, len(seqs))
 
 

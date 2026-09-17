@@ -145,6 +145,8 @@ def parse_args() -> argparse.Namespace:
                    help="Reference WT CDR-H3 (used for the n_mutations column "
                         "and as the chain start when --start-mode=wt).")
     p.add_argument("--n-chains", type=int, default=5)
+    p.add_argument("--chain-batch-size", type=int, default=1,
+                   help="Independent chains evaluated per masked-LM forward.  Does not change the sampler protocol.")
     p.add_argument("--n-steps", type=int, default=5000)
     p.add_argument("--burn-in", type=int, default=0,
                    help="Number of initial steps to run before recording any snapshots. "
@@ -269,6 +271,35 @@ def _do_gibbs_step(
     return new_vh, new_tokens
 
 
+def _do_batched_gibbs_step(
+    current_vhs: list[str], current_tokens: torch.Tensor, *, args: argparse.Namespace,
+    model: EsmForMaskedLM, aa_token_ids: torch.Tensor, mask_id: int,
+) -> tuple[list[str], torch.Tensor]:
+    """Advance independent chains with one batched masked-LM forward."""
+    positions = [random.randrange(C05_CDRH3_END - C05_CDRH3_START) for _ in current_vhs]
+    token_positions = torch.tensor([C05_CDRH3_START + pos + 1 for pos in positions], device=current_tokens.device)
+    rows = torch.arange(len(current_vhs), device=current_tokens.device)
+    masked = current_tokens.clone()
+    masked[rows, token_positions] = mask_id
+    with torch.inference_mode():
+        logits = model(input_ids=masked).logits
+        selected = logits[rows, token_positions][:, aa_token_ids].float()
+        probabilities = torch.softmax(selected / args.temperature, dim=-1)
+        sampled = torch.multinomial(probabilities, num_samples=1).squeeze(1)
+    updated = current_tokens.clone()
+    updated[rows, token_positions] = aa_token_ids[sampled]
+    result: list[str] = []
+    for index, (full_vh, local_pos) in enumerate(zip(current_vhs, positions)):
+        cdr_pos = C05_CDRH3_START + local_pos
+        proposed = full_vh[:cdr_pos] + STANDARD_AAS[int(sampled[index])] + full_vh[cdr_pos + 1:]
+        if args.max_mutations is not None and hamming(proposed[C05_CDRH3_START:C05_CDRH3_END], args.wt_cdrh3) > args.max_mutations:
+            updated[index] = current_tokens[index]
+            result.append(full_vh)
+        else:
+            result.append(proposed)
+    return result, updated
+
+
 def main() -> None:
     args = parse_args()
     print(f"[init] args: {vars(args)}")
@@ -281,6 +312,8 @@ def main() -> None:
             f"--wt-cdrh3 must have length {C05_CDRH3_END - C05_CDRH3_START}, "
             f"got {len(args.wt_cdrh3)}: {args.wt_cdrh3!r}"
         )
+    if args.chain_batch_size < 1:
+        raise ValueError("--chain-batch-size must be >= 1")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -353,39 +386,31 @@ def main() -> None:
           f"burn_in={args.burn_in}  snapshot_every={args.snapshot_every}  "
           f"temperature={args.temperature}  max_mutations={args.max_mutations}")
 
-    for chain_id in range(args.n_chains):
-        start_cdrh3 = chain_starts[chain_id]
-        current_vh = add_context(start_cdrh3)
-        current_tokens = tokenize_full_vh(tokenizer, current_vh).to(device)
-        t_chain = time.time()
-        print(f"\n[chain {chain_id}] start  cdrh3={start_cdrh3}")
+    for batch_start in range(0, args.n_chains, args.chain_batch_size):
+        chain_ids = list(range(batch_start, min(batch_start + args.chain_batch_size, args.n_chains)))
+        current_vhs = [add_context(chain_starts[chain_id]) for chain_id in chain_ids]
+        current_tokens = torch.cat([tokenize_full_vh(tokenizer, vh) for vh in current_vhs], dim=0).to(device)
+        t_batch = time.time()
+        print(f"[chains {chain_ids[0]}..{chain_ids[-1]}] batch={len(chain_ids)}")
 
         for _ in range(args.burn_in):
-            current_vh, current_tokens = _do_gibbs_step(
-                current_vh, current_tokens,
-                args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
+            current_vhs, current_tokens = _do_batched_gibbs_step(
+                current_vhs, current_tokens, args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
             )
-
-        if args.burn_in > 0:
-            cdrh3 = current_vh[C05_CDRH3_START:C05_CDRH3_END]
-            print(f"[chain {chain_id}] burn-in done ({args.burn_in} steps)  "
-                  f"cdrh3={cdrh3}  mut={hamming(cdrh3, args.wt_cdrh3)}")
-
-        snapshots.append(make_record(chain_id, 0, current_vh, args.wt_cdrh3, args.model_variant))
+        for chain_id, current_vh in zip(chain_ids, current_vhs):
+            snapshots.append(make_record(chain_id, 0, current_vh, args.wt_cdrh3, args.model_variant))
 
         for step in range(args.n_steps):
-            current_vh, current_tokens = _do_gibbs_step(
-                current_vh, current_tokens,
-                args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
+            current_vhs, current_tokens = _do_batched_gibbs_step(
+                current_vhs, current_tokens, args=args, model=model, aa_token_ids=aa_token_ids, mask_id=mask_id,
             )
             steps_taken = step + 1
             is_snapshot = steps_taken % args.snapshot_every == 0 or step == args.n_steps - 1
             if is_snapshot:
-                snapshots.append(make_record(chain_id, steps_taken, current_vh, args.wt_cdrh3, args.model_variant))
-                cdrh3 = current_vh[C05_CDRH3_START:C05_CDRH3_END]
-                print(f"[chain {chain_id}] step {steps_taken:>{len(str(args.n_steps))}}/{args.n_steps}"
-                      f"  cdrh3={cdrh3}  mut={hamming(cdrh3, args.wt_cdrh3)}"
-                      f"  elapsed={time.time() - t_chain:.1f}s")
+                for chain_id, current_vh in zip(chain_ids, current_vhs):
+                    snapshots.append(make_record(chain_id, steps_taken, current_vh, args.wt_cdrh3, args.model_variant))
+                print(f"[chains {chain_ids[0]}..{chain_ids[-1]}] step {steps_taken}/{args.n_steps} "
+                      f"elapsed={time.time() - t_batch:.1f}s")
 
     out_dir = os.path.dirname(args.output_path)
     if out_dir:
@@ -402,6 +427,7 @@ def main() -> None:
         "checkpoint_path": checkpoint,
         "wt_cdrh3": args.wt_cdrh3,
         "n_chains": args.n_chains,
+        "chain_batch_size": args.chain_batch_size,
         "n_steps": args.n_steps,
         "burn_in": args.burn_in,
         "snapshot_every": args.snapshot_every,

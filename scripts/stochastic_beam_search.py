@@ -167,6 +167,8 @@ def parse_args() -> argparse.Namespace:
                    help="Reference WT CDR-H3 (used for the n_mutations column "
                         "and as the start when --start-mode=wt).")
     p.add_argument("--beam-size", type=int, default=5)
+    p.add_argument("--template-batch-size", type=int, default=1,
+                   help="Masked templates per forward pass when scoring beam candidates.")
     p.add_argument("--n-steps", type=int, default=4)
     p.add_argument("--snapshot-every", type=int, default=100)
     p.add_argument("--temperature", type=float, default=1.0)
@@ -257,25 +259,49 @@ def _score_template(
     aa_index_by_token: Dict[int, int],
     mask_id: int,
     temperature: float,
+    template_batch_size: int = 1,
 ) -> Tuple[Dict[int, torch.Tensor], float]:
-    scores: Dict[int, torch.Tensor] = {}
-    pll_template = 0.0
-    for token_pos in mutable_token_positions:
-        log_probs = _position_log_probs(
-            seq_tokens, token_pos,
-            model=model,
-            aa_token_ids=aa_token_ids,
-            mask_id=mask_id,
-            temperature=temperature,
-        )
-        scores[token_pos] = log_probs
-        current_token = int(seq_tokens[token_pos].item())
-        if current_token not in aa_index_by_token:
-            raise ValueError(
-                f"Token id {current_token} at mutable position {token_pos} is not a standard AA token."
-            )
-        pll_template += float(log_probs[aa_index_by_token[current_token]].item())
-    return scores, pll_template
+    return _score_templates(
+        [seq_tokens], mutable_token_positions, model=model, aa_token_ids=aa_token_ids,
+        aa_index_by_token=aa_index_by_token, mask_id=mask_id, temperature=temperature,
+        template_batch_size=template_batch_size,
+    )[0]
+
+
+def _score_templates(
+    sequence_tokens: List[torch.Tensor],
+    mutable_token_positions: List[int],
+    *,
+    model: EsmForMaskedLM,
+    aa_token_ids: torch.Tensor,
+    aa_index_by_token: Dict[int, int],
+    mask_id: int,
+    temperature: float,
+    template_batch_size: int,
+) -> List[Tuple[Dict[int, torch.Tensor], float]]:
+    """Score every mutable position of several beam members in GPU batches."""
+    if template_batch_size < 1:
+        raise ValueError("template_batch_size must be >= 1")
+    outputs: List[Tuple[Dict[int, torch.Tensor], float]] = [({}, 0.0) for _ in sequence_tokens]
+    jobs = [(sequence_index, token_pos) for sequence_index in range(len(sequence_tokens)) for token_pos in mutable_token_positions]
+    for start in range(0, len(jobs), template_batch_size):
+        chunk = jobs[start:start + template_batch_size]
+        templates = torch.stack([sequence_tokens[index].clone() for index, _ in chunk])
+        positions = torch.tensor([position for _, position in chunk], device=templates.device)
+        rows = torch.arange(len(chunk), device=templates.device)
+        templates[rows, positions] = mask_id
+        with torch.inference_mode():
+            logits = model(input_ids=templates).logits[rows, positions][:, aa_token_ids].float()
+        log_probs = torch.log_softmax(logits / temperature, dim=-1)
+        for row, (sequence_index, token_pos) in enumerate(chunk):
+            scores, pll_template = outputs[sequence_index]
+            score = log_probs[row]
+            current_token = int(sequence_tokens[sequence_index][token_pos].item())
+            if current_token not in aa_index_by_token:
+                raise ValueError(f"Token id {current_token} at mutable position {token_pos} is not a standard AA token.")
+            scores[token_pos] = score
+            outputs[sequence_index] = (scores, pll_template + float(score[aa_index_by_token[current_token]].item()))
+    return outputs
 
 
 def stochastic_beam_search(
@@ -289,6 +315,7 @@ def stochastic_beam_search(
     temperature: float,
     beam_size: int,
     n_steps: int,
+    template_batch_size: int = 1,
 ) -> Tuple[List[List[Tuple[torch.Tensor, float]]], Dict[Tuple[int, ...], float]]:
     """Run SBS and return beam snapshots-by-step and all seen sequences with PLL."""
     init_scores, init_pll = _score_template(
@@ -299,6 +326,7 @@ def stochastic_beam_search(
         aa_index_by_token=aa_index_by_token,
         mask_id=mask_id,
         temperature=temperature,
+        template_batch_size=template_batch_size,
     )
     del init_scores  # kept only to compute the seed PLL consistently
 
@@ -314,16 +342,12 @@ def stochastic_beam_search(
         candidates: Dict[Tuple[int, ...], float] = {}
         candidate_tensors: Dict[Tuple[int, ...], torch.Tensor] = {}
 
-        for seq_tokens, _ in beam:
-            position_scores, pll_template = _score_template(
-                seq_tokens,
-                mutable_token_positions,
-                model=model,
-                aa_token_ids=aa_token_ids,
-                aa_index_by_token=aa_index_by_token,
-                mask_id=mask_id,
-                temperature=temperature,
-            )
+        templates = _score_templates(
+            [seq_tokens for seq_tokens, _ in beam], mutable_token_positions,
+            model=model, aa_token_ids=aa_token_ids, aa_index_by_token=aa_index_by_token,
+            mask_id=mask_id, temperature=temperature, template_batch_size=template_batch_size,
+        )
+        for (seq_tokens, _), (position_scores, pll_template) in zip(beam, templates):
             for token_pos in mutable_token_positions:
                 log_probs = position_scores[token_pos]
                 current_token = int(seq_tokens[token_pos].item())
@@ -377,6 +401,8 @@ def main() -> None:
         )
     if args.beam_size < 1:
         raise ValueError("--beam-size must be >= 1")
+    if args.template_batch_size < 1:
+        raise ValueError("--template-batch-size must be >= 1")
     if args.n_steps < 1:
         raise ValueError("--n-steps must be >= 1")
     if args.snapshot_every < 1:
@@ -482,6 +508,7 @@ def main() -> None:
             temperature=args.temperature,
             beam_size=args.beam_size,
             n_steps=args.n_steps,
+            template_batch_size=args.template_batch_size,
         )
         print(f"[run] seed={start!r} offset={chain_id_offset} "
               f"completed in {time.time() - t0:.1f}s  unique_seen={len(all_s)}")
@@ -529,6 +556,7 @@ def main() -> None:
         "checkpoint_path": checkpoint,
         "wt_cdrh3": args.wt_cdrh3,
         "beam_size": args.beam_size,
+        "template_batch_size": args.template_batch_size,
         "n_steps": args.n_steps,
         "snapshot_every": args.snapshot_every,
         "temperature": args.temperature,

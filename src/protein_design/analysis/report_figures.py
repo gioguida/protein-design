@@ -74,13 +74,14 @@ def preflight(config: dict[str, Any], sections: Iterable[str] | None = None) -> 
     if not missing:
         print("All report JSON artifacts are available.")
         return []
-    wanted = sorted({path.name.split("_")[0] for path in missing})
-    section_arg = ",".join(sorted(set(sections or ("functional", "preference", "generation"))))
     print("Missing report artifacts:")
     for path in missing:
         print("  ", path)
-    print("\nRun on the cluster (the notebook never submits it):")
-    print(f"  sbatch bash_scripts/report_plot_data.sbatch --config conf/analysis/report_plots.yaml --sections {section_arg}")
+    print("\nRun on the cluster (the notebook never submits jobs):")
+    for heading, commands in report_data.collection_commands(config, sections):
+        print(f"\n{heading}:")
+        for command in commands:
+            print(f"  {command}")
     return missing
 
 

@@ -14,6 +14,8 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -57,6 +59,23 @@ def artifact_path(config: dict[str, Any], name: str) -> Path:
     return data_dir(config) / name
 
 
+def parts_dir(config: dict[str, Any]) -> Path:
+    """Directory for independently produced, provenance-bearing work units."""
+    return data_dir(config) / "parts"
+
+
+def part_path(config: dict[str, Any], name: str) -> Path:
+    return parts_dir(config) / name
+
+
+def execution_profile(config: dict[str, Any], name: str) -> dict[str, Any]:
+    try:
+        return dict(config["execution"]["profiles"][name])
+    except KeyError as exc:
+        known = sorted(config.get("execution", {}).get("profiles", {}))
+        raise ValueError(f"Unknown report execution profile {name!r}; available: {known}") from exc
+
+
 def artifact_names(config: dict[str, Any], sections: Iterable[str] | None = None) -> list[str]:
     sections = set(sections or ("functional", "preference", "generation"))
     names: list[str] = []
@@ -72,6 +91,58 @@ def artifact_names(config: dict[str, Any], sections: Iterable[str] | None = None
 
 def missing_artifacts(config: dict[str, Any], sections: Iterable[str] | None = None) -> list[Path]:
     return [artifact_path(config, name) for name in artifact_names(config, sections) if not artifact_path(config, name).exists()]
+
+
+def collection_commands(config: dict[str, Any], sections: Iterable[str] | None = None) -> list[tuple[str, list[str]]]:
+    """Return exact, manually submitted commands for incomplete report work units."""
+    selected = set(sections or ("functional", "preference", "generation"))
+    config_arg = "--config conf/analysis/report_plots.yaml"
+    commands: list[tuple[str, list[str]]] = []
+    if "functional" in selected and not artifact_path(config, "functional_metrics.json").exists():
+        workers = [f"sbatch bash_scripts/report_plot_data_4090.sbatch {config_arg} --work-unit functional-model --model {model}"
+                   for model in config["models"]["order"] if not part_path(config, f"functional_{model}.json").exists()]
+        reducer = [] if workers else [f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit functional-reduce"]
+        if workers:
+            commands.append(("Functional model jobs (independent)", workers))
+        if reducer:
+            commands.append(("Functional reducer", reducer))
+    if "preference" in selected and not artifact_path(config, "preference_test_metrics.json").exists():
+        workers = [f"sbatch bash_scripts/report_plot_data_4090.sbatch {config_arg} --work-unit preference-model --model {model}"
+                   for model in config["models"]["preference_models"] if not part_path(config, f"preference_{model}.json").exists()]
+        reducer = [] if workers else [f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit preference-reduce"]
+        if workers:
+            commands.append(("Preference model jobs (independent)", workers))
+        if reducer:
+            commands.append(("Preference reducer", reducer))
+    generation_missing = any(not artifact_path(config, name).exists() for name in artifact_names(config, ["generation"]))
+    if "generation" in selected and generation_missing:
+        if not part_path(config, "generation_baselines.json").exists():
+            commands.append(("Generation baseline", [f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit generation-baselines"]))
+        samples = [
+            f"sbatch bash_scripts/report_plot_data_a100_80gb.sbatch {config_arg} --work-unit generation-sample --model {model} --sampler {sampler}"
+            for model in config["models"]["generation_models"] for sampler in ("gibbs", "stochastic_beam")
+            if not part_path(config, f"generation_sample_{model}_{sampler}.json").exists()
+        ]
+        if samples:
+            commands.append(("Generation sampling jobs (independent)", samples))
+        native = [
+            f"sbatch bash_scripts/report_plot_data_a100_80gb.sbatch {config_arg} --work-unit generation-native-score --model {model}"
+            for model in config["models"]["generation_models"]
+            if not part_path(config, f"generation_native_scores_{model}.json").exists()
+        ]
+        if native:
+            commands.append(("Native generation scorers (after that model's samples)", native))
+        if not part_path(config, "generation_common_scores.json").exists():
+            commands.append(("Common ESM2 scorer (after all samples)", [
+                f"sbatch bash_scripts/report_plot_data_a100_80gb.sbatch {config_arg} --work-unit generation-common-score",
+            ]))
+        all_parts = (part_path(config, "generation_baselines.json").exists()
+                     and part_path(config, "generation_common_scores.json").exists()
+                     and all(part_path(config, f"generation_native_scores_{model}.json").exists()
+                             for model in config["models"]["generation_models"]))
+        if all_parts:
+            commands.append(("Generation reducer", [f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit generation-reduce"]))
+    return commands
 
 
 def fingerprint(payload: Any) -> str:
@@ -101,7 +172,14 @@ def write_artifact(path: Path, payload: dict[str, Any]) -> None:
         "git_sha": registry.git_sha(),
         **payload,
     }
-    path.write_text(json.dumps(_json_value(full_payload), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    encoded = json.dumps(_json_value(full_payload), indent=2, sort_keys=True, allow_nan=False) + "\n"
+    # Reducers may run immediately after several independent workers.  A
+    # replace is atomic on the shared filesystem and prevents half-written JSON
+    # from being accepted by a preflight or a notebook kernel.
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        handle.write(encoded)
+        temporary = Path(handle.name)
+    temporary.replace(path)
 
 
 def load_artifact(path: str | Path) -> dict[str, Any]:
@@ -117,7 +195,7 @@ def complete_preference_summary(summary: dict[str, Any]) -> bool:
     return all(summary.get(name) is not None and math.isfinite(float(summary[name])) for name in REQUIRED_PREFERENCE_METRICS)
 
 
-def _resolved_config(checkpoint: Path, config: dict[str, Any], model_key: str):
+def _resolved_config(checkpoint: Path, config: dict[str, Any], model_key: str, *, batch_size: int | None = None):
     """Load run configuration, or construct the configured canonical fallback."""
     from omegaconf import OmegaConf
 
@@ -139,7 +217,7 @@ def _resolved_config(checkpoint: Path, config: dict[str, Any], model_key: str):
         source = f"canonical fallback: {config['_path']}"
     pref = config["preference_evaluation"]
     cfg.training.device = str(pref["device"])
-    cfg.training.batch_size = int(pref["batch_size"])
+    cfg.training.batch_size = int(batch_size or pref["batch_size"])
     cfg.training.num_workers = int(pref["num_workers"])
     cfg.training.pin_memory = False
     cfg.training.persistent_workers = False
@@ -155,7 +233,7 @@ def _resolved_config(checkpoint: Path, config: dict[str, Any], model_key: str):
     return cfg, source
 
 
-def recompute_preference_metrics(config: dict[str, Any], model_key: str) -> dict[str, Any]:
+def recompute_preference_metrics(config: dict[str, Any], model_key: str, *, batch_size: int | None = None) -> dict[str, Any]:
     """Evaluate a checkpoint on the exact DPO test-pair construction.
 
     This calls the DPO module's existing pair construction, dataloader and
@@ -167,7 +245,7 @@ def recompute_preference_metrics(config: dict[str, Any], model_key: str) -> dict
 
     spec = registry.resolve_model(model_key)
     checkpoint = Path(str(spec["checkpoint"]))
-    cfg, config_source = _resolved_config(checkpoint, config, model_key)
+    cfg, config_source = _resolved_config(checkpoint, config, model_key, batch_size=batch_size)
     _, _, test_df = build_split_pair_dataframes_from_cfg(cfg)
     task = str(config["preference_evaluation"]["per_model"][model_key]["task"])
     if task == "lora":
@@ -211,57 +289,130 @@ def recompute_preference_metrics(config: dict[str, Any], model_key: str) -> dict
     }
 
 
-def collect_preference_metrics(config: dict[str, Any], *, force: bool = False) -> Path:
-    out = artifact_path(config, "preference_test_metrics.json")
+def collect_preference_model(
+    config: dict[str, Any], model_key: str, *, profile: str, force: bool = False,
+) -> Path:
+    """Collect one complete preference tuple; never mix summary and recomputed fields."""
+    if model_key not in config["models"]["preference_models"]:
+        raise ValueError(f"{model_key!r} is not a configured preference model")
+    out = part_path(config, f"preference_{model_key}.json")
     if out.exists() and not force:
         return out
+    checkpoint = Path(str(registry.resolve_model(model_key)["checkpoint"]))
+    summary_path = checkpoint.parent / "summary.json"
+    summary: dict[str, Any] = {}
+    if summary_path.exists():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    profile_values = execution_profile(config, profile)
+    effective_batch_size: int | None = None
+    if complete_preference_summary(summary):
+        row = {name: float(summary[name]) for name in REQUIRED_PREFERENCE_METRICS}
+        row.update({"test_pairs": summary.get("test_pairs"), "source": "summary", "summary_path": str(summary_path)})
+    else:
+        import torch
+
+        effective_batch_size = int(profile_values["preference_batch_size"])
+        while True:
+            try:
+                row = recompute_preference_metrics(config, model_key, batch_size=effective_batch_size)
+                break
+            except torch.cuda.OutOfMemoryError:
+                if effective_batch_size <= 1:
+                    raise
+                torch.cuda.empty_cache()
+                effective_batch_size = max(1, effective_batch_size // int(config["execution"]["oom_backoff_factor"]))
+                print(f"[oom] retrying preference evaluation with batch_size={effective_batch_size}")
+    row["checkpoint"] = str(checkpoint)
+    row["checkpoint_fingerprint"] = fingerprint({"checkpoint": str(checkpoint), "model": model_key})
+    write_artifact(out, {"model": model_key, "metrics": row, "execution_profile": profile,
+                         "execution": {"preference_batch_size": effective_batch_size or profile_values["preference_batch_size"]},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def reduce_preference_metrics(config: dict[str, Any]) -> Path:
+    out = artifact_path(config, "preference_test_metrics.json")
     rows: dict[str, Any] = {}
+    missing: list[Path] = []
     for model_key in config["models"]["preference_models"]:
-        checkpoint = Path(str(registry.resolve_model(model_key)["checkpoint"]))
-        summary_path = checkpoint.parent / "summary.json"
-        summary: dict[str, Any] = {}
-        if summary_path.exists():
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        if complete_preference_summary(summary):
-            row = {name: float(summary[name]) for name in REQUIRED_PREFERENCE_METRICS}
-            row.update({"test_pairs": summary.get("test_pairs"), "source": "summary",
-                        "summary_path": str(summary_path)})
+        path = part_path(config, f"preference_{model_key}.json")
+        if not path.exists():
+            missing.append(path)
         else:
-            row = recompute_preference_metrics(config, model_key)
-        row["checkpoint"] = str(checkpoint)
-        row["checkpoint_fingerprint"] = fingerprint({"checkpoint": str(checkpoint), "model": model_key})
-        rows[model_key] = row
+            rows[model_key] = load_artifact(path)["metrics"]
+    if missing:
+        raise FileNotFoundError("Preference reducer requires: " + ", ".join(map(str, missing)))
     write_artifact(out, {"models": rows, "config_fingerprint": fingerprint(config)})
     return out
 
 
+def collect_preference_metrics(config: dict[str, Any], *, force: bool = False) -> Path:
+    """Compatibility wrapper for a single-machine collection invocation."""
+    for model_key in config["models"]["preference_models"]:
+        collect_preference_model(config, model_key, profile="rtx_4090", force=force)
+    return reduce_preference_metrics(config)
+
+
 def _run(command: list[str]) -> None:
     print("[run]", " ".join(command))
+    started = time.perf_counter()
     subprocess.run(command, cwd=registry.REPO_ROOT, check=True)
+    print(f"[run] completed in {time.perf_counter() - started:.1f}s")
 
 
-def collect_functional_metrics(config: dict[str, Any], *, force: bool = False) -> Path:
-    out = artifact_path(config, "functional_metrics.json")
+def collect_functional_model(
+    config: dict[str, Any], model_key: str, *, profile: str, force: bool = False,
+) -> Path:
+    """Evaluate all functional datasets with one loaded model."""
+    if model_key not in config["models"]["order"]:
+        raise ValueError(f"{model_key!r} is not a configured report model")
+    out = part_path(config, f"functional_{model_key}.json")
     if out.exists() and not force:
         return out
     datasets = config["datasets"]["functional"]
-    model_rows: dict[str, Any] = {}
-    for model_key in config["models"]["order"]:
-        _run([sys.executable, "scripts/analysis/compute_pll.py", "--model", model_key,
-              "--dataset", ",".join(datasets), "--device", "cuda"] + (["--force"] if force else []))
-        per_dataset: dict[str, Any] = {}
-        for dataset_key in datasets:
-            ds = registry.load_datasets_cfg()["datasets"][dataset_key]
-            joined = registry.load_pll(model_key, dataset_key).merge(registry.load_truth(dataset_key), on=ds["seq_col"], how="inner")
-            pll = joined["pll"].to_numpy(float)
-            truth = joined["enrichment"].to_numpy(float)
-            valid = np.isfinite(pll) & np.isfinite(truth)
-            rho = float(spearmanr(pll[valid], truth[valid]).statistic) if valid.sum() >= 2 else float("nan")
-            cdr_ppl = float(math.exp(-pll[valid].sum() / sum(len(s) for s in joined.loc[valid, ds["seq_col"]])))
-            per_dataset[dataset_key] = {"spearman_pll_enrichment": rho, "n": int(valid.sum()), "cdr_pseudo_perplexity": cdr_ppl}
-        model_rows[model_key] = {"checkpoint": registry.resolve_model(model_key)["checkpoint"], "datasets": per_dataset}
-    write_artifact(out, {"models": model_rows, "datasets": datasets, "config_fingerprint": fingerprint(config)})
+    batch_size = int(execution_profile(config, profile)["pll_batch_size"])
+    _run([sys.executable, "scripts/analysis/compute_pll.py", "--model", model_key,
+          "--dataset", ",".join(datasets), "--device", "cuda", "--batch-size", str(batch_size),
+          "--min-batch-size", str(config["execution"]["min_pll_batch_size"])] +
+         (["--force"] if force else []))
+    per_dataset: dict[str, Any] = {}
+    for dataset_key in datasets:
+        ds = registry.load_datasets_cfg()["datasets"][dataset_key]
+        joined = registry.load_pll(model_key, dataset_key).merge(registry.load_truth(dataset_key), on=ds["seq_col"], how="inner")
+        pll = joined["pll"].to_numpy(float)
+        truth = joined["enrichment"].to_numpy(float)
+        valid = np.isfinite(pll) & np.isfinite(truth)
+        rho = float(spearmanr(pll[valid], truth[valid]).statistic) if valid.sum() >= 2 else float("nan")
+        cdr_ppl = float(math.exp(-pll[valid].sum() / sum(len(s) for s in joined.loc[valid, ds["seq_col"]])))
+        per_dataset[dataset_key] = {"spearman_pll_enrichment": rho, "n": int(valid.sum()), "cdr_pseudo_perplexity": cdr_ppl}
+    write_artifact(out, {"model": model_key, "metrics": {"checkpoint": registry.resolve_model(model_key)["checkpoint"],
+                                                             "datasets": per_dataset},
+                         "execution_profile": profile, "execution": {"pll_batch_size": batch_size},
+                         "config_fingerprint": fingerprint(config)})
     return out
+
+
+def reduce_functional_metrics(config: dict[str, Any]) -> Path:
+    out = artifact_path(config, "functional_metrics.json")
+    rows: dict[str, Any] = {}
+    missing: list[Path] = []
+    for model_key in config["models"]["order"]:
+        path = part_path(config, f"functional_{model_key}.json")
+        if path.exists():
+            rows[model_key] = load_artifact(path)["metrics"]
+        else:
+            missing.append(path)
+    if missing:
+        raise FileNotFoundError("Functional reducer requires: " + ", ".join(map(str, missing)))
+    write_artifact(out, {"models": rows, "datasets": config["datasets"]["functional"],
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def collect_functional_metrics(config: dict[str, Any], *, force: bool = False) -> Path:
+    for model_key in config["models"]["order"]:
+        collect_functional_model(config, model_key, profile="rtx_4090", force=force)
+    return reduce_functional_metrics(config)
 
 
 def build_generation_reference(config: dict[str, Any], *, force: bool = False) -> Path:
@@ -352,7 +503,9 @@ def _generate_baselines(config: dict[str, Any], work_dir: Path, *, force: bool) 
     return output
 
 
-def _generate_model_libraries(config: dict[str, Any], model_key: str, work_dir: Path, *, force: bool) -> dict[str, Path]:
+def _generate_model_library(
+    config: dict[str, Any], model_key: str, sampler: str, work_dir: Path, *, profile: str, force: bool,
+) -> Path:
     generation = config["generation"]
     model = registry.resolve_model(model_key)
     # ``checkpoint: null`` denotes a vanilla model in the registry.  The
@@ -362,24 +515,25 @@ def _generate_model_libraries(config: dict[str, Any], model_key: str, work_dir: 
     checkpoint = str(model["checkpoint"] or model["base_model"])
     adapter_args = (["--adapter-base-checkpoint", str(model["adapter_base_checkpoint"])]
                     if model.get("adapter_base_checkpoint") else [])
-    outputs: dict[str, Path] = {}
     specs = {
         "gibbs": [sys.executable, "scripts/gibbs_sampling.py", "--model-variant", model_key,
                   "--checkpoint-path", checkpoint, *adapter_args, "--n-chains", str(generation["chains_or_beams"]),
                   "--n-steps", str(max(generation["retained_steps"])), "--snapshot-every", "1",
                   "--temperature", str(generation["temperature"]), "--seed", str(generation["seed"]),
-                  "--max-mutations", str(generation["max_mutations"]), "--start-mode", "wt"],
+                  "--max-mutations", str(generation["max_mutations"]), "--start-mode", "wt",
+                  "--chain-batch-size", str(execution_profile(config, profile)["gibbs_chain_batch_size"])],
         "stochastic_beam": [sys.executable, "scripts/stochastic_beam_search.py", "--model-variant", model_key,
                             "--checkpoint-path", checkpoint, *adapter_args, "--beam-size", str(generation["chains_or_beams"]),
                             "--n-steps", str(max(generation["retained_steps"])), "--snapshot-every", "1",
-                            "--temperature", str(generation["temperature"]), "--seed", str(generation["seed"]), "--start-mode", "wt"],
+                            "--temperature", str(generation["temperature"]), "--seed", str(generation["seed"]), "--start-mode", "wt",
+                            "--template-batch-size", str(execution_profile(config, profile)["beam_template_batch_size"])],
     }
-    for sampler, command in specs.items():
-        path = work_dir / f"{model_key}_{sampler}.csv"
-        if force or not path.exists():
-            _run([*command, "--output-path", str(path)])
-        outputs[sampler] = path
-    return outputs
+    if sampler not in specs:
+        raise ValueError(f"Unsupported report sampler {sampler!r}")
+    path = work_dir / f"{model_key}_{sampler}.csv"
+    if force or not path.exists():
+        _run([*specs[sampler], "--output-path", str(path)])
+    return path
 
 
 def _load_library(path: Path, retained_steps: set[int] | None = None) -> pd.DataFrame:
@@ -392,66 +546,177 @@ def _load_library(path: Path, retained_steps: set[int] | None = None) -> pd.Data
     return frame[["cdrh3", "n_mutations"]].rename(columns={"cdrh3": "sequence"}).reset_index(drop=True)
 
 
-def _score_library(path: Path, model_key: str, sequences: pd.DataFrame, work_dir: Path, *, force: bool) -> tuple[dict[str, float], float]:
+def _score_libraries_once(
+    config: dict[str, Any], libraries: dict[str, Path], model_key: str, *, cache_namespace: str, profile: str, force: bool,
+) -> dict[str, dict[str, Any]]:
+    """Write a scoring manifest and reuse one evaluator-model process for all libraries."""
     model = registry.resolve_model(model_key)
-    input_path = work_dir / f"score_input_{model_key}_{path.stem}.csv"
-    scored_path = work_dir / f"scores_{model_key}_{path.stem}.csv"
-    score_input = pd.concat([sequences[["sequence"]], pd.DataFrame({"sequence": [C05_CDRH3]})], ignore_index=True)
-    input_path.parent.mkdir(parents=True, exist_ok=True)
-    score_input.to_csv(input_path, index=False)
-    if force or not scored_path.exists():
-        command = [sys.executable, "scripts/analysis/score_generated_with_pll.py", "--input-csv", str(input_path),
-                   "--seq-col", "sequence", "--output-csv", str(scored_path), "--base-model", str(model["base_model"]),
-                   "--device", "cuda"]
-        if model["checkpoint"]:
-            command.extend(["--checkpoint", str(model["checkpoint"])])
-        _run(command)
-    scores = pd.read_csv(scored_path)
-    score_map = dict(zip(scores["sequence"].astype(str), scores["pll"].astype(float)))
-    if C05_CDRH3 not in score_map:
-        raise ValueError(f"WT score absent from {scored_path}")
-    return score_map, float(score_map[C05_CDRH3])
-
-
-def collect_generation_libraries(config: dict[str, Any], *, force: bool = False) -> list[Path]:
-    reference_path = build_generation_reference(config, force=force)
-    reference = load_artifact(reference_path)["sequences"]
     work_dir = _generation_work_dir()
+    batch_size = int(execution_profile(config, profile)["pll_batch_size"])
+    manifest: dict[str, dict[str, str]] = {}
+    inputs: dict[str, tuple[Path, Path]] = {}
+    for label, csv_path in libraries.items():
+        retained = set(int(step) for step in config["generation"]["retained_steps"]) if label.endswith("gibbs") or label.endswith("stochastic_beam") or label in {"gibbs", "stochastic_beam"} else None
+        frame = _load_library(csv_path, retained)
+        if len(frame) != int(config["generation"]["n_sequences"]):
+            raise ValueError(f"{csv_path} has {len(frame)} rows, expected {config['generation']['n_sequences']}")
+        input_path = work_dir / f"score_input_{cache_namespace}_{model_key}_{csv_path.stem}.csv"
+        output_path = work_dir / f"scores_{cache_namespace}_{model_key}_{csv_path.stem}.csv"
+        pd.concat([frame[["sequence"]], pd.DataFrame({"sequence": [C05_CDRH3]})], ignore_index=True).to_csv(input_path, index=False)
+        manifest[label] = {"input_csv": str(input_path), "output_csv": str(output_path), "seq_col": "sequence"}
+        inputs[label] = (csv_path, output_path)
+    manifest_path = work_dir / f"score_manifest_{cache_namespace}_{model_key}_{fingerprint(manifest)}.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    command = [sys.executable, "scripts/analysis/score_generated_with_pll.py", "--manifest", str(manifest_path),
+               "--base-model", str(model["base_model"]), "--device", "cuda", "--batch-size", str(batch_size),
+               "--min-batch-size", str(config["execution"]["min_pll_batch_size"])]
+    if model["checkpoint"]:
+        command.extend(["--checkpoint", str(model["checkpoint"])])
+    if force:
+        command.append("--force")
+    _run(command)
+    values: dict[str, dict[str, Any]] = {}
+    for label, (csv_path, output_path) in inputs.items():
+        scores = pd.read_csv(output_path)
+        score_map = dict(zip(scores["sequence"].astype(str), scores["pll"].astype(float)))
+        if C05_CDRH3 not in score_map:
+            raise ValueError(f"WT score absent from {output_path}")
+        meta_path = output_path.with_suffix(output_path.suffix + ".meta.json")
+        effective = batch_size
+        if meta_path.exists():
+            effective = int(json.loads(meta_path.read_text(encoding="utf-8")).get("effective_batch_size", batch_size))
+        values[label] = {"csv_path": str(csv_path), "scores": score_map,
+                         "wt_score": float(score_map[C05_CDRH3]), "effective_pll_batch_size": effective}
+    return values
+
+
+def collect_generation_baselines(config: dict[str, Any], *, force: bool = False) -> Path:
+    """Create the shared random/PSSM inputs once, without a GPU allocation."""
+    out = part_path(config, "generation_baselines.json")
+    if out.exists() and not force:
+        return out
+    reference_path = build_generation_reference(config, force=force)
+    files = _generate_baselines(config, _generation_work_dir(), force=force)
+    write_artifact(out, {"reference_artifact": str(reference_path),
+                         "libraries": {key: str(value) for key, value in files.items()},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def collect_generation_sample(
+    config: dict[str, Any], model_key: str, sampler: str, *, profile: str, force: bool = False,
+) -> Path:
+    """Generate one model/sampler library, allowing all eight runs to fan out."""
+    if model_key not in config["models"]["generation_models"]:
+        raise ValueError(f"{model_key!r} is not a configured generation model")
+    if sampler not in {"gibbs", "stochastic_beam"}:
+        raise ValueError("Generation sample work units must be gibbs or stochastic_beam")
+    out = part_path(config, f"generation_sample_{model_key}_{sampler}.json")
+    if out.exists() and not force:
+        return out
+    csv_path = _generate_model_library(
+        config, model_key, sampler, _generation_work_dir(), profile=profile, force=force,
+    )
+    write_artifact(out, {"model": model_key, "sampler": sampler, "csv_path": str(csv_path),
+                         "execution_profile": profile,
+                         "execution": {"chain_batch_size": execution_profile(config, profile).get("gibbs_chain_batch_size"),
+                                       "template_batch_size": execution_profile(config, profile).get("beam_template_batch_size")},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def _required_part(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing prerequisite work unit: {path}")
+    return load_artifact(path)
+
+
+def _generation_sources(config: dict[str, Any], model_key: str) -> dict[str, Path]:
+    base = _required_part(part_path(config, "generation_baselines.json"))
+    sources = {key: Path(value) for key, value in base["libraries"].items()}
+    for sampler in ("gibbs", "stochastic_beam"):
+        sample = _required_part(part_path(config, f"generation_sample_{model_key}_{sampler}.json"))
+        sources[sampler] = Path(sample["csv_path"])
+    return sources
+
+
+def collect_generation_native_scores(
+    config: dict[str, Any], model_key: str, *, profile: str, force: bool = False,
+) -> Path:
+    """Score all four libraries with one native evaluator model load per job."""
+    out = part_path(config, f"generation_native_scores_{model_key}.json")
+    if out.exists() and not force:
+        return out
+    values = _score_libraries_once(config, _generation_sources(config, model_key), model_key,
+                                   cache_namespace="native", profile=profile, force=force)
+    write_artifact(out, {"model": model_key, "scores": values, "execution_profile": profile,
+                         "execution": {"pll_batch_size": execution_profile(config, profile)["pll_batch_size"]},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def _common_library_key(model_key: str, sampler: str) -> str:
+    return sampler if sampler in {"random", "pssm"} else f"{model_key}_{sampler}"
+
+
+def collect_generation_common_scores(config: dict[str, Any], *, profile: str, force: bool = False) -> Path:
+    """Score each unique library exactly once with vanilla ESM2."""
+    out = part_path(config, "generation_common_scores.json")
+    if out.exists() and not force:
+        return out
+    sources: dict[str, Path] = {}
+    for model_key in config["models"]["generation_models"]:
+        for sampler, path in _generation_sources(config, model_key).items():
+            sources.setdefault(_common_library_key(model_key, sampler), path)
+    common_model = str(config["generation"]["common_evaluator"])
+    values = _score_libraries_once(config, sources, common_model,
+                                   cache_namespace="common", profile=profile, force=force)
+    write_artifact(out, {"model": common_model, "scores": values, "execution_profile": profile,
+                         "execution": {"pll_batch_size": execution_profile(config, profile)["pll_batch_size"]},
+                         "config_fingerprint": fingerprint(config)})
+    return out
+
+
+def reduce_generation_libraries(config: dict[str, Any]) -> list[Path]:
+    reference = load_artifact(_required_part(part_path(config, "generation_baselines.json"))["reference_artifact"])["sequences"]
+    common = _required_part(part_path(config, "generation_common_scores.json"))["scores"]
     generation = config["generation"]
-    baselines = _generate_baselines(config, work_dir, force=force)
     novelty_index = build_reference_index(registry.REPO_ROOT, splits=set(generation["novelty_reference_splits"]))
     written: list[Path] = []
-    common_model = str(generation["common_evaluator"])
-    # Model groups live under the shared ``models`` section; ``generation``
-    # only holds sampler settings.  This is also the contract used by the
-    # artifact manifest and report-figure readers.
     for model_key in config["models"]["generation_models"]:
-        out = artifact_path(config, f"generation_library_{model_key}.json")
-        if out.exists() and not force:
-            written.append(out)
-            continue
-        files = {**baselines, **_generate_model_libraries(config, model_key, work_dir, force=force)}
+        native = _required_part(part_path(config, f"generation_native_scores_{model_key}.json"))["scores"]
         sampler_rows: dict[str, Any] = {}
-        for sampler, csv_path in files.items():
-            retained = set(int(step) for step in generation["retained_steps"]) if sampler in {"gibbs", "stochastic_beam"} else None
-            frame = _load_library(csv_path, retained)
-            if len(frame) != int(generation["n_sequences"]):
-                raise ValueError(f"{model_key}/{sampler} has {len(frame)} rows, expected {generation['n_sequences']}")
-            native_scores, native_wt = _score_library(csv_path, model_key, frame, work_dir, force=force)
-            common_scores, common_wt = _score_library(csv_path, common_model, frame, work_dir, force=force)
+        for sampler, source in native.items():
+            frame = _load_library(Path(source["csv_path"]),
+                                  set(int(step) for step in generation["retained_steps"]) if sampler in {"gibbs", "stochastic_beam"} else None)
             annotated = annotate_sequence_membership(frame, seq_col="sequence", reference_index=novelty_index)
+            common_source = common[_common_library_key(model_key, sampler)]
             rows: list[dict[str, Any]] = []
             for record in annotated.to_dict("records"):
                 sequence = str(record["sequence"])
                 rows.append({"sequence": sequence, "n_mutations": int(record["n_mutations"]),
-                             "native_pll": float(native_scores[sequence]), "common_esm2_pll": float(common_scores[sequence]),
-                             "wt_native_pll": native_wt, "wt_common_esm2_pll": common_wt,
+                             "native_pll": float(source["scores"][sequence]),
+                             "common_esm2_pll": float(common_source["scores"][sequence]),
+                             "wt_native_pll": float(source["wt_score"]),
+                             "wt_common_esm2_pll": float(common_source["wt_score"]),
                              "present_in_training_reference": bool(record["present_in_existing_dataset"])})
             sampler_rows[sampler] = {"rows": rows,
                                      "native": library_statistics(rows, evaluator="native", reference=reference, top_k=int(generation["top_k"])),
                                      "common_esm2": library_statistics(rows, evaluator="common", reference=reference, top_k=int(generation["top_k"]))}
+        out = artifact_path(config, f"generation_library_{model_key}.json")
         write_artifact(out, {"model": model_key, "checkpoint": registry.resolve_model(model_key)["checkpoint"],
                              "generation": generation, "samplers": sampler_rows,
                              "config_fingerprint": fingerprint(config)})
         written.append(out)
     return written
+
+
+def collect_generation_libraries(config: dict[str, Any], *, force: bool = False) -> list[Path]:
+    """Compatibility wrapper for a serial collection invocation."""
+    collect_generation_baselines(config, force=force)
+    for model_key in config["models"]["generation_models"]:
+        for sampler in ("gibbs", "stochastic_beam"):
+            collect_generation_sample(config, model_key, sampler, profile="a100_80gb", force=force)
+        collect_generation_native_scores(config, model_key, profile="a100_80gb", force=force)
+    collect_generation_common_scores(config, profile="a100_80gb", force=force)
+    return reduce_generation_libraries(config)

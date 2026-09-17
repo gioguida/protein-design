@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from protein_design.analysis import report_data
 
@@ -42,3 +43,39 @@ def test_library_statistics_uses_requested_evaluator() -> None:
 def test_json_conversion_normalizes_numpy_values() -> None:
     payload = report_data._json_value({"integer": __import__("numpy").int64(3), "float": __import__("numpy").float64(1.5)})
     assert payload == {"integer": 3, "float": 1.5}
+
+
+def _work_unit_config():
+    return {
+        "output": {"data_dir": str(Path("__nonexistent_report_plot_data__"))},
+        "models": {
+            "order": ["vanilla_650m", "evo_650m"],
+            "preference_models": ["just_dpo_650m"],
+            "generation_models": ["vanilla_650m"],
+        },
+        "execution": {"profiles": {"rtx_4090": {}, "a100_80gb": {}}},
+    }
+
+
+def test_collection_commands_fan_out_models_and_gpu_classes() -> None:
+    config = _work_unit_config()
+    commands = report_data.collection_commands(config)
+    text = "\n".join(command for _, group in commands for command in group)
+    assert "functional-model --model vanilla_650m" in text
+    assert "preference-model --model just_dpo_650m" in text
+    assert "report_plot_data_4090.sbatch" in text
+    assert "generation-sample --model vanilla_650m --sampler gibbs" in text
+    assert "report_plot_data_a100_80gb.sbatch" in text
+    assert "generation-baselines" in text
+
+
+def test_preference_reducer_requires_every_model_part() -> None:
+    config = _work_unit_config()
+    with pytest.raises(FileNotFoundError, match="preference_just_dpo_650m"):
+        report_data.reduce_preference_metrics(config)
+
+
+def test_execution_profile_rejects_unknown_name() -> None:
+    config = _work_unit_config()
+    with pytest.raises(ValueError, match="Unknown report execution profile"):
+        report_data.execution_profile(config, "unsupported")
