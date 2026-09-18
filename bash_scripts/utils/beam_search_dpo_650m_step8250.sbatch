@@ -28,13 +28,19 @@ set -euo pipefail
 source bash_scripts/common_setup.sh
 
 DPO_CKPT=/cluster/project/infk/krause/gguidarini/protein-design/checkpoints/just_dpo_650M/step_8250.pt
-BEAM_CSV=/cluster/scratch/mdenegri/protein-design/pssm_vs_dpo_650m/beam_dpo/beam_dpo_650m_step8250.csv
+# SCRATCH_DIR is supplied by .env.local.  The fallback keeps this launcher
+# usable when invoked outside common_setup.sh without targeting another user.
+SCRATCH_ROOT="${SCRATCH_DIR:-/cluster/scratch/${USER}/protein-design}"
+BEAM_CSV="${SCRATCH_ROOT}/pssm_vs_dpo_650m/beam_dpo/beam_dpo_650m_step8250.csv"
+# This controls only GPU throughput, not the stochastic-search protocol.  The
+# report A100 profile uses 384; leave the conservative default for 32 GB GPUs.
+BEAM_TEMPLATE_BATCH_SIZE="${BEAM_TEMPLATE_BATCH_SIZE:-1}"
 
 mkdir -p "$(dirname "${BEAM_CSV}")"
 
 echo "[beam] DPO 650M step 8250"
 python scripts/stochastic_beam_search.py \
-  --model-variant just_dpo_650m_step8250 \
+  --model-variant just_dpo_650m \
   --checkpoint-path "${DPO_CKPT}" \
   --beam-size 500 \
   --n-steps 11 \
@@ -42,4 +48,5 @@ python scripts/stochastic_beam_search.py \
   --temperature 0.9 \
   --seed 42 \
   --start-mode wt \
+  --template-batch-size "${BEAM_TEMPLATE_BATCH_SIZE}" \
   --output-path "${BEAM_CSV}"

@@ -3,7 +3,7 @@
 #SBATCH --job-name=report_plot_cpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem-per-cpu=4G
 #SBATCH --time=02:00:00
 #SBATCH --partition=cpu
 #SBATCH --output=bash_scripts/logs/report_plot_cpu_%j.log

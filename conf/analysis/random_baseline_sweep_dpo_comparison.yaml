@@ -44,8 +44,10 @@ summary:
   jsd_vs_temp: true
 
 output:
-  base_dir: "/cluster/scratch/mdenegri/protein-design/random_vs_dpo_650m/random_sweep"
-  plots_dir: "/cluster/scratch/mdenegri/protein-design/random_vs_dpo_650m/random_sweep/plots"
+  # SCRATCH_DIR comes from .env.local (normally /cluster/scratch/$USER/protein-design).
+  # The sweep runner expands this environment variable before writing artifacts.
+  base_dir: "${SCRATCH_DIR}/random_vs_dpo_650m/random_sweep"
+  plots_dir: "${SCRATCH_DIR}/random_vs_dpo_650m/random_sweep/plots"
 
 dms_reference:
   max_dms: 500
