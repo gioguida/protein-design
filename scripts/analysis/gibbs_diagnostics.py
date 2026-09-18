@@ -51,6 +51,11 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, EsmForMaskedLM
 
+from protein_design.analysis.report_figures import (
+    DOUBLE_COL_WIDTH,
+    apply_report_style,
+    style_axes,
+)
 from protein_design.checkpoint_loading import DEFAULT_ESM2_MODEL_ID, load_mlm_from_checkpoint
 from protein_design.constants import (
     C05_CDRH3,
@@ -61,6 +66,11 @@ from protein_design.constants import (
 
 ESM2_MODEL_ID = DEFAULT_ESM2_MODEL_ID
 SEED = 42
+COLORS = {
+    "dms": "#5E81AC",
+    "sampler": "#1B9E77",
+    "accent": "#7570B3",
+}
 _DMS_BASE = "/cluster/project/infk/krause/gguidarini/protein-design/data/raw"
 DMS_DATASETS: Dict[str, Dict[str, str]] = {
     "ed2": {
@@ -79,6 +89,13 @@ DEFAULT_DMS_DATASET = "ed2"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("gibbs_diagnostics")
+
+
+def style_figure(fig: plt.Figure, *, grid: bool = True) -> None:
+    """Apply the report style to data axes while leaving colour bars alone."""
+    for axis in fig.axes:
+        if axis.axison and axis.get_label() != "<colorbar>":
+            style_axes(axis, grid=grid)
 
 
 # --------------------------------------------------------------------- model load
@@ -195,16 +212,16 @@ FITNESS_ROWS = [
     ("dms_si06", "SI06 binding enrichment"),
 ]
 
-# Standard chemistry-style AA palette for sequence logos.
+# Muted chemistry-style AA palette for sequence logos.
 AA_COLORS: Dict[str, str] = {
-    "A": "#33a02c", "V": "#33a02c", "L": "#33a02c", "I": "#33a02c", "M": "#33a02c",
-    "F": "#6a3d9a", "W": "#6a3d9a", "Y": "#6a3d9a",
-    "K": "#1f78b4", "R": "#1f78b4", "H": "#1f78b4",
-    "D": "#e31a1c", "E": "#e31a1c",
-    "S": "#ff7f00", "T": "#ff7f00", "N": "#ff7f00", "Q": "#ff7f00",
-    "G": "#b15928",
-    "P": "#fb9a99",
-    "C": "#ffff99",
+    "A": "#1B9E77", "V": "#1B9E77", "L": "#1B9E77", "I": "#1B9E77", "M": "#1B9E77",
+    "F": "#7570B3", "W": "#7570B3", "Y": "#7570B3",
+    "K": "#5E81AC", "R": "#5E81AC", "H": "#5E81AC",
+    "D": "#D95F02", "E": "#D95F02",
+    "S": "#E65A9A", "T": "#E65A9A", "N": "#E65A9A", "Q": "#E65A9A",
+    "G": "#8A8A8A",
+    "P": "#2B2B2B",
+    "C": "#8A8A8A",
 }
 
 
@@ -222,7 +239,7 @@ def plot_pll_violin_grid(
     """
     n_cols = len(labels)
     n_rows = len(configs)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.6 * n_cols + 1.0, 4.0 * n_rows),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(DOUBLE_COL_WIDTH, 3.0 * n_rows),
                              squeeze=False)
 
     rng = np.random.default_rng(SEED)
@@ -242,11 +259,11 @@ def plot_pll_violin_grid(
 
             datasets = [dms_pll]
             positions = [1.0]
-            colors = ["tab:blue"]
+            colors = [COLORS["dms"]]
             if len(gibbs_pll):
                 datasets.append(gibbs_pll)
                 positions.append(2.0)
-                colors.append("tab:green")
+                colors.append(COLORS["sampler"])
             parts = ax.violinplot(datasets, positions=positions,
                                   widths=0.8, showmeans=False, showmedians=True,
                                   showextrema=False)
@@ -274,17 +291,18 @@ def plot_pll_violin_grid(
             if row == 0:
                 ax.set_title(v, fontsize=11)
             if col == 0:
-                ax.set_ylabel(f"{cfg}\n\nCDR-H3 sequence PLL", fontsize=10)
+                ax.set_ylabel(f"{cfg}\n\nCDR-H3 PLL", fontsize=10)
             else:
-                ax.set_ylabel("CDR-H3 sequence PLL", fontsize=9)
+                ax.set_ylabel("CDR-H3 PLL", fontsize=9)
 
     fig.suptitle(
         f"{flabel} — DMS vs {sampler_title} PLL  (rows = config, cols = variant)\n"
         "DMS strip colored by enrichment; WT PLL marked",
         fontsize=12,
     )
+    style_figure(fig)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -301,7 +319,7 @@ def plot_pll_trajectory(
     """
     n_cols = len(labels)
     n_rows = len(configs)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5.0 * n_cols, 3.4 * n_rows),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(DOUBLE_COL_WIDTH, 2.9 * n_rows),
                              squeeze=False)
 
     chain_cmap = plt.get_cmap("tab10")
@@ -342,7 +360,7 @@ def plot_pll_trajectory(
             if row == 0:
                 ax.set_title(v, fontsize=11)
             if col == 0:
-                ax.set_ylabel(f"{cfg}\nCDR-H3 sequence PLL", fontsize=9)
+                ax.set_ylabel(f"{cfg}\nCDR-H3 PLL", fontsize=9)
             ax.set_xlabel(f"{sampler_title} step")
 
     handles, leg_labels = axes[0, 0].get_legend_handles_labels()
@@ -350,8 +368,9 @@ def plot_pll_trajectory(
         fig.legend(handles, leg_labels, loc="upper right", fontsize=8, ncol=1,
                    bbox_to_anchor=(0.998, 0.998))
     fig.suptitle(f"{sampler_title} PLL trajectory — rows = config, cols = variant", fontsize=12)
+    style_figure(fig)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -369,7 +388,7 @@ def plot_sequence_logo(
     variants = list(per_variant.keys())
     P = len(C05_CDRH3)
     n_vars = len(variants)
-    fig, axes = plt.subplots(n_vars, 1, figsize=(0.45 * P + 4.0, 1.7 * n_vars + 1.4),
+    fig, axes = plt.subplots(n_vars, 1, figsize=(DOUBLE_COL_WIDTH, max(2.7, 1.6 * n_vars + 0.8)),
                              squeeze=False, sharex=True)
 
     for row, v in enumerate(variants):
@@ -415,9 +434,11 @@ def plot_sequence_logo(
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
 
-    axes[-1, 0].set_xticks(range(P))
-    axes[-1, 0].set_xticklabels([f"{i + 1}\n{a}" for i, a in enumerate(C05_CDRH3)],
-                                fontsize=8)
+    shown = range(0, P, 2)
+    axes[-1, 0].set_xticks(shown)
+    axes[-1, 0].set_xticklabels(
+        [f"{i + 1}\n{C05_CDRH3[i]}" for i in shown], fontsize=8.5
+    )
     axes[-1, 0].set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
     other_handle = plt.Rectangle((0, 0), 1, 1, facecolor="0.8", edgecolor="white",
                                  alpha=0.85, hatch="///",
@@ -425,8 +446,9 @@ def plot_sequence_logo(
     axes[0, 0].legend(handles=[other_handle], loc="lower right", fontsize=7,
                       framealpha=0.9)
     fig.suptitle("Per position AA frequency", fontsize=11)
+    style_figure(fig, grid=False)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -475,7 +497,7 @@ def plot_pairwise_hamming(
     """
     n_cols = len(labels)
     n_rows = len(configs)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 3.2 * n_rows),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(DOUBLE_COL_WIDTH, 2.9 * n_rows),
                              squeeze=False, sharex=True, sharey=True)
 
     P = len(C05_CDRH3)
@@ -510,18 +532,19 @@ def plot_pairwise_hamming(
 
             counts, _, patches = ax.hist(
                 d_flat, bins=range(0, P + 2), align="left",
-                color="tab:purple", edgecolor="white", linewidth=0.4)
+                color=COLORS["accent"], edgecolor="white", linewidth=0.4)
             label_groups.append((ax, _add_count_labels(ax, counts, patches)))
             if row == 0:
                 ax.set_title(f"{v}", fontsize=10)
             if row == n_rows - 1:
                 ax.set_xlabel("pairwise Hamming")
             if col == 0:
-                ax.set_ylabel(f"{cfg}\npair count", fontsize=9)
+                ax.set_ylabel(f"{cfg}\nPair count", fontsize=9)
 
     # Trim the shared x-axis to one past the largest observed distance.
     axes[0, 0].set_xlim(-0.5, dmax_global + 1.5)
     fig.suptitle("Pairwise Hamming distance among CDRH3s", fontsize=12)
+    style_figure(fig)
     fig.tight_layout()
     # Measure label heights AFTER tight_layout so the axes are at their final
     # pixel size, then expand the shared y-axis so the rotated count labels stay
@@ -531,7 +554,7 @@ def plot_pairwise_hamming(
     tops = [t for ax, ts in label_groups if (t := _labels_top_data_y(ax, ts))]
     if tops:
         axes[0, 0].set_ylim(top=max(tops) * 1.05)
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -546,7 +569,7 @@ def plot_edit_distance(
     """Rows = configs, cols = variants. Histogram of n_mutations vs C05 WT."""
     n_cols = len(labels)
     n_rows = len(configs)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 3.2 * n_rows),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(DOUBLE_COL_WIDTH, 2.9 * n_rows),
                              squeeze=False)
     label_groups: List[Tuple[plt.Axes, list]] = []
     for row, cfg in enumerate(configs):
@@ -561,7 +584,7 @@ def plot_edit_distance(
                 ax.axis("off")
                 continue
             counts, _, patches = ax.hist(
-                nm, bins=range(0, int(nm.max()) + 2), color="tab:green",
+                nm, bins=range(0, int(nm.max()) + 2), color=COLORS["sampler"],
                 edgecolor="white", linewidth=0.4, align="left")
             label_groups.append((ax, _add_count_labels(ax, counts, patches)))
             if row == 0:
@@ -569,9 +592,10 @@ def plot_edit_distance(
             if row == n_rows - 1:
                 ax.set_xlabel("edit distance from C05 WT")
             if col == 0:
-                ax.set_ylabel(f"{cfg}\ncount", fontsize=9)
+                ax.set_ylabel(f"{cfg}\nCount", fontsize=9)
             ax.set_xlim(left=-0.5)
     fig.suptitle("Edit distance from C05 WT CDR-H3", fontsize=12)
+    style_figure(fig)
     fig.tight_layout()
     # Expand each y-axis AFTER tight_layout (final axes size) so the rotated
     # count labels stay inside the axes.
@@ -580,7 +604,7 @@ def plot_edit_distance(
         top = _labels_top_data_y(ax, ts)
         if top is not None:
             ax.set_ylim(top=top * 1.05)
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -594,17 +618,21 @@ def plot_position_mutation_freq(
     for i, v in enumerate(variants):
         matrix[i] = per_variant[v]["pos_mut_freq"]
 
-    fig, ax = plt.subplots(figsize=(0.45 * P + 3.5, 0.9 * len(variants) + 1.8))
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_WIDTH, max(2.6, 0.75 * len(variants) + 1.5)))
     im = ax.imshow(matrix, vmin=0.0, vmax=1.0, cmap="magma", aspect="auto")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="P(non-WT residue)")
     ax.set_yticks(range(len(variants)))
     ax.set_yticklabels(variants)
-    ax.set_xticks(range(P))
-    ax.set_xticklabels([f"{i + 1}\n{a}" for i, a in enumerate(C05_CDRH3)], fontsize=8)
+    shown = range(0, P, 2)
+    ax.set_xticks(shown)
+    ax.set_xticklabels(
+        [f"{i + 1}\n{C05_CDRH3[i]}" for i in shown], fontsize=8.5
+    )
     ax.set_xlabel("CDR-H3 position (1-indexed; WT residue beneath)")
     ax.set_title("Per-position mutation frequency", fontsize=11)
+    style_figure(fig, grid=False)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
 
@@ -764,6 +792,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    apply_report_style()
     sampler_prefix = args.sampler_label.strip().lower().replace(" ", "_")
     sampler_title = args.sampler_label.strip().title() or "Gibbs"
     ext = args.format

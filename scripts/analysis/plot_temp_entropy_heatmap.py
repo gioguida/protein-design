@@ -11,6 +11,11 @@ import numpy as np
 import pandas as pd
 
 from protein_design.analysis.entropy import position_entropy
+from protein_design.analysis.report_figures import (
+    DOUBLE_COL_WIDTH,
+    apply_report_style,
+    style_axes,
+)
 from protein_design.constants import C05_CDRH3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -22,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--temp-csv", action="append", required=True, help="T=CSV_PATH")
     p.add_argument("--model-variant", required=True)
     p.add_argument("--sampler-label", default="sampler")
+    p.add_argument("--sweep-label", default="temperature")
     p.add_argument("--output-name", default="temp_entropy_heatmap.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
@@ -44,6 +50,7 @@ def _load_final_step(csv_path: Path) -> list[str]:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    apply_report_style()
 
     pairs = sorted((_parse_temp_csv(s) for s in args.temp_csv), key=lambda x: x[0])
     temps: list[float] = []
@@ -63,23 +70,27 @@ def main() -> int:
     L = len(C05_CDRH3)
     positions = np.arange(1, L + 1)
 
-    fig, ax = plt.subplots(figsize=(11.5, 4.5 + 0.2 * len(temps)))
+    fig, ax = plt.subplots(
+        figsize=(DOUBLE_COL_WIDTH, max(3.1, 2.1 + 0.2 * len(temps))),
+        constrained_layout=True,
+    )
     im = ax.imshow(mat, aspect="auto", cmap="viridis", interpolation="nearest")
-    ax.set_xticks(np.arange(L))
-    ax.set_xticklabels([f"{i}\n{aa}" for i, aa in zip(positions, C05_CDRH3)], fontsize=8)
+    shown = np.arange(0, L, 2)
+    ax.set_xticks(shown)
+    ax.set_xticklabels(
+        [f"{positions[i]}\n{C05_CDRH3[i]}" for i in shown], fontsize=8.5
+    )
     ax.set_yticks(np.arange(len(temps)))
     ax.set_yticklabels([str(t) for t in temps])
     ax.set_xlabel("CDR-H3 position (WT residue)")
-    ax.set_ylabel("Temperature")
-    ax.set_title(
-        f"Position-wise CDR-H3 entropy across temperatures ({args.model_variant} model)"
-    )
+    ax.set_ylabel(args.sweep_label.title())
+    ax.set_title(f"CDR-H3 entropy across {args.sweep_label.lower()}")
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Shannon entropy (bits)")
-    fig.tight_layout()
+    style_axes(ax, grid=False)
 
     out_path = args.output_dir / args.output_name
-    fig.savefig(out_path, dpi=220, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
     return 0

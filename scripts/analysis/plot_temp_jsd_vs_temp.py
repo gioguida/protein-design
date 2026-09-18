@@ -10,6 +10,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from protein_design.analysis.report_figures import (
+    DOUBLE_COL_WIDTH,
+    apply_report_style,
+    style_axes,
+)
 from protein_design.constants import C05_CDRH3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dms-m22", type=Path, required=True)
     p.add_argument("--max-dms", type=int, default=500)
     p.add_argument("--sampler-label", default="SBS")
+    p.add_argument("--sweep-label", default="temperature")
     p.add_argument("--output-name", default="temp_jsd_vs_temp.png")
     p.add_argument("--output-dir", type=Path, required=True)
     return p.parse_args()
@@ -87,6 +93,7 @@ def _jsd(p: np.ndarray, q: np.ndarray) -> float:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    apply_report_style()
 
     dms_seqs = _load_dms(args.dms_m22, args.max_dms)
     if not dms_seqs:
@@ -113,30 +120,30 @@ def main() -> int:
         raise ValueError("No valid temperature points for JSD plot.")
 
     mat = np.vstack(per_pos_all)
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12.5, 4.6), gridspec_kw={"width_ratios": [1.2, 1.8]})
+    fig, (ax0, ax1) = plt.subplots(
+        1,
+        2,
+        figsize=(DOUBLE_COL_WIDTH, 3.2),
+        gridspec_kw={"width_ratios": [1.0, 1.35]},
+        constrained_layout=True,
+    )
 
-    ax0.plot(temps, mean_jsd, marker="o", color="black", linewidth=1.4)
-    ax0.set_xlabel("Temperature")
-    ax0.set_ylabel("Mean JSD across CDR-H3 positions")
-    ax0.set_title("Mean JSD vs temperature")
-    ax0.grid(alpha=0.2)
+    ax0.plot(temps, mean_jsd, marker="o", color="#1B9E77", linewidth=1.8)
+    ax0.set_xlabel(args.sweep_label.title())
+    ax0.set_ylabel("Mean JSD")
+    ax0.set_title("Mean JSD")
 
-    pos_colors = plt.get_cmap("turbo")(np.linspace(0.0, 1.0, len(C05_CDRH3)))
+    pos_colors = plt.get_cmap("cividis")(np.linspace(0.12, 0.88, len(C05_CDRH3)))
     for i in range(len(C05_CDRH3)):
         ax1.plot(temps, mat[:, i], linewidth=1.0, alpha=0.9, color=pos_colors[i])
-    ax1.set_xlabel("Temperature")
-    ax1.set_ylabel("Per-position JSD")
-    ax1.set_title("Per-position JSD trajectories (24 positions)")
-    ax1.grid(alpha=0.2)
-
-    fig.suptitle(
-        f"{args.sampler_label.strip().title()} vs DMS divergence across temperatures "
-        f"(model: {args.model_variant})"
-    )
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+    ax1.set_xlabel(args.sweep_label.title())
+    ax1.set_ylabel("JSD")
+    ax1.set_title("Position-wise JSD")
+    style_axes(ax0)
+    style_axes(ax1)
 
     out_path = args.output_dir / args.output_name
-    fig.savefig(out_path, dpi=220, bbox_inches="tight")
+    fig.savefig(out_path, dpi=400, bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
     log.info("Wrote %s", out_path)
     return 0
