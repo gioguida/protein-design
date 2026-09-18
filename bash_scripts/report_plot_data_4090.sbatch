@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=12G
 #SBATCH --gpus=rtx_4090:1
-#SBATCH --time=12:00:00
+#SBATCH --time=4:00:00
 #SBATCH --partition=gpu
 #SBATCH --output=bash_scripts/logs/report_plot_4090_%j.log
 

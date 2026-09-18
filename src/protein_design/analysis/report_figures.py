@@ -125,17 +125,45 @@ def plot_evotune_functional(config: dict[str, Any]) -> plt.Figure:
 
 
 def plot_cdr_pseudo_perplexity(config: dict[str, Any]) -> plt.Figure:
+    """Compare naturalness of the fixed WT CDR-H3 and the held-out ED2 variants."""
     data = _functional(config)["models"]
     models = ["vanilla_650m", "evo_650m"]
-    values = [data[model]["datasets"]["ed2_m22"]["cdr_pseudo_perplexity"] for model in models]
-    fig, ax = plt.subplots(figsize=(SINGLE_COL_WIDTH, 2.6), constrained_layout=True)
-    ax.plot(range(2), values, color="0.55", lw=1.2, zorder=2)
-    for x, model, value in zip(range(2), models, values):
-        ax.scatter(x, value, s=42, color=model_color(model), zorder=3)
-    ax.set_xticks(range(2), [model_label(model) for model in models], rotation=20, ha="right")
-    ax.set_ylabel("CDR-H3 pseudo-perplexity")
-    ax.set_title("Held-out ED2 naturalness")
-    style_axes(ax)
+    panels = [
+        ("wild_type_cdr_pseudo_perplexity", "Wild-type CDR-H3"),
+        ("cdr_pseudo_perplexity", "Held-out ED2 variants"),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE_COL_WIDTH, 2.65), sharey=False, constrained_layout=True)
+    for index, (ax, (metric, title)) in enumerate(zip(axes, panels)):
+        values = [data[model][metric] if metric == "wild_type_cdr_pseudo_perplexity"
+                  else data[model]["datasets"]["ed2_m22"][metric] for model in models]
+        ax.plot(range(2), values, color="0.55", lw=1.2, zorder=2)
+        for x, model, value in zip(range(2), models, values):
+            ax.scatter(x, value, s=42, color=model_color(model), zorder=3)
+        ax.set_xticks(range(2), [model_label(model) for model in models], rotation=20, ha="right")
+        ax.set_title(title)
+        style_axes(ax)
+        add_panel_label(ax, "ab"[index])
+    fig.supylabel("CDR-H3 pseudo-perplexity (lower is better)")
+    return fig
+
+
+def plot_all_models_auroc(config: dict[str, Any]) -> plt.Figure:
+    """PLL AUROC for classifying variants above the wild-type enrichment."""
+    data = _functional(config)["models"]
+    datasets = config["datasets"]["functional"]
+    models = config["models"]["order"]
+    fig, axes = plt.subplots(1, len(datasets), figsize=(DOUBLE_COL_WIDTH, 2.9), sharey=True, constrained_layout=True)
+    x = np.arange(len(models))
+    for index, (ax, dataset) in enumerate(zip(axes, datasets)):
+        values = [data[model]["datasets"][dataset]["auroc_above_wt"] for model in models]
+        ax.bar(x, values, color=[model_color(model) for model in models], edgecolor="white", linewidth=0.5, zorder=3)
+        ax.axhline(0.5, color="0.35", lw=0.9, ls="--", zorder=2)
+        ax.set_ylim(0, 1)
+        ax.set_xticks(x, [model_label(model) for model in models], rotation=35, ha="right")
+        ax.set_title(dataset.replace("_m22", "").upper())
+        style_axes(ax)
+        add_panel_label(ax, "abc"[index])
+    fig.supylabel("AUROC: above WT enrichment")
     return fig
 
 
@@ -157,10 +185,10 @@ def plot_dms_binding_enrichment_distributions(config: dict[str, Any]) -> plt.Fig
         axis.hist(values, bins=bins, density=True, color=color, alpha=0.72, edgecolor="white", linewidth=0.35)
         axis.axvline(float(data["wild_type_enrichment"]), color="0.30", lw=1.0, ls="--", zorder=3)
         axis.set_title(f"{dataset.replace('_m22', '').upper()} (n={len(values):,})")
-        axis.set_xlabel("Adjusted M22 binding enrichment")
         style_axes(axis)
         add_panel_label(axis, "abc"[index])
-    axes[0].set_ylabel("Density")
+    fig.supxlabel("Adjusted M22 binding enrichment")
+    fig.supylabel("Density")
     axes[-1].legend([Line2D([0], [0], color="0.30", lw=1.0, ls="--")], ["WT"], loc="upper right")
     return fig
 
@@ -384,54 +412,14 @@ def all_model_table_latex(config: dict[str, Any]) -> str:
         values = [model_label(model),
                   r"\textemdash{}" if not pref else f"{pref['test_reward_accuracy']:.3f}",
                   r"\textemdash{}" if not pref else f"{pref['test_reward_margin']:.3f}",
-                  f"{functional[model]['datasets']['ed2_m22']['cdr_pseudo_perplexity']:.2f}"]
+                  f"{functional[model]['wild_type_cdr_pseudo_perplexity']:.2f}"]
         values += [f"{functional[model]['datasets'][dataset]['spearman_pll_enrichment']:.3f}" for dataset in config["datasets"]["functional"]]
         rows.append(values)
     return _latex_table(
-        ["Model", "Reward acc.", "Reward margin", "CDR PPL", "ED2 $\\rho$", "ED5 $\\rho$", "ED8--11 $\\rho$"],
+        ["Model", "Reward acc.", "Reward margin", "WT CDR PPL", "ED2 $\\rho$", "ED5 $\\rho$", "ED8--11 $\\rho$"],
         rows, alignment="lrrrrrr", caption="Model summary on held-out evaluation sets.",
         label="tab:all-model-summary",
     )
-
-
-def plot_all_model_table(config: dict[str, Any]) -> plt.Figure:
-    """Render the compact all-model report table as a publication-ready figure."""
-    functional = _functional(config)["models"]
-    preference = _preference(config)["models"]
-    datasets = config["datasets"]["functional"]
-    headers = ["Model", "Reward\nacc.", "Reward\nmargin", "CDR\nPPL"]
-    headers.extend(f"{dataset.replace('_m22', '').upper()}\n$\\rho$" for dataset in datasets)
-    rows = []
-    for model in config["models"]["order"]:
-        pref = preference.get(model, {})
-        row = [
-            model_label(model),
-            "—" if not pref else f"{pref['test_reward_accuracy']:.3f}",
-            "—" if not pref else f"{pref['test_reward_margin']:.3f}",
-            f"{functional[model]['datasets']['ed2_m22']['cdr_pseudo_perplexity']:.2f}",
-        ]
-        row.extend(f"{functional[model]['datasets'][dataset]['spearman_pll_enrichment']:.3f}" for dataset in datasets)
-        rows.append(row)
-
-    fig, ax = plt.subplots(figsize=(DOUBLE_COL_WIDTH, 0.52 * len(rows) + 1.05))
-    ax.axis("off")
-    table = ax.table(cellText=rows, colLabels=headers, cellLoc="center", colLoc="center", loc="center")
-    table.auto_set_font_size(False)
-    table.set_fontsize(8.3)
-    table.scale(1, 1.35)
-    for (row, column), cell in table.get_celld().items():
-        cell.set_edgecolor("0.80")
-        cell.set_linewidth(0.5)
-        if row == 0:
-            cell.set_facecolor("0.90")
-            cell.set_text_props(weight="bold")
-        elif column == 0:
-            cell.set_facecolor(model_color(config["models"]["order"][row - 1]))
-            cell.set_text_props(color="white", weight="bold", ha="left")
-        elif row % 2 == 0:
-            cell.set_facecolor("0.97")
-    fig.tight_layout(pad=0.15)
-    return fig
 
 
 def write_all_model_table(config: dict[str, Any], output_dir: str | Path) -> Path:

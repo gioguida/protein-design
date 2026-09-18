@@ -23,7 +23,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 import yaml
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 
 from protein_design.constants import C05_CDRH3, WT_M22_BINDING_ENRICHMENT
 
@@ -91,8 +91,39 @@ def artifact_names(config: dict[str, Any], sections: Iterable[str] | None = None
     return names
 
 
+def _functional_metrics_complete(metrics: dict[str, Any], config: dict[str, Any]) -> bool:
+    return all(
+        "wild_type_cdr_pseudo_perplexity" in metrics.get(model, {})
+        and all("auroc_above_wt" in metrics[model].get("datasets", {}).get(dataset, {})
+                for dataset in config["datasets"]["functional"])
+        for model in config["models"]["order"]
+    )
+
+
+def _functional_part_complete(path: Path, config: dict[str, Any]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        metrics = load_artifact(path)["metrics"]
+        return ("wild_type_cdr_pseudo_perplexity" in metrics
+                and all("auroc_above_wt" in metrics.get("datasets", {}).get(dataset, {})
+                        for dataset in config["datasets"]["functional"]))
+    except (KeyError, OSError, ValueError):
+        return False
+
+
 def missing_artifacts(config: dict[str, Any], sections: Iterable[str] | None = None) -> list[Path]:
-    return [artifact_path(config, name) for name in artifact_names(config, sections) if not artifact_path(config, name).exists()]
+    missing = [artifact_path(config, name) for name in artifact_names(config, sections) if not artifact_path(config, name).exists()]
+    if "functional" in set(sections or ("functional", "preference", "generation")):
+        path = artifact_path(config, "functional_metrics.json")
+        if path.exists():
+            try:
+                complete = _functional_metrics_complete(load_artifact(path).get("models", {}), config)
+            except (OSError, ValueError):
+                complete = False
+            if not complete:
+                missing.append(path)
+    return list(dict.fromkeys(missing))
 
 
 def collection_commands(config: dict[str, Any], sections: Iterable[str] | None = None) -> list[tuple[str, list[str]]]:
@@ -100,9 +131,16 @@ def collection_commands(config: dict[str, Any], sections: Iterable[str] | None =
     selected = set(sections or ("functional", "preference", "generation"))
     config_arg = "--config conf/analysis/report_plots.yaml"
     commands: list[tuple[str, list[str]]] = []
-    if "functional" in selected and not artifact_path(config, "functional_metrics.json").exists():
+    functional_path = artifact_path(config, "functional_metrics.json")
+    try:
+        functional_complete = functional_path.exists() and _functional_metrics_complete(
+            load_artifact(functional_path).get("models", {}), config)
+    except (OSError, ValueError):
+        functional_complete = False
+    if "functional" in selected and not functional_complete:
         workers = [f"sbatch bash_scripts/report_plot_data_4090.sbatch {config_arg} --work-unit functional-model --model {model}"
-                   for model in config["models"]["order"] if not part_path(config, f"functional_{model}.json").exists()]
+                   for model in config["models"]["order"]
+                   if not _functional_part_complete(part_path(config, f"functional_{model}.json"), config)]
         reducer = [] if workers else [f"sbatch bash_scripts/report_plot_data_cpu.sbatch {config_arg} --work-unit functional-reduce"]
         if workers:
             commands.append(("Functional model jobs (independent)", workers))
@@ -366,6 +404,31 @@ def _run(command: list[str]) -> None:
     print(f"[run] completed in {time.perf_counter() - started:.1f}s")
 
 
+def _auroc_above_threshold(scores: np.ndarray, enrichment: np.ndarray, threshold: float) -> tuple[float, int, int]:
+    """Tie-aware AUROC for classifying variants above a fixed enrichment threshold."""
+    valid = np.isfinite(scores) & np.isfinite(enrichment)
+    clean_scores, clean_enrichment = scores[valid], enrichment[valid]
+    labels = clean_enrichment > threshold
+    n_positive = int(labels.sum())
+    n_negative = int(len(labels) - n_positive)
+    if not n_positive or not n_negative:
+        return float("nan"), n_positive, n_negative
+    ranks = rankdata(clean_scores)
+    auroc = (ranks[labels].sum() - n_positive * (n_positive + 1) / 2) / (n_positive * n_negative)
+    return float(auroc), n_positive, n_negative
+
+
+def _wild_type_pseudo_perplexity(model_key: str, *, batch_size: int, min_batch_size: int) -> float:
+    """Score the fixed C05 wild-type CDR-H3 with the same masked-PLL protocol."""
+    result = subprocess.run(
+        [sys.executable, "scripts/analysis/compute_pll.py", "--model", model_key,
+         "--sequence", C05_CDRH3, "--device", "cuda", "--batch-size", str(batch_size),
+         "--min-batch-size", str(min_batch_size)],
+        cwd=registry.REPO_ROOT, check=True, capture_output=True, text=True,
+    )
+    return float(json.loads(result.stdout.strip().splitlines()[-1])["pseudo_perplexity"])
+
+
 def collect_functional_model(
     config: dict[str, Any], model_key: str, *, profile: str, force: bool = False,
 ) -> Path:
@@ -374,7 +437,10 @@ def collect_functional_model(
         raise ValueError(f"{model_key!r} is not a configured report model")
     out = part_path(config, f"functional_{model_key}.json")
     if out.exists() and not force:
-        return out
+        cached = load_artifact(out).get("metrics", {})
+        if ("wild_type_cdr_pseudo_perplexity" in cached
+                and all("auroc_above_wt" in cached.get("datasets", {}).get(key, {}) for key in config["datasets"]["functional"])):
+            return out
     datasets = config["datasets"]["functional"]
     batch_size = int(execution_profile(config, profile)["pll_batch_size"])
     _run([sys.executable, "scripts/analysis/compute_pll.py", "--model", model_key,
@@ -390,8 +456,14 @@ def collect_functional_model(
         valid = np.isfinite(pll) & np.isfinite(truth)
         rho = float(spearmanr(pll[valid], truth[valid]).statistic) if valid.sum() >= 2 else float("nan")
         cdr_ppl = float(math.exp(-pll[valid].sum() / sum(len(s) for s in joined.loc[valid, ds["seq_col"]])))
-        per_dataset[dataset_key] = {"spearman_pll_enrichment": rho, "n": int(valid.sum()), "cdr_pseudo_perplexity": cdr_ppl}
+        auroc, n_positive, n_negative = _auroc_above_threshold(pll, truth, WT_M22_BINDING_ENRICHMENT)
+        per_dataset[dataset_key] = {"spearman_pll_enrichment": rho, "auroc_above_wt": auroc, "n": int(valid.sum()),
+                                    "n_positive_above_wt": n_positive, "n_negative_at_or_below_wt": n_negative,
+                                    "cdr_pseudo_perplexity": cdr_ppl}
+    wt_ppl = _wild_type_pseudo_perplexity(model_key, batch_size=batch_size,
+                                          min_batch_size=int(config["execution"]["min_pll_batch_size"]))
     write_artifact(out, {"model": model_key, "metrics": {"checkpoint": registry.resolve_model(model_key)["checkpoint"],
+                                                             "wild_type_cdr_pseudo_perplexity": wt_ppl,
                                                              "datasets": per_dataset},
                          "execution_profile": profile, "execution": {"pll_batch_size": batch_size},
                          "config_fingerprint": fingerprint(config)})

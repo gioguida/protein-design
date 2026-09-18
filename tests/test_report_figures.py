@@ -21,8 +21,10 @@ def _config():
 
 
 def _functional():
-    datasets = {dataset: {"spearman_pll_enrichment": 0.1, "cdr_pseudo_perplexity": 3.0} for dataset in _config()["datasets"]["functional"]}
-    return {"models": {model: {"datasets": datasets} for model in _config()["models"]["order"]}}
+    datasets = {dataset: {"spearman_pll_enrichment": 0.1, "auroc_above_wt": 0.6,
+                          "cdr_pseudo_perplexity": 3.0} for dataset in _config()["datasets"]["functional"]}
+    return {"models": {model: {"wild_type_cdr_pseudo_perplexity": 2.0, "datasets": datasets}
+                       for model in _config()["models"]["order"]}}
 
 
 def _library(model):
@@ -49,8 +51,9 @@ def test_report_figures_render_from_artifact_fixtures(monkeypatch) -> None:
 
     figures = [
         report_figures.plot_evotune_functional(config),
+        report_figures.plot_cdr_pseudo_perplexity(config),
         report_figures.plot_preference_metrics(config),
-        report_figures.plot_all_model_table(config),
+        report_figures.plot_all_models_auroc(config),
         report_figures.plot_generation_quality_diversity(config),
         report_figures.plot_generation_mutation_distance(config),
         report_figures.plot_generation_logos(config, "native"),

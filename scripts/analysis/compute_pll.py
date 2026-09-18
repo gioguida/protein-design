@@ -23,6 +23,7 @@ Prefer running via: sbatch bash_scripts/extract.sbatch --what pll --model … --
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -184,8 +185,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-model", default=None,
                    help=f"Override the registry base_model (HF id for architecture + "
                         f"tokenizer), e.g. {ESM2_35M_ID} or {ESM2_650M_ID}.")
-    p.add_argument("--dataset", required=True,
+    p.add_argument("--dataset",
                    help="Dataset key from conf/analysis/dms_datasets.yaml, or 'all'.")
+    p.add_argument("--sequence",
+                   help="Score one CDR-H3 sequence and print its PLL as JSON (does not write a cache artifact).")
     p.add_argument("--batch-size", type=int, default=256,
                    help="(sequence, masked-position) pairs per forward pass. "
                         "256 fits a 650M model in fp16 on a 20G GPU with margin; "
@@ -200,10 +203,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if bool(args.dataset) == bool(args.sequence):
+        raise SystemExit("Provide exactly one of --dataset or --sequence.")
     spec = registry.resolve_model(args.model, checkpoint=args.checkpoint,
                                   base_model=args.base_model)
     checkpoint = spec["checkpoint"] or ""
     base_model = spec["base_model"]
+    if args.sequence:
+        device = torch.device(args.device)
+        model = load_esm_for_mlm(
+            checkpoint, base_model, adapter_base_checkpoint=spec.get("adapter_base_checkpoint"),
+        ).eval().to(device)
+        if device.type == "cuda":
+            model = model.half()
+        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        pll, effective_batch_size = compute_pll_with_oom_backoff(
+            model, tokenizer, [args.sequence], device, args.batch_size, min_batch_size=args.min_batch_size,
+        )
+        print(json.dumps({"sequence": args.sequence, "pll": float(pll[0]),
+                          "pseudo_perplexity": float(np.exp(-pll[0] / len(args.sequence))),
+                          "pll_batch_size": effective_batch_size}))
+        return
+
     cfg = registry.load_datasets_cfg()
 
     pending = []
